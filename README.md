@@ -8,6 +8,7 @@ The host opens a room, invites guests through secure token links, and controls s
 
 ## Current status
 
+- **Localization:** The current release is available in German only. An English user interface is planned and will follow in an upcoming release. 
 - ✅ Host and guest control via WebSockets
 - ✅ Token-based guest invitations without exposing the room name in the token
 - ✅ Local browser recording with chunked uploads and server-side WAV merging
