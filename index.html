@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Podcast Studio · Start</title>
+<script>
+// Sprint 3: Branding kommt serverseitig im <head> (siehe BRANDING-Block oben).
+// Beim ersten Paint stimmen --brand/--brand-hover/--brand-on bereits -> kein
+// Aufblitzen der Default-Farbe, kein Verstecken der Seite.
+// Dieses Snippet setzt nur noch Titel + Favicon aus window.__BRANDING__ und
+// dient als Fallback, falls die Seite mal ohne SSR ausgeliefert wird.
+(() => {
+  const b = window.__BRANDING__;
+  if (!b || !b.ok) return;
+  try {
+    if (b.name) document.title = document.title.replace(/Podcast Studio/, b.name);
+  } catch {}
+})();
+</script>
+<style>
+  :root {
+    --bg:     #0f1115;
+    --panel:  #181b22;
+    --panel2: #11141a;
+    --border: #2a2f3a;
+    --text:   #e8eaed;
+    --muted:  #9aa3b2;
+    /* Semantic success (must never be overridden by branding) */
+    --ok:     #30a46c;
+    --ok-hover: #3cbf7e;
+
+    /* Brand accent */
+    --brand: var(--ok);
+    --brand-hover: var(--ok-hover);
+    --brand-on: #fff;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text);
+    font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  .topbar {
+    display: flex; align-items: center; justify-content: flex-end;
+    padding: 12px 24px; border-bottom: 1px solid var(--border);
+  }
+  .logout-btn {
+    background: none; color: var(--muted); border: 1px solid var(--border);
+    border-radius: 8px; padding: 7px 14px; font: inherit; font-size: 14px;
+    cursor: pointer; transition: border-color .15s, color .15s;
+  }
+  .logout-btn:hover { border-color: #3a4150; color: var(--text); }
+
+  .room-item {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px;
+    flex-wrap: nowrap;
+    padding: 10px 4px;
+    border-bottom: 1px solid var(--border);
+  }
+  @media (max-width: 720px) {
+    .room-item { flex-wrap: wrap; }
+  }
+  .room-item:last-child { border-bottom: none; }
+  .room-item .nm { font-weight: 700; color: var(--text); }
+  .room-item .meta { font-size: 13px; color: var(--muted); margin-top: 2px; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; font-weight: 700;
+    padding: 3px 10px; border-radius: 999px;
+    border: 1px solid var(--border);
+    color: var(--muted);
+  }
+  .pill.live { border-color: var(--ok); color: var(--ok); }
+  .pill.rec  { border-color: #e5484d; color: #e5484d; }
+
+  a.enter {
+    display: inline-flex; align-items: center; justify-content: center;
+    gap: 8px;
+    text-decoration: none;
+
+    /* Brand CTA */
+    background: var(--brand);
+    border: 1px solid var(--brand);
+    color: var(--brand-on);
+
+    border-radius: 8px;
+    padding: 10px 14px;
+    font: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: .1px;
+    transition: background .15s, border-color .15s, transform .05s;
+    white-space: nowrap;
+  }
+
+  .admin-panel {
+    display: none;
+  }
+
+  .admin-panel .admin-link {
+    width: 100%;
+    justify-content: center;
+  }
+  a.enter:hover { background: var(--brand-hover); border-color: var(--brand-hover); }
+  a.enter:active { transform: translateY(1px); }
+  a.enter:focus { outline: none; border-color: var(--brand-hover); }
+
+  .wrap { max-width: 760px; margin: 0 auto; padding: 48px 24px;
+    display: flex; flex-direction: column; gap: 24px; }
+  h1 { font-size: 28px; font-weight: 700; margin: 0; }
+  .sub { color: var(--muted); font-size: 16px; line-height: 1.5; }
+  .panel { background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 24px; display: flex; flex-direction: column; gap: 14px; }
+  label { font-size: 15px; color: var(--text); font-weight: 700; letter-spacing: .1px; }
+  input { background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 12px 14px; font: inherit; width: 100%; outline: none;
+    transition: border-color .15s; }
+  input:focus { border-color: var(--brand); }
+  button.primary { background: var(--brand); color: var(--brand-on); border: 1px solid var(--brand);
+    border-radius: 8px; padding: 13px 16px; font: inherit; font-weight: 700;
+    cursor: pointer; transition: background .15s, border-color .15s; }
+  button.primary:hover { background: var(--brand-hover); border-color: var(--brand-hover); }
+  .hint { font-size: 13px; color: var(--muted); }
+  .hint.err { color: #e5484d; }
+  .admin-link {
+    display: inline-flex; align-items: center; justify-content: center;
+    gap: 8px;
+
+    /* Brand CTA */
+    background: var(--brand);
+    border: 1px solid var(--brand);
+    color: var(--brand-on);
+
+    text-decoration: none;
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: .1px;
+    border-radius: 10px;
+    padding: 12px 14px;
+    transition: background .15s, border-color .15s, transform .05s;
+    align-self: flex-start;
+  }
+  .admin-link:hover { background: var(--brand-hover); border-color: var(--brand-hover); }
+  .admin-link:active { transform: translateY(1px); }
+</style>
+<!-- Branding zuletzt: ueberschreibt die :root-Defaults oben. -->
+<!--BRANDING-->
+</head>
+<body>
+
+<div class="topbar">
+  <button class="logout-btn" id="logoutBtn">Abmelden</button>
+</div>
+
+<div class="wrap">
+  <h1>Podcast Studio</h1>
+  <p class="sub">Gib einen Raumnamen ein, um ein Host-Studio zu öffnen. Über den Raumnamen lädst du anschließend deine Gäste ein.</p>
+
+  <div class="panel admin-panel" id="adminPanel" style="display:none">
+    <div style="font-size:15px;font-weight:700; padding-bottom:10px">Admin</div>
+    <a class="admin-link" href="/admin.html" id="adminLink">Admin-Panel öffnen</a>
+  </div>
+
+  <div class="panel">
+    <label for="roomInput">Raumname</label>
+    <input id="roomInput" type="text" placeholder="z. B. podcast-episode-42" spellcheck="false">
+    <p class="hint" id="hint">Erlaubt: Buchstaben, Zahlen, Bindestrich, Unterstrich.</p>
+    <button class="primary" id="goBtn">Host-Studio öffnen →</button>
+  </div>
+
+  <div class="panel" id="roomsPanel" style="display:none">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+      <div>
+        <div style="font-size:15px;font-weight:700">Räume</div>
+        <div class="hint" style="margin-top:4px">Übersicht über alle bestehenden Räume (inkl. live). Archivierte Räume werden ausgeblendet.</div>
+      </div>
+      <button class="logout-btn" id="refreshRoomsBtn" type="button" style="padding:10px 14px">↻ Aktualisieren</button>
+    </div>
+
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+      <button class="logout-btn" id="filterAllBtn" type="button" style="padding:8px 12px">Alle</button>
+      <button class="logout-btn" id="filterLiveBtn" type="button" style="padding:8px 12px">Nur live</button>
+    </div>
+
+    <div id="roomsBox" style="margin-top:12px;font-size:14px;color:var(--muted)">Lade…</div>
+  </div>
+
+  </div>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const input = $('roomInput');
+  const hint  = $('hint');
+
+  function sanitize(s) {
+    return s.trim().replace(/\s+/g, '-').replace(/[^a-zA-Z0-9_-]/g, '');
+  }
+
+  function go() {
+    const room = sanitize(input.value);
+    if (room.length < 2) {
+      hint.textContent = 'Bitte mindestens 2 gültige Zeichen eingeben.';
+      hint.classList.add('err');
+      return;
+    }
+    location.href = `/host.html?room=${encodeURIComponent(room)}`;
+  }
+
+  $('goBtn').addEventListener('click', go);
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
+  input.addEventListener('input',   () => hint.classList.remove('err'));
+  input.focus();
+
+  // Logout
+  $('logoutBtn').addEventListener('click', async () => {
+    await fetch('/logout', { method: 'POST' });
+    location.href = '/login';
+  });
+
+  // Feature 13: Admin-Panel-Link nur fuer Admins zeigen
+  (async () => {
+    try {
+      const me = await (await fetch('/me', { cache: 'no-store' })).json();
+      if (me.role === 'admin') {
+        $('adminPanel').style.display = 'block';
+        $('adminLink').style.display = 'inline-flex';
+      }
+    } catch {}
+  })();
+
+  // Räume laden
+  window.roomsFilter = window.roomsFilter || 'all'; // 'all' | 'live'
+  let roomsFilter = window.roomsFilter;
+  const filterAllBtn  = $('filterAllBtn');
+  const filterLiveBtn = $('filterLiveBtn');
+
+  function syncFilterUi() {
+    if (filterAllBtn)  filterAllBtn.style.borderColor  = roomsFilter === 'all'  ? 'var(--brand)' : 'var(--border)';
+    if (filterLiveBtn) filterLiveBtn.style.borderColor = roomsFilter === 'live' ? 'var(--brand)' : 'var(--border)';
+    if (filterAllBtn)  filterAllBtn.style.color  = roomsFilter === 'all'  ? 'var(--text)' : 'var(--muted)';
+    if (filterLiveBtn) filterLiveBtn.style.color = roomsFilter === 'live' ? 'var(--text)' : 'var(--muted)';
+  }
+
+  if (filterAllBtn) filterAllBtn.addEventListener('click', () => {
+    roomsFilter = 'all';
+    window.roomsFilter = roomsFilter;
+    syncFilterUi();
+    loadRooms();
+  });
+  if (filterLiveBtn) filterLiveBtn.addEventListener('click', () => {
+    roomsFilter = 'live';
+    window.roomsFilter = roomsFilter;
+    syncFilterUi();
+    loadRooms();
+  });
+
+  $('refreshRoomsBtn').addEventListener('click', loadRooms);
+  syncFilterUi();
+  loadRooms();
+  setInterval(loadRooms, 15000);
+
+  // Feature 8: Custom Branding anwenden
+  applyBranding();
+})();
+
+async function loadRooms() {
+  // Use the latest filter value (avoid stale closure when loadRooms runs from setInterval)
+  try {
+    if (typeof window.roomsFilter !== 'undefined') {
+      // Keep local variable in sync if it exists
+      try { roomsFilter = window.roomsFilter; } catch {}
+    }
+  } catch {}
+
+  const box = document.getElementById('roomsBox');
+  const panel = document.getElementById('roomsPanel');
+  try {
+    const res = await fetch('/admin/rooms', { cache: 'no-store' });
+    if (res.status === 401 || res.status === 303) { panel.style.display = 'none'; return; }
+    const data = await res.json();
+    let rooms = (data && data.rooms) ? data.rooms : [];
+
+    // Archivierte Räume ausblenden (Startseite = Navigation, kein Archiv-Browser).
+    rooms = rooms.filter(r => !(r.archived));
+
+    // Optionaler Filter: nur live
+    try {
+      if (typeof roomsFilter !== 'undefined' && roomsFilter === 'live') {
+        rooms = rooms.filter(r => !!r.online);
+      }
+    } catch {}
+
+    // Sortierung: zuletzt erstellt zuerst (Fallback: live zuerst, dann alphabetisch)
+    rooms.sort((a, b) => {
+      const aCreated = (a.created_at ?? a.createdAt ?? 0);
+      const bCreated = (b.created_at ?? b.createdAt ?? 0);
+      if (aCreated !== bCreated) return bCreated - aCreated;
+
+      const ao = a.online ? 0 : 1;
+      const bo = b.online ? 0 : 1;
+      if (ao !== bo) return ao - bo;
+
+      return String(a.room || '').localeCompare(String(b.room || ''), 'de');
+    });
+
+    if (!rooms.length) {
+      panel.style.display = 'block';
+      box.innerHTML = '<div class="hint">Keine Räume gefunden.</div>';
+      return;
+    }
+
+    panel.style.display = 'block';
+    box.innerHTML = '';
+    for (const r of rooms) {
+      const row = document.createElement('div');
+      row.className = 'room-item';
+      row.innerHTML = `
+        <div style="flex:1;min-width:200px">
+          <div class="nm">${escapeHtml(r.room)}</div>
+          <div class="meta">${r.sessions || 0} Session(s) · ${r.size_mb || 0} MB</div>
+        </div>
+        ${r.online ? '<span class="pill live">🟢 online</span>' : '<span class="pill">⚪ offline</span>'}
+        <a class="enter" href="/host.html?room=${encodeURIComponent(r.room)}">Raum öffnen →</a>
+      `;
+      box.appendChild(row);
+    }
+  } catch {
+    panel.style.display = 'none';
+  }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[c]));
+}
+
+async function applyBranding() {
+  try {
+    const b = await (await fetch('/branding', { cache: 'no-store' })).json();
+    if (!b.ok) return;
+    if (b.color) {
+      /* Farben kommen serverseitig aus BRANDING-Block */;
+      // Hover-Farbe automatisch aus Primärfarbe ableiten (leicht heller) + "on brand" Textfarbe per WCAG.
+      try {
+        const hex = String(b.color).trim();
+        const m = /^#([0-9a-fA-F]{6})$/.exec(hex);
+        if (m) {
+          const n = parseInt(m[1], 16);
+          const r = (n >> 16) & 255, g = (n >> 8) & 255, bl = n & 255;
+          const mix = (c) => Math.max(0, Math.min(255, Math.round(c + (255 - c) * 0.18)));
+          const rh = mix(r), gh = mix(g), bh = mix(bl);
+          const hover = '#' + [rh, gh, bh].map(x => x.toString(16).padStart(2, '0')).join('');
+          /* Farben kommen serverseitig aus BRANDING-Block */;
+
+          const srgbToLin = (v) => {
+            const s = v / 255;
+            return s <= 0.04045 ? (s / 12.92) : Math.pow((s + 0.055) / 1.055, 2.4);
+          };
+          const L = 0.2126 * srgbToLin(r) + 0.7152 * srgbToLin(g) + 0.0722 * srgbToLin(bl);
+          const contrast = (L1, L2) => (Math.max(L1, L2) + 0.05) / (Math.min(L1, L2) + 0.05);
+          const cWhite = contrast(L, 1);
+          const cBlack = contrast(L, 0);
+          /* Farben kommen serverseitig aus BRANDING-Block */;
+        }
+      } catch {}
+    }
+    if (b.name) {
+      document.title = b.name + ' · Start';
+      const h = document.querySelector('h1');
+      if (h) h.textContent = b.name;
+    }
+    if (b.favicon) {
+      let link = document.querySelector('link[rel="icon"]');
+      if (!link) { link = document.createElement('link'); link.rel = 'icon'; document.head.appendChild(link); }
+      link.href = b.favicon;
+    }
+  } catch {}
+}
+</script>
+</body>
+</html>

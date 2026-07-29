@@ -1,0 +1,2360 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title id="pageTitle">Podcast Recorder</title>
+<script>
+// Sprint 3: Branding kommt serverseitig im <head> (siehe BRANDING-Block oben).
+// Beim ersten Paint stimmen --brand/--brand-hover/--brand-on bereits -> kein
+// Aufblitzen der Default-Farbe, kein Verstecken der Seite.
+// Dieses Snippet setzt nur noch Titel + Favicon aus window.__BRANDING__ und
+// dient als Fallback, falls die Seite mal ohne SSR ausgeliefert wird.
+(() => {
+  const b = window.__BRANDING__;
+  if (!b || !b.ok) return;
+  try {
+    if (b.name) document.title = document.title.replace(/Podcast Studio/, b.name);
+  } catch {}
+})();
+</script>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #181b22;
+    --border: #2a2f3a;
+    --text: #e8eaed;
+    --muted: #9aa3b2;
+    --accent: #e5484d;
+    --accent-hover: #ff5a60;
+    --ok: #30a46c;
+    --ok-hover: #3cbf7e;
+    --warn: #f59e0b;
+    --warn-hover: #fbb040;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  }
+  .wrap {
+    max-width: 960px; margin: 0 auto; padding: 24px;
+    display: flex; flex-direction: column; gap: 16px;
+  }
+  h1 { font-size: 22px; font-weight: 600; margin: 0; }
+  .sub { color: var(--muted); font-size: 15px; }
+
+  /* Gast-Branding: Logo als ruhiger Mittelpunkt, darunter eine klare Trennlinie. */
+  .guest-brand-head {
+    display: none;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+    margin-bottom: 0;
+    padding-bottom: 18px;
+    border-bottom: 1px solid #3a4250;
+  }
+  .guest-brand-head.has-logo { display: flex; }
+  .guest-brand-head .lobby-brand {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    min-height: 125px;
+    background: transparent;
+  }
+  .guest-brand-head .lobby-brand.show { display: flex; }
+  .guest-brand-head .lobby-brand img {
+    display: block;
+    width: auto;
+    max-width: min(420px, 82vw);
+    height: auto;
+    max-height: 125px;
+    object-fit: contain;
+    background: transparent;
+  }
+  #brandTitle, #sessionInfo { display: none; }
+
+  .guest-name-intro {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+    margin-top: -8px;
+    margin-bottom: -8px;
+  }
+
+  /* Unauffälliger Echtzeit-Verbindungshinweis */
+  .conn-indicator {
+    display: inline-flex; align-items: center; gap: 7px;
+    margin-top: 0; font-size: 13px; color: var(--muted);
+    user-select: none;
+  }
+
+  .name-gate-title {
+    margin: 0;
+    font-size: 18px;
+    line-height: 1.3;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .conn-indicator .conn-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--muted); flex: 0 0 auto;
+    transition: background-color .2s ease, box-shadow .2s ease;
+  }
+  .conn-indicator[data-state="connected"] .conn-dot {
+    background: var(--ok);
+    box-shadow: 0 0 0 3px rgba(48,164,108,0.18);
+  }
+  /* Keep the connection pill semantic green even when branding changes */
+  .conn-indicator[data-state="connected"] .conn-text { color: var(--muted); }
+  .conn-indicator[data-state="connecting"] .conn-dot {
+    background: var(--warn);
+    animation: connPulse 1.1s ease-in-out infinite;
+  }
+  .conn-indicator[data-state="offline"] .conn-dot { background: var(--accent); }
+  .conn-indicator[data-state="offline"] .conn-text { color: var(--accent); }
+  @keyframes connPulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+  @media (prefers-reduced-motion: reduce) {
+    .conn-indicator[data-state="connecting"] .conn-dot { animation: none; }
+  }
+  .panel {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 16px;
+  }
+  video {
+    width: 100%; aspect-ratio: 16/9; background: #000;
+    border-radius: 8px; transform: scaleX(-1);
+    display: block;
+  }
+
+  /* ---------- Hochkant-/Portrait-Anzeige (reine Anzeigeeinstellung) ----------
+     Schaltet die Vorschau auf ein vertikales 9:16-Format um und dreht das
+     Kamerabild aufrecht, falls die Kamera physisch hochkant montiert ist.
+     Es wird NICHTS an der Aufnahme veraendert -- nur die Darstellung. */
+  #videoBox {
+    position: relative; width: 100%;
+    overflow: hidden; border-radius: 8px; background: #000;
+  }
+  /* Hochkant: die Box bekommt 9:16 und eine feste, kompakte Breite, damit
+     sie sich an das Videoformat anpasst (kein breiter Kasten mehr). */
+  body.portrait #videoBox {
+    width: 100%;
+    max-width: 420px;
+    aspect-ratio: 9 / 16;
+    margin: 0;
+  }
+  /* In Portrait wird die Groesse/Drehung des <video> per JS gesetzt. */
+  body.portrait #preview {
+    position: absolute; top: 50%; left: 50%; border-radius: 0;
+  }
+  /* Das Vorschau-Panel selbst soll im Hochkant-Modus nur so breit sein wie
+     noetig (schmiegt sich an die Videobox) statt die ganze Zeile zu fuellen. */
+  body.portrait #previewPanel {
+    width: max-content; max-width: 100%;
+  }
+
+  /* Umschalt-Leiste ueber der Vorschau (nur im Video-Modus sichtbar) */
+  .view-toolbar {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    margin-bottom: 10px;
+  }
+  body.audio-only .view-toolbar { display: none; }
+  .view-toolbar .vt-hint { font-size: 13px; color: var(--muted); }
+  .toggle-btn {
+    background: #0f1115; color: var(--text); border: 1px solid var(--border);
+    border-radius: 999px; padding: 8px 14px; font: inherit; font-size: 14px;
+    font-weight: 600; cursor: pointer; transition: border-color .15s, color .15s, background .15s;
+  }
+  .toggle-btn:hover { border-color: #3a4150; }
+  .toggle-btn.active { border-color: var(--ok); color: var(--ok); background: rgba(48,164,108,0.10); }
+
+  /* ---------- Portrait-Layout: Video links, Anzeigen rechts ---------- */
+  /* WICHTIG: #recorderUI hat ein inline display (per JS gesetzt), darum hier
+     mit !important arbeiten, sonst gewinnt das Inline-Style und das Grid
+     greift nicht -> Video bliebe oben als breiter Kasten stehen. */
+  @media (min-width: 760px) {
+    /* Portrait-Layout (Desktop/Tablet):
+       Oben: [ Video ] [ Pegel ] [ Aufnahmedauer ]
+       Unten: restliche Panels volle Breite (genau so breit wie oben zusammen).
+    */
+
+    /* Container bleibt optisch links „geankert“ */
+    body.portrait #recorderUI {
+      display: flex !important;
+      flex-direction: column !important;
+      gap: 16px;
+      align-items: flex-start;
+    }
+
+    /* Oberer Grid-Block */
+    body.portrait #topGrid {
+      display: grid;
+      grid-template-columns: max-content 52px max-content;
+      gap: 16px;
+      align-items: start;
+      width: max-content;
+      max-width: 100%;
+    }
+
+    body.portrait #topGrid > #previewPanel { grid-column: 1; }
+    body.portrait #topGrid > #vuWrap { grid-column: 2; }
+    body.portrait #topGrid > #durationPanel { grid-column: 3; }
+
+    /* Unterer Block: exakt so breit wie der obere Block */
+    body.portrait #bottomStack {
+      width: max-content;
+      max-width: 100%;
+    }
+
+    /* Panels unten sollen sich in der vorgegebenen Breite sauber umbrechen */
+    body.portrait #bottomStack .panel,
+    body.portrait #bottomStack .warn-banner {
+      width: 100%;
+    }
+
+    /* Pegel: exakt so hoch wie Video */
+    body.portrait #topGrid > #vuWrap {
+      align-self: stretch;
+      justify-self: start;
+      width: 52px;
+      padding: 10px 8px;
+      margin-top: 0;
+      height: var(--vu-h, 520px);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    body.portrait #topGrid > #vuWrap .vu-bar-rot {
+      flex: 1;
+      min-height: 0;
+      height: auto;
+      display: flex;
+      align-items: stretch;
+      justify-content: center;
+    }
+    body.portrait #topGrid > #vuWrap .vu-bar {
+      width: 16px;
+      height: 100%;
+      margin: 0 auto;
+    }
+
+    /* Aufnahmedauer-Panel soll „kompakt“ bleiben */
+    body.portrait #durationPanel {
+      align-self: start;
+      width: max-content;
+    }
+  }
+
+  /* Mobile/kleine Breiten: alles untereinander, Pegelanzeige direkt unter dem Video */
+  @media (max-width: 759px) {
+    body.portrait #vuWrap { margin-top: 12px; }
+  }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+  select, button, input {
+    background: #0f1115; color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 12px; font: inherit;
+  }
+  select { min-width: 0; max-width: 100%; width: 100%; text-overflow: ellipsis; }
+  /* Geraete-Auswahlfelder: flexibel, duerfen schrumpfen (min-width:0!), damit
+     lange Geraetenamen das Feld nicht ueber den Container hinaus dehnen. */
+  .dev-field { flex: 1 1 200px; min-width: 0; }
+  body.portrait .dev-field { flex: 1 1 100%; }
+  button {
+    cursor: pointer; font-weight: 600;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  button:hover:not(:disabled) { border-color: #3a4150; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  .dot {
+    display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+    background: var(--accent); margin-right: 8px; vertical-align: middle;
+    animation: pulse 1.2s infinite;
+  }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
+  .stat { background: #0f1115; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+  .stat .k { color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .stat .v { font-size: 18px; font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .log {
+    background: #0f1115; border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 12px; height: 140px; overflow-y: auto;
+    font-family: "JetBrains Mono", monospace; font-size: 14px; color: var(--muted);
+  }
+  .log .ok { color: var(--ok); }
+  .log .err { color: var(--accent); }
+  label { font-size: 14px; color: var(--muted); display: block; margin-bottom: 4px; }
+
+  /* ---------- VU-Meter ---------- */
+  .vu-wrap { margin-top: 12px; }
+  .vu-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  .vu-label { font-size: 14px; color: var(--muted); }
+  .vu-peak { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .vu-peak.clip { color: var(--accent); font-weight: 600; }
+  .vu-bar {
+    position: relative; height: 14px; background: #0f1115;
+    border: 1px solid var(--border); border-radius: 6px; overflow: hidden;
+  }
+  .vu-fill {
+    height: 100%; width: 0%;
+    background: var(--ok);
+    transition: background-color 80ms linear;
+  }
+  .vu-fill.warn { background: var(--warn); }
+  .vu-fill.clip { background: var(--accent); }
+  .vu-marker {
+    position: absolute; top: 0; bottom: 0; width: 2px;
+    background: rgba(255,255,255,0.25);
+  }
+  /* Gelb ab 50%, Rot ab 90% */
+  .vu-marker.m50 { left: 50%; }
+  .vu-marker.m90 { left: 90%; }
+  .vu-hint { font-size: 13px; color: var(--muted); margin-top: 4px; }
+
+  /* ---------- VU-Meter im Hochkant-Modus: echter vertikaler Balken ----------
+     Der Balken waechst von UNTEN nach oben. Die Fuellung wird per JS ueber
+     height (statt width) gesteuert. Der Balken fuellt den verfuegbaren Platz;
+     die Gesamthoehe des Panels wird per --vu-h an die Videohoehe gekoppelt. */
+  body.portrait .vu-bar {
+    width: 16px;
+    height: 100%;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column-reverse; /* Fuellung waechst von unten */
+    transform: none;
+  }
+  body.portrait .vu-fill {
+    width: 100%;
+    height: 0%;
+    transition: background-color 80ms linear;
+  }
+  /* Marker im vertikalen Balken: 50% / 90% von UNTEN gemessen. */
+  body.portrait .vu-marker {
+    top: auto; bottom: 0; left: 0; right: 0;
+    width: auto; height: 2px;
+  }
+  body.portrait .vu-marker.m50 { bottom: 50%; }
+  body.portrait .vu-marker.m90 { bottom: 90%; }
+  /* Wrapper streckt den Balken vertikal ueber den verbleibenden Platz. */
+  body.portrait .vu-bar-rot {
+    flex: 1; min-height: 0; height: auto;
+    display: flex; align-items: stretch; justify-content: center;
+  }
+  body.portrait .vu-head { flex-direction: column; align-items: flex-start; gap: 2px; }
+  body.portrait .vu-label, body.portrait .vu-peak { white-space: normal; word-break: break-word; }
+
+  /* Portrait-TopGrid erzwingt vertikale Darstellung (auch im Audio-only). */
+  body.portrait #topGrid #vuWrap .vu-bar { height: 100% !important; width: 16px !important; }
+  body.portrait #topGrid #vuWrap .vu-fill { width: 100% !important; height: 0%; }
+  body.portrait #topGrid #vuWrap .vu-marker { left: 0; right: 0; width: auto; height: 2px; top: auto; }
+  body.portrait #topGrid #vuWrap .vu-marker.m50 { bottom: 50%; left: 0; }
+  body.portrait #topGrid #vuWrap .vu-marker.m90 { bottom: 90%; left: 0; }
+
+  /* ---------- Warn-Banner bei laufender Aufnahme ---------- */
+  .warn-banner {
+    display: none;
+    background: rgba(229,72,77,0.12);
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    padding: 10px 12px;
+    color: var(--text);
+    font-size: 15px;
+    line-height: 1.5;
+  }
+  .warn-banner.show { display: block; }
+  .warn-banner b { color: var(--accent); }
+
+  /* ---------- Host-gesteuerter Modus-Hinweis (read-only fuer den Gast) ---------- */
+  .host-info {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+    font-size: 14px; color: var(--muted); margin-bottom: 10px;
+  }
+  .host-info .badge {
+    border: 1px solid var(--border); border-radius: 999px; padding: 4px 12px;
+    background: #0f1115; color: var(--text); font-weight: 600;
+  }
+  .host-info .badge.audio { border-color: var(--warn); color: var(--warn); }
+  .host-info .badge.video { border-color: var(--ok); color: var(--ok); }
+
+  /* ---------- Audio-only (Default, host-gesteuert) ----------
+     Im Audio-Only-Modus wird KEIN Videorahmen angezeigt:
+     - Das komplette Vorschau-Panel wird ausgeblendet (kein schwarzer Rahmen).
+     - Kamera-Auswahl wird ausgeblendet. */
+  .audio-placeholder {
+    display: none; width: 100%; border-radius: 8px;
+    background: #0f1115; border: 1px solid var(--border);
+    align-items: center; justify-content: center; flex-direction: column; gap: 8px;
+    color: var(--muted); font-size: 16px; padding: 28px 16px;
+  }
+  .audio-placeholder .ico { font-size: 48px; }
+
+  body.audio-only #previewPanel { display: none !important; }
+  body.audio-only #preview { display: none !important; }
+  body.audio-only #camRow { display: none !important; }
+  /* Video-Modus: Platzhalter aus, Video an */
+  body:not(.audio-only) .audio-placeholder { display: none !important; }
+
+  /* ---------- Debug-Panels: nur sichtbar, wenn der HOST Debug-Level > 0 setzt ---------- */
+  #debugPanels { display: none; flex-direction: column; gap: 16px; }
+  body.debug #debugPanels { display: flex; }
+
+  /* ---------- Countdown-Overlay ---------- */
+  .countdown-overlay {
+    position: fixed; inset: 0; z-index: 1000;
+    display: none; align-items: center; justify-content: center; flex-direction: column;
+    background: rgba(8,10,14,0.92); backdrop-filter: blur(4px);
+    color: var(--text); text-align: center;
+  }
+  .countdown-overlay.show { display: flex; }
+  .countdown-overlay .cd-label { font-size: 24px; color: var(--muted); margin-bottom: 8px; letter-spacing: 1px; }
+  .countdown-overlay .cd-num {
+    font-size: 200px; font-weight: 800; line-height: 1;
+    font-variant-numeric: tabular-nums; color: var(--accent);
+  }
+  .countdown-overlay .cd-num.go { color: var(--ok); font-size: 120px; }
+  @keyframes cdPop {
+    0%   { transform: scale(0.4); opacity: 0; }
+    25%  { transform: scale(1.12); opacity: 1; }
+    100% { transform: scale(1); opacity: 1; }
+  }
+  .countdown-overlay .cd-num.pop { animation: cdPop 0.9s ease-out; }
+</style>
+<!-- Branding zuletzt: ueberschreibt die :root-Defaults oben. -->
+<!--BRANDING-->
+</head>
+<body class="audio-only">
+<div class="wrap">
+  <div class="guest-brand-head">
+    <div class="lobby-brand" id="lobbyBrand" aria-label="Marke des Aufnahmestudios">
+      <img id="lobbyBrandImg" alt="" />
+    </div>
+  </div>
+
+  <div class="guest-name-intro">
+    <!-- Unauffälliger Verbindungshinweis: zeigt, dass der Echtzeit-Kanal steht. -->
+    <div class="conn-indicator" id="connIndicator" data-state="connecting" role="status" aria-live="polite">
+      <span class="conn-dot" aria-hidden="true"></span>
+      <span class="conn-text" id="connText">verbinde…</span>
+    </div>
+  </div>
+
+  <!-- Name-Gate: wird angezeigt, bis der Gast seinen Namen eingegeben hat -->
+  <div class="panel" id="nameGate">
+    <h1 class="name-gate-title">Bitte Namen eingeben</h1>
+    <div class="row" style="margin-top: 8px;">
+      <input id="nameInput" type="text" placeholder="z.B. Anna Schmidt" autocomplete="name"
+             style="flex:1; min-width: 220px;" maxlength="60" />
+      <button id="nameBtn">Weiter</button>
+    </div>
+    <div class="sub" id="nameHint" style="margin-top: 8px;">
+      Erlaubt: Buchstaben, Zahlen, Leerzeichen, Bindestrich.
+    </div>
+  </div>
+
+  <!-- Recorder-UI: bleibt versteckt, bis Name eingegeben wurde -->
+  <div id="recorderUI" style="display: none; flex-direction: column; gap: 16px;">
+
+    <!-- Portrait-Layout: oberer Block (Video + Pegel + Dauer) -->
+    <div id="topGrid">
+
+      <!-- Vorschau-Panel: im Audio-Only-Modus komplett ausgeblendet (kein schwarzer Rahmen) -->
+      <div class="panel" id="previewPanel">
+      <div class="view-toolbar" id="viewToolbar">
+        <button id="portraitBtn" class="toggle-btn" type="button" aria-pressed="false">Hochkant-Ansicht</button>
+        <button id="flip180Btn" class="toggle-btn" type="button" aria-pressed="false" style="display:none;">Um 180° drehen</button>
+      </div>
+      <div id="videoBox">
+        <video id="preview" autoplay muted playsinline></video>
+      </div>
+    </div>
+
+    <div class="panel" id="vuWrap">
+      <div class="vu-wrap" style="margin-top:0;">
+        <div class="vu-head">
+          <span class="vu-label">Mikrofon-Pegel</span>
+          <span class="vu-peak" id="vuPeak">−∞ dB</span>
+        </div>
+        <div class="vu-bar-rot">
+          <div class="vu-bar">
+            <div class="vu-fill" id="vuFill"></div>
+            <div class="vu-marker m50" title="Gelb ab 50%"></div>
+            <div class="vu-marker m90" title="Clipping-Warnung"></div>
+          </div>
+        </div>
+        <div class="vu-hint" id="vuHint">Ziel: regelmäßig im gelben Bereich, nie im roten.</div>
+      </div>
+    </div>
+
+    <div class="panel" id="durationPanel">
+      <div class="stat" style="min-width: 160px;">
+        <div class="k">Aufnahmedauer</div><div class="v" id="duration">00:00</div>
+      </div>
+    </div>
+
+    </div> <!-- /#topGrid -->
+
+    <div id="bottomStack">
+
+      <!-- Warn-Banner: nur sichtbar, solange Aufnahme/Upload läuft -->
+      <div class="warn-banner" id="warnBanner">
+        <b>Aufnahme läuft.</b> Bitte schließe diesen Tab oder Browser <b>nicht</b>, bevor alle Chunks hochgeladen sind — sonst geht der Rest der Aufnahme verloren.
+      </div>
+
+      <!-- Debug-Panels: NUR sichtbar, wenn der Host ein Debug-Level > 0 setzt -->
+      <div id="debugPanels">
+        <div class="panel">
+          <div class="stats">
+            <div class="stat"><div class="k">Dauer</div><div class="v" id="durationDbg">00:00</div></div>
+            <div class="stat"><div class="k">Chunks</div><div class="v" id="chunkCount">0</div></div>
+            <div class="stat"><div class="k">Aufgenommen</div><div class="v" id="recSize">0 MB</div></div>
+            <div class="stat"><div class="k">Hochgeladen</div><div class="v" id="upSize">0 MB</div></div>
+            <div class="stat"><div class="k">Queue</div><div class="v" id="queueLen">0</div></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <label>Log (Debug, vom Host aktiviert)</label>
+          <div class="log" id="log"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <!-- Read-only: zeigt dem Gast, was der HOST eingestellt hat -->
+        <div class="host-info">
+          <span>Vom Host gesteuert:</span>
+          <span class="badge audio" id="modeBadge">Nur Audio</span>
+          <span id="ctrlHint">Start &amp; Stopp übernimmt der Host.</span>
+        </div>
+
+        <!-- Audio-Only-Hinweis statt Videorahmen -->
+      <div class="audio-placeholder" id="audioPlaceholder">
+        <div class="ico">Audio</div>
+        <div>Audio-Only-Modus — keine Kamera aktiv. Achte auf deinen Mikrofon-Pegel unten.</div>
+      </div>
+
+      <div class="row" style="margin-bottom: 12px;">
+        <div id="camRow" class="dev-field">
+          <label>Kamera</label>
+          <select id="camSel"></select>
+        </div>
+        <div class="dev-field">
+          <label>Mikrofon</label>
+          <select id="micSel"></select>
+        </div>
+        <div class="dev-field">
+          <label>Tonausgabe (Lautsprecher)</label>
+          <select id="spkSel"></select>
+        </div>
+      </div>
+      <div class="row">
+        <span id="status" class="sub">Initialisiere…</span>
+      </div>
+    </div>
+
+    </div> <!-- /#bottomStack -->
+
+  </div>
+</div>
+
+<!-- Countdown-Overlay: grosser, nicht zu uebersehender 3-2-1-Countdown -->
+<div class="countdown-overlay" id="countdownOverlay">
+  <div class="cd-label" id="cdLabel">Aufnahme startet in…</div>
+  <div class="cd-num pop" id="cdNum">3</div>
+</div>
+
+<script>
+(() => {
+  // ---------- Config ----------
+  const CHUNK_MS = 5000;                 // 5s pro Chunk
+  const VIDEO_BITRATE = 5_000_000;       // 5 Mbit/s Video
+  const AUDIO_BITRATE = 192_000;         // 192 kbit/s Audio
+  const AUDIO_SAMPLE_RATE = 48000;       // 48 kHz
+  const SERVER = location.origin;        // gleicher Host wie Server
+
+  // ---------- Video-Codec-Auswahl (Feature 9) ----------
+  // Standard: VP8/VP9 in einem WebM-Container (Chrome, Edge, Firefox).
+  // Fallback: H.264 in MP4 fuer Safari, der WebM/VP8/9 nicht aufnehmen kann.
+  // Der Server transkodiert ohnehin nach WAV und erzeugt zusaetzlich eine
+  // H.264-MP4. Wir liefern hier also bevorzugt das, was der Browser sauber
+  // produzieren kann.
+  function pickVideoMime() {
+    if (typeof MediaRecorder === "undefined" ||
+        typeof MediaRecorder.isTypeSupported !== "function") {
+      return { mime: "", ext: "webm", label: "Standard (Browser-Default)" };
+    }
+    const candidates = [
+      { mime: "video/webm;codecs=vp9,opus", ext: "webm", label: "VP9 / Opus (WebM)" },
+      { mime: "video/webm;codecs=vp8,opus", ext: "webm", label: "VP8 / Opus (WebM)" },
+      { mime: "video/webm",                 ext: "webm", label: "WebM (Browser-Default)" },
+      // Safari-Fallback: H.264 (teils als MP4-Container).
+      { mime: "video/mp4;codecs=h264,aac",  ext: "webm", label: "H.264 / AAC (Safari-Fallback)" },
+      { mime: "video/mp4",                  ext: "webm", label: "MP4 (Safari-Fallback)" },
+    ];
+    for (const c of candidates) {
+      if (MediaRecorder.isTypeSupported(c.mime)) return c;
+    }
+    return { mime: "", ext: "webm", label: "Standard (Browser-Default)" };
+  }
+
+  // ---------- Session aus Token ----------
+  // Der Raum steckt im Token – nicht in der URL.
+  // Wir lesen room erst nach erfolgreicher Token-Aufloesung.
+  const params = new URLSearchParams(location.search);
+  const guestToken = params.get("token") || "";
+
+  let room = null;           // wird durch resolveToken() gesetzt
+  let guest = null;          // wird durch Name-Gate gesetzt
+  let displayName = null;    // Original-Name fuer Anzeige
+  // Session-ID kommt vom Host (command.session). Fallback nur für sehr alte Hosts.
+  let sessionId = "";
+
+  // Token beim Server pruefen und Raum ermitteln
+  async function resolveToken() {
+    if (!guestToken) { location.href = "/token_error.html"; return false; }
+    try {
+      const res  = await fetch(`${SERVER}/token/resolve?token=${encodeURIComponent(guestToken)}`);
+      if (!res.ok) { location.href = "/token_error.html"; return false; }
+      const data = await res.json();
+      if (!data.ok) { location.href = "/token_error.html"; return false; }
+      room = data.room;
+      const daysLeft = Math.ceil((data.expires_at - Date.now() / 1000) / 86400);
+
+      // Nur solange der Gast noch keinen Namen bestätigt hat, den Hinweis zeigen.
+      // Sobald guest gesetzt ist, darf dieser Text nie wieder den Header überschreiben.
+      if (!guest) {
+        const sessionInfo = $("sessionInfo");
+        if (sessionInfo) {
+          sessionInfo.textContent = `Link gültig noch ${daysLeft} Tag(e). Gib deinen Namen ein.`;
+        }
+      }
+      return true;
+    } catch { location.href = "/token_error.html"; return false; }
+  }
+
+  // ---------- State ----------
+  let stream = null;
+  let recorder = null;
+  let isRecording = false;
+  let mediaExt = "webm";     // Endung der MediaRecorder-Chunks (Feature 9)
+  let portrait = false;      // Hochkant-Anzeige (reine Anzeigeeinstellung)
+  let flip180 = false;       // zusaetzliche 180-Grad-Drehung (Kamera andersrum montiert)
+  // Host-gesteuerte Einstellungen (Gast hat KEINE eigene Kontrolle darueber):
+  let audioOnly = true;      // Default = Audio-Only (kann der Host abschalten)
+  let debugLevel = 0;        // 0 = aus; >0 = Log/Stats sichtbar
+  let countingDown = false;  // laeuft gerade das Countdown-Overlay?
+  let startTs = 0;
+  let durationTimer = null;
+  let chunkIndex = 0;
+  let recBytes = 0;
+  let upBytes = 0;
+
+  // Upload-Queue im RAM (schnell) + optional gespiegelt in IndexedDB (crash-safe)
+  const uploadQueue = [];
+  let uploaderRunning = false;
+
+  // ---------- Helpers ----------
+  const $ = id => document.getElementById(id);
+
+  // Branding bereits im <head> serverseitig verfügbar: kein zusätzlicher
+  // Request und kein sichtbares Nachladen in der Gast-Lobby.
+  (() => {
+    const b = window.__BRANDING__;
+    const wrap = $("lobbyBrand");
+    const img = $("lobbyBrandImg");
+    if (!wrap || !img || !b || !b.ok || !b.favicon) return;
+    img.src = b.favicon;
+    img.alt = b.name || "";
+    wrap.classList.add("show");
+  })();
+
+  const fmtMB = b => (b / 1024 / 1024).toFixed(2) + " MB";
+  const fmtTime = ms => {
+    const s = Math.floor(ms / 1000);
+    return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
+  };
+  let consoleBuf = [];
+  function log(msg, cls="") {
+    const el = $("log");
+    if (!el) return;
+    const line = document.createElement("div");
+    line.className = cls;
+    line.textContent = new Date().toLocaleTimeString() + "  " + msg;
+    el.appendChild(line);
+    el.scrollTop = el.scrollHeight;
+    try {
+      consoleBuf.push({ ts: Date.now()/1000, level: cls || 'info', msg: String(msg).slice(0,400) });
+      if (consoleBuf.length > 400) consoleBuf = consoleBuf.slice(-300);
+    } catch {}
+  }
+  function setStatus(s) { const el = $("status"); if (el) el.textContent = s; }
+
+  // ---------- Host-gesteuerte Einstellungen anwenden ----------
+  // audio_only + debug_level kommen ausschliesslich vom Host (via /poll).
+  // Der Gast kann sie nicht selbst aendern.
+  function applyHostSettings(s) {
+    if (!s) return;
+
+    if (typeof s.audio_only === "boolean") {
+      const changed = (s.audio_only !== audioOnly);
+      audioOnly = s.audio_only;
+      // IMMER setzen (nicht nur bei Aenderung), damit die Klasse auch beim
+      // allerersten Heartbeat sicher gesetzt ist (Default true == Server true).
+      document.body.classList.toggle("audio-only", audioOnly);
+      const badge = $("modeBadge");
+      if (badge) {
+        badge.textContent = audioOnly ? "Nur Audio" : "Video + Audio";
+        badge.classList.toggle("audio", audioOnly);
+        badge.classList.toggle("video", !audioOnly);
+      }
+      if (changed) {
+        log(audioOnly ? "Host-Modus: Nur Audio" : "Host-Modus: Video + Audio", "ok");
+        // Im Audio-Only-Modus ergibt die Hochkant-Anzeige keinen Sinn.
+        if (audioOnly && portrait) setPortrait(false);
+        // Vorschau-Stream neu aufbauen, solange keine Aufnahme laeuft
+        if (stream && !isRecording) startPreview();
+      }
+    }
+
+    if (typeof s.debug_level === "number" && s.debug_level !== debugLevel) {
+      debugLevel = s.debug_level;
+      document.body.classList.toggle("debug", debugLevel > 0);
+      log("Host-Debug-Level: " + debugLevel, "ok");
+    }
+  }
+
+  // ---------- Hochkant-Anzeige (reine Anzeigeeinstellung, Feature 9) ----------
+  // Schaltet die Vorschau auf 9:16. Das Kamerabild ist meist physisch im
+  // Querformat (z.B. Kamera um 90 Grad gedreht montiert) -- wir drehen es per
+  // CSS aufrecht und skalieren so, dass es das Portrait-Fenster fuellt.
+  // WICHTIG: Es wird ausschliesslich die ANZEIGE veraendert. Der aufgenommene
+  // Stream und die hochgeladenen Chunks bleiben voellig unberuehrt.
+  function applyPortraitLayout() {
+    const v = $("preview");
+    if (!v) return;
+    const vuWrap = $("vuWrap");
+    const box = $("videoBox");
+
+    // Immer die VU-Hoehe koppeln, sobald Portrait aktiv ist (auch im Audio-only).
+    // Dadurch bleibt der Pegel im Portrait-Layout exakt so hoch wie die Videobox,
+    // selbst wenn das Video-Panel ausgeblendet ist.
+    if (portrait) {
+      const boxH = box ? box.clientHeight : 0;
+      const boxW = box ? box.clientWidth : 0;
+      let vuH = boxH;
+      if (!vuH) vuH = Math.round((boxW || 420) * 16 / 9);
+      if (vuWrap && vuH) vuWrap.style.setProperty("--vu-h", vuH + "px");
+    } else {
+      if (vuWrap) vuWrap.style.removeProperty("--vu-h");
+    }
+
+    if (!portrait || audioOnly) {
+      // Zuruecksetzen auf Standard-Querformat-Anzeige.
+      v.style.transform = "scaleX(-1)";
+      v.style.width = "";
+      v.style.height = "";
+      return;
+    }
+
+    const vw = v.videoWidth || 1280;
+    const vh = v.videoHeight || 720;
+    // Wir drehen das (querformatige) Bild um 90 Grad -> es steht hochkant.
+    // Danach so skalieren, dass die gedrehte Breite (= Originalhoehe) die
+    // Box-Hoehe fuellt. Spiegelung (scaleX(-1)) bleibt erhalten, damit sich
+    // der Gast wie im Spiegel sieht.
+    const boxH = box ? box.clientHeight : 0;
+    const boxW = box ? box.clientWidth : 0;
+    // Das gedrehte Bild hat Breite=vh, Hoehe=vw. Cover-Skalierung:
+    const scale = Math.max(boxW / vh, boxH / vw) || 1;
+    // Grunddrehung 90 Grad fuer Hochkant; optionale +180 Grad, falls die
+    // Kamera physisch in die andere Richtung gedreht montiert ist.
+    const rot = 90 + (flip180 ? 180 : 0);
+    v.style.width = vw + "px";
+    v.style.height = vh + "px";
+    v.style.transform =
+      `translate(-50%, -50%) rotate(${rot}deg) scale(${scale}) scaleX(-1)`;
+    v.style.transformOrigin = "center center";
+
+    // Pegelbalken an die tatsaechliche Hoehe der Videobox koppeln.
+    // Falls die Box noch keine Hoehe kennt (erster Layout-Tick), aus der
+    // Breite via 9:16 ableiten -- sonst stuende der Balken kurz ohne Hoehe da.
+    let vuH = boxH;
+    if (!vuH) vuH = Math.round((boxW || 300) * 16 / 9);
+    if (vuWrap && vuH) vuWrap.style.setProperty("--vu-h", vuH + "px");
+  }
+
+  function setPortrait(on) {
+    portrait = !!on;
+    document.body.classList.toggle("portrait", portrait);
+    const btn = $("portraitBtn");
+    if (btn) {
+      btn.classList.toggle("active", portrait);
+      btn.setAttribute("aria-pressed", portrait ? "true" : "false");
+      btn.textContent = portrait ? "Querformat-Ansicht" : "Hochkant-Ansicht";
+    }
+    // 180-Grad-Button nur im Hochkant-Modus anbieten.
+    const fbtn = $("flip180Btn");
+    if (fbtn) fbtn.style.display = portrait ? "" : "none";
+    if (!portrait && flip180) setFlip180(false);
+    applyPortraitLayout();
+    // Nach dem CSS-Reflow (aspect-ratio der Videobox) die echte Box-Hoehe
+    // messen und die Pegelbalken-Hoehe exakt nachziehen.
+    if (portrait) requestAnimationFrame(() => applyPortraitLayout());
+  }
+
+  function setFlip180(on) {
+    flip180 = !!on;
+    const fbtn = $("flip180Btn");
+    if (fbtn) {
+      fbtn.classList.toggle("active", flip180);
+      fbtn.setAttribute("aria-pressed", flip180 ? "true" : "false");
+    }
+    applyPortraitLayout();
+  }
+
+  // ---------- Countdown-Overlay ----------
+  // Grosser, formatfuellender 3-2-1-Countdown, danach kurz "● Aufnahme!".
+  // onDone() wird genau einmal aufgerufen, wenn der Countdown durchgelaufen ist.
+  let cdTimer = null;
+  function runCountdown(seconds, onDone) {
+    const ov = $("countdownOverlay");
+    const num = $("cdNum");
+    const lbl = $("cdLabel");
+    if (cdTimer) { clearInterval(cdTimer); cdTimer = null; }
+    countingDown = true;
+    let n = Math.max(1, Math.ceil(seconds));
+    lbl.textContent = "Aufnahme startet in…";
+    num.classList.remove("go");
+    num.textContent = n;
+    ov.classList.add("show");
+    const tick = () => {
+      num.classList.remove("pop"); void num.offsetWidth; num.classList.add("pop");
+    };
+    tick();
+    cdTimer = setInterval(() => {
+      n--;
+      if (n > 0) {
+        num.textContent = n;
+        tick();
+      } else {
+        clearInterval(cdTimer); cdTimer = null;
+        num.classList.add("go");
+        num.textContent = "● Aufnahme!";
+        lbl.textContent = "";
+        tick();
+        setTimeout(() => {
+          ov.classList.remove("show");
+          countingDown = false;
+          if (typeof onDone === "function") onDone();
+        }, 800);
+      }
+    }, 1000);
+  }
+  function cancelCountdown() {
+    if (cdTimer) { clearInterval(cdTimer); cdTimer = null; }
+    countingDown = false;
+    $("countdownOverlay").classList.remove("show");
+  }
+
+  // ---------- Devices ----------
+  // Sprint 3: Geraetelisten werden diff-basiert aktualisiert. Ein kompletter
+  // Rebuild der <select>-Elemente wuerde die Auswahl des Gastes verwerfen und
+  // (waehrend "devicechange" feuert) den Stream unnoetig neu binden.
+  function devicesSig(list) {
+    return list.map(d => `${d.deviceId}|${d.label || ''}`).join('~');
+  }
+
+  // Aktualisiert ein <select> nur, wenn sich die Geraeteliste wirklich geaendert
+  // hat. Gibt zurueck, ob die zuvor gewaehlte deviceId verschwunden ist.
+  function syncSelect(sel, list, fallbackLabel) {
+    if (!sel) return { changed: false, lost: false };
+    const sig = devicesSig(list);
+    if (sel.dataset.sig === sig) return { changed: false, lost: false };
+    sel.dataset.sig = sig;
+
+    const prev = sel.value;
+    sel.innerHTML = "";
+    list.forEach(d => sel.add(new Option(d.label || fallbackLabel, d.deviceId)));
+    const stillThere = list.some(d => d.deviceId === prev);
+    if (prev && stillThere) sel.value = prev;
+    return { changed: true, lost: !!prev && !stillThere };
+  }
+
+  async function listDevices() {
+    const devs = await navigator.mediaDevices.enumerateDevices();
+    const cams = devs.filter(d => d.kind === "videoinput");
+    const mics = devs.filter(d => d.kind === "audioinput");
+    const spks = devs.filter(d => d.kind === "audiooutput");
+    const camSel = $("camSel"), micSel = $("micSel"), spkSel = $("spkSel");
+
+    syncSelect(camSel, cams, "Kamera");
+    const micRes = syncSelect(micSel, mics, "Mikrofon");
+
+    // Tonausgabe-Auswahl: nur sinnvoll, wenn der Browser setSinkId unterstuetzt
+    const canSink = typeof HTMLMediaElement !== "undefined" &&
+                    "setSinkId" in HTMLMediaElement.prototype;
+    if (canSink && spks.length) {
+      spkSel.disabled = false;
+      syncSelect(spkSel, spks, "Lautsprecher");
+    } else if (spkSel.dataset.sig !== "default") {
+      spkSel.dataset.sig = "default";
+      spkSel.innerHTML = "";
+      spkSel.add(new Option("Standard (Systemausgabe)", "default"));
+      spkSel.disabled = true;
+    }
+    return micRes;
+  }
+
+  // Reagiert auf ein-/ausgestoepselte Geraete (USB-Mikro, Interface, Headset).
+  // Der Browser feuert "devicechange"; Labels sind nur nach erteilter
+  // Permission gefuellt, daher registrieren wir den Listener erst nach init().
+  let deviceChangeTimer = null;
+  function watchDeviceChanges() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.addEventListener) return;
+    navigator.mediaDevices.addEventListener("devicechange", () => {
+      // Manche Browser feuern mehrfach kurz hintereinander -> entprellen.
+      clearTimeout(deviceChangeTimer);
+      deviceChangeTimer = setTimeout(onDeviceChange, 350);
+    });
+  }
+
+  async function onDeviceChange() {
+    let res;
+    try {
+      res = await listDevices();
+    } catch (err) {
+      log("Geräteliste konnte nicht aktualisiert werden: " + err.message, "err");
+      return;
+    }
+    if (!res || !res.changed) return;
+
+    log("Geräteliste aktualisiert.", "ok");
+
+    if (res.lost) {
+      // Das aktive Mikrofon ist weg -> auf das erste verfuegbare wechseln.
+      const sel = $("micSel");
+      const next = sel && sel.options[0];
+      if (next) {
+        sel.value = next.value;
+        showMicToast("Mikrofon getrennt — jetzt aktiv: " + next.text, "info");
+        log("Mikrofon getrennt, wechsle auf: " + next.text, "info");
+        if (stream) { try { await startPreview(); } catch {} }
+      } else {
+        showMicToast("Kein Mikrofon mehr verfügbar.", "err");
+        log("Kein Mikrofon mehr verfügbar.", "err");
+      }
+    } else {
+      showMicToast("Geräteliste aktualisiert.", "ok");
+    }
+
+    // Host sofort das neue Inventar melden (statt bis zum naechsten Takt zu warten).
+    try { heartbeat(); } catch {}
+  }
+
+  // Liefert das aktuell ausgewaehlte Mikrofon-Label (aus dem aktiven Track,
+  // sonst aus dem <select>). Fallback "unbekannt", solange keine Permission.
+  function currentMicLabel() {
+    try {
+      const t = stream && stream.getAudioTracks && stream.getAudioTracks()[0];
+      if (t && t.label) return t.label;
+    } catch {}
+    const sel = $("micSel");
+    const txt = sel && sel.options[sel.selectedIndex] && sel.options[sel.selectedIndex].text;
+    return txt && txt !== "Mikrofon" ? txt : "unbekannt";
+  }
+
+  function currentSpeakerLabel() {
+    const sel = $("spkSel");
+    const txt = sel && sel.options[sel.selectedIndex] && sel.options[sel.selectedIndex].text;
+    return txt || "Standard";
+  }
+
+  // ---------- Sprint 2: Host waehlt Gast-Mikrofon ----------
+  // Inventar + aktuelles Geraet werden aus dem <select id="micSel"> abgeleitet,
+  // das listDevices() nach der Permission befuellt.
+  function micInventory() {
+    const sel = $("micSel");
+    if (!sel) return [];
+    return Array.from(sel.options)
+      .filter(o => o.value)
+      .map(o => ({ deviceId: o.value, label: o.text || "Mikrofon" }));
+  }
+  function currentMicDeviceId() {
+    const sel = $("micSel");
+    return (sel && sel.value) || "";
+  }
+
+  // Letztes Wechsel-Ergebnis fuer den Host (wird einmalig im Heartbeat gemeldet
+  // und danach zurueckgesetzt, damit alte Meldungen nicht kleben bleiben).
+  let micLastResult = null;
+  // ID eines aufgeschobenen Wechsels (waehrend laufender Aufnahme, Option A).
+  let deferredMicCmd = null;
+  let lastMicCmdIssued = 0;   // Idempotenz gegen wiederholte Auslieferung
+
+  // Kleiner, unaufdringlicher Toast fuer den Gast.
+  function showMicToast(text, kind) {
+    let t = $("micToast");
+    if (!t) {
+      t = document.createElement("div");
+      t.id = "micToast";
+      t.style.cssText =
+        "position:fixed;left:50%;bottom:24px;transform:translateX(-50%);" +
+        "max-width:88vw;padding:12px 18px;border-radius:10px;font-size:14px;" +
+        "font-weight:600;z-index:9999;box-shadow:0 6px 24px rgba(0,0,0,.35);" +
+        "opacity:0;transition:opacity .2s ease;pointer-events:none;";
+      document.body.appendChild(t);
+    }
+    const col = kind === "err" ? "#e5484d" : kind === "info" ? "#f59e0b" : "#30a46c";
+    t.style.background = "#181b22";
+    t.style.color = "#e8eaed";
+    t.style.border = "1px solid " + col;
+    t.textContent = text;
+    // Fade in, dann nach 3.2s wieder aus.
+    requestAnimationFrame(() => { t.style.opacity = "1"; });
+    clearTimeout(t._hideTimer);
+    t._hideTimer = setTimeout(() => { t.style.opacity = "0"; }, 3200);
+  }
+
+  // Wendet einen konkreten Mic-Wechsel an: setzt das <select> und bindet den
+  // Stream neu (via startPreview). Meldet Ergebnis an den Host zurueck.
+  async function applyMicChange(deviceId, label) {
+    const sel = $("micSel");
+    if (!sel) return;
+    const has = Array.from(sel.options).some(o => o.value === deviceId);
+    if (!has) {
+      // Geraet nicht (mehr) vorhanden -> neu einlesen und erneut versuchen.
+      try { await listDevices(); } catch {}
+    }
+    const still = Array.from(sel.options).some(o => o.value === deviceId);
+    if (!still) {
+      micLastResult = { ok: false, error: "Gerät nicht gefunden", label: label || "" };
+      showMicToast("Mikrofon nicht gefunden — Wechsel abgebrochen.", "err");
+      heartbeat();
+      return;
+    }
+    sel.value = deviceId;
+    const shownLabel = (sel.options[sel.selectedIndex] && sel.options[sel.selectedIndex].text) || label || "Mikrofon";
+    try {
+      if (stream) await startPreview();   // bindet den neuen Mic-Stream
+      micLastResult = { ok: true, label: shownLabel };
+      showMicToast("Mikrofon gewechselt auf: " + shownLabel, "ok");
+      log("Host hat Mikrofon gewechselt auf: " + shownLabel, "ok");
+    } catch (err) {
+      micLastResult = { ok: false, error: (err && err.message) || "Fehler", label: shownLabel };
+      showMicToast("Mikrofon-Wechsel fehlgeschlagen.", "err");
+      log("Mic-Wechsel fehlgeschlagen: " + ((err && err.message) || err), "err");
+    }
+    heartbeat();   // Ergebnis sofort an den Host melden
+  }
+
+  // Verarbeitet ein gast-gezieltes set_mic-Kommando vom Server.
+  // Option A: waehrend laufender Aufnahme blocken und nach Stopp anwenden.
+  function handleMicCommand(mic) {
+    if (!mic || !mic.deviceId) return;
+    const issued = (typeof mic.issued_at === "number") ? mic.issued_at : 0;
+    if (issued && issued === lastMicCmdIssued) return;   // schon verarbeitet
+    lastMicCmdIssued = issued;
+
+    if (isRecording || countingDown) {
+      // Aufschieben bis nach dem Stopp (Option A).
+      deferredMicCmd = { deviceId: mic.deviceId, label: mic.label || "" };
+      showMicToast("Mikrofon-Wechsel wird nach dem Stopp angewendet.", "info");
+      log("Mic-Wechsel angefordert — aufgeschoben bis nach der Aufnahme.", "info");
+      // Host sieht den Pending-Status ohnehin ueber mic_pending; hier kein Ergebnis.
+      return;
+    }
+    applyMicChange(mic.deviceId, mic.label || "");
+  }
+
+  async function startPreview() {
+    // Alten Stream sauber freigeben, bevor wir das Geraet neu beanspruchen.
+    if (stream) {
+      stream.getTracks().forEach(t => { try { t.stop(); } catch {} });
+      stream = null;
+      $("preview").srcObject = null;
+      stopVuMeter();
+      await new Promise(r => setTimeout(r, 200));
+    }
+
+    const camId = $("camSel").value;
+    const micId = $("micSel").value;
+
+    const buildConstraints = (useExact) => ({
+      // Audio-Only (host-gesteuert): kein Video anfordern.
+      video: audioOnly ? false : {
+        deviceId: camId ? (useExact ? { exact: camId } : { ideal: camId }) : undefined,
+        width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 }
+      },
+      audio: {
+        deviceId: micId ? (useExact ? { exact: micId } : { ideal: micId }) : undefined,
+        sampleRate: AUDIO_SAMPLE_RATE,
+        channelCount: 2,
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false
+      }
+    });
+
+    try {
+      stream = await navigator.mediaDevices.getUserMedia(buildConstraints(true));
+    } catch (err) {
+      log(`Stream-Start fehlgeschlagen (${err.name}: ${err.message}) — versuche Fallback…`, "err");
+      await new Promise(r => setTimeout(r, 400));
+      try {
+        stream = await navigator.mediaDevices.getUserMedia(buildConstraints(false));
+      } catch (err2) {
+        log(`Zweiter Versuch fehlgeschlagen (${err2.name}). Versuche generisches Geraet…`, "err");
+        await new Promise(r => setTimeout(r, 400));
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: audioOnly ? false : true,
+          audio: { deviceId: micId ? { ideal: micId } : undefined }
+        });
+      }
+    }
+
+    // Im Audio-Only-Modus kein Video an das <video>-Element haengen.
+    $("preview").srcObject = audioOnly ? null : stream;
+    const at = stream.getAudioTracks()[0]?.getSettings();
+    const vt = stream.getVideoTracks()[0]?.getSettings();
+    if (audioOnly) {
+      log(`Stream (Audio-only): Audio ${at?.sampleRate}Hz ${at?.channelCount}ch`, "ok");
+    } else {
+      log(`Stream: ${vt?.width}x${vt?.height}@${vt?.frameRate}fps · Audio ${at?.sampleRate}Hz ${at?.channelCount}ch`, "ok");
+      // Portrait-Anzeige neu berechnen, sobald das Video Maße kennt.
+      applyPortraitLayout();
+    }
+
+    // Tonausgabe-Geraet auf das Vorschau-Element anwenden (falls unterstuetzt)
+    try {
+      const v = $("preview");
+      const spkId = $("spkSel").value;
+      if (v && typeof v.setSinkId === "function" && spkId && spkId !== "default") {
+        await v.setSinkId(spkId);
+      }
+    } catch {}
+
+    // VU-Meter (neu) starten -- funktioniert in BEIDEN Modi (Audio & Video).
+    startVuMeter(stream);
+  }
+
+  // ---------- VU-Meter (Web Audio API) ----------
+  let audioCtx = null;
+  let vuSource = null;
+  let vuAnalyser = null;
+  let vuRaf = 0;
+  let vuPeakHold = -Infinity;
+  let vuPeakHoldTs = 0;
+  let vuDisplayNorm = 0;         // geglaetteter Anzeigewert (0..1) mit Decay
+  let vuLastTs = 0;              // Zeitstempel des letzten Frames (fuer dt)
+  // Release-Zeitkonstante des Abfalls in Sekunden. Groesser = langsamerer,
+  // ruhigerer Abfall.
+  // Deutlich verlaengert, damit der Pegel gut ablesbar bleibt.
+  const VU_RELEASE_TAU = 2.2;
+  let currentRms = 0;            // letzter RMS-Wert (0..1) fuer den Host-Heartbeat
+  let currentPeak = 0;           // letzter Sample-Peak (0..1) fuer den Host
+
+  function stopVuMeter() {
+    if (vuRaf) cancelAnimationFrame(vuRaf);
+    vuRaf = 0;
+    // Pegel aktiv auf Null ziehen: sonst behaelt der Host den letzten Wert.
+    currentRms = 0; currentPeak = 0;
+    try { vuSource && vuSource.disconnect(); } catch {}
+    vuSource = null;
+    vuAnalyser = null;
+  }
+
+  function startVuMeter(srcStream) {
+    stopVuMeter();
+    const audioTracks = srcStream.getAudioTracks();
+    if (!audioTracks.length) { log("VU-Meter: kein Audio-Track", "err"); return; }
+    try {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      // Manche Browser starten den AudioContext erst nach User-Geste "suspended".
+      // Da das VU-Meter erst nach dem Klick auf "Weiter" startet, ist eine Geste
+      // gegeben -> resume() reaktiviert den Context zuverlaessig.
+      if (audioCtx.state === "suspended") { audioCtx.resume().catch(() => {}); }
+
+      const ms = new MediaStream([audioTracks[0]]);
+      vuSource = audioCtx.createMediaStreamSource(ms);
+      vuAnalyser = audioCtx.createAnalyser();
+      vuAnalyser.fftSize = 1024;
+      // Leichtes Smoothing im Analyser, aber die eigentliche Ballistik
+      // (schneller Attack + langsamer Release) passiert unten explizit.
+      // Zu niedrige Werte koennen in manchen Browsern zu instabilem Verhalten fuehren.
+      vuAnalyser.smoothingTimeConstant = 0.15;
+      vuSource.connect(vuAnalyser);
+
+      const buf = new Float32Array(vuAnalyser.fftSize);
+      const fill = $("vuFill");
+      const peakEl = $("vuPeak");
+      vuDisplayNorm = 0; vuLastTs = 0;   // Decay-Zustand zuruecksetzen
+
+      const loop = () => {
+        vuAnalyser.getFloatTimeDomainData(buf);
+        let sumSq = 0;
+        let peak = 0;
+        for (let i = 0; i < buf.length; i++) {
+          const s = buf[i];
+          sumSq += s * s;
+          const a = Math.abs(s);
+          if (a > peak) peak = a;
+        }
+        const rms = Math.sqrt(sumSq / buf.length);
+        currentRms = rms;            // fuer Host-Heartbeat
+        currentPeak = peak;          // fuer Host-Pegelanzeige (Peak-Hold)
+        // Auf 0..1 mappen (−60 dB .. 0 dB)
+        const db = 20 * Math.log10(rms || 1e-7);
+        const norm = Math.max(0, Math.min(1, (db + 60) / 60));
+
+        // Asymmetrischer Decay (Ballistik wie ein echtes VU-Meter):
+        //  - Lautere Werte schlagen SOFORT durch (attack = 1).
+        //  - Der Abfall ist deutlich langsamer, damit der Pegel nicht zappelt
+        //    und man den Wert in Ruhe ablesen kann (release).
+        const now = performance.now();
+        const dt = vuLastTs ? Math.min(0.1, (now - vuLastTs) / 1000) : 0.016;
+        vuLastTs = now;
+        if (norm >= vuDisplayNorm) {
+          vuDisplayNorm = norm;                     // attack: sofort
+        } else {
+          // release: exponentieller Abfall mit Zeitkonstante VU_RELEASE_TAU (s)
+          const k = Math.exp(-dt / VU_RELEASE_TAU);
+          vuDisplayNorm = norm + (vuDisplayNorm - norm) * k;
+        }
+        const shownNorm = vuDisplayNorm;
+
+        // Im Hochkant-Modus waechst der Balken vertikal (Hoehe von unten nach
+        // oben), sonst horizontal (Breite). So orientiert sich die Pegelanzeige
+        // an der Hoehe des Hochkant-Videos.
+        // Im Portrait-Layout ist der Balken vertikal (egal ob Audio-only oder Video).
+        // Im Querformat bleibt er horizontal.
+        if (portrait) {
+          fill.style.width = "100%";
+          fill.style.height = (shownNorm * 100).toFixed(1) + "%";
+        } else {
+          fill.style.height = "100%";
+          fill.style.width = (shownNorm * 100).toFixed(1) + "%";
+        }
+
+        // Farbe je nach Pegel umschalten:
+        //   < 50%  gruen (ok)
+        //   50-90% gelb  (warn)
+        //   > 90%  rot   (clip = zu laut)
+        fill.classList.remove("warn", "clip");
+        if (shownNorm >= 0.90) fill.classList.add("clip");
+        else if (shownNorm >= 0.50) fill.classList.add("warn");
+
+        // Peak-Hold (1.5s)
+        const peakDb = 20 * Math.log10(peak || 1e-7);
+        if (peakDb > vuPeakHold || now - vuPeakHoldTs > 1500) {
+          vuPeakHold = peakDb;
+          vuPeakHoldTs = now;
+        }
+        const shown = vuPeakHold <= -60 ? "−∞ dB" : vuPeakHold.toFixed(1) + " dB";
+        peakEl.textContent = shown;
+        peakEl.classList.toggle("clip", vuPeakHold > -1);
+
+        vuRaf = requestAnimationFrame(loop);
+      };
+      loop();
+    } catch (err) {
+      log("VU-Meter konnte nicht starten: " + err.message, "err");
+    }
+  }
+
+  // ---------- Browser-Kompatibilitaets-Check ----------
+  function checkBrowserCompat() {
+    // Neuer Weg: rohe PCM-Aufnahme via Web Audio / AudioWorklet.
+    // Das funktioniert in Chrome, Edge, Firefox UND Safari/iOS (>= 14.5).
+    // Wir blocken daher nur noch Browser, denen die noetigen Bausteine fehlen.
+    const hasUserMedia = !!(navigator.mediaDevices &&
+                            navigator.mediaDevices.getUserMedia);
+    const AC = window.AudioContext || window.webkitAudioContext;
+    const hasAudioWorklet = !!(AC && AC.prototype && "audioWorklet" in AC.prototype);
+
+    if (!hasUserMedia || !AC) {
+      document.body.innerHTML = `
+        <div style="max-width:560px;margin:80px auto;padding:32px;
+                    background:#181b22;border:1px solid #e5484d;border-radius:12px;
+                    color:#e8eaed;font-family:Inter,system-ui,sans-serif;line-height:1.55;">
+          <h1 style="margin-top:0;color:#e5484d;">Browser nicht unterstützt</h1>
+          <p>Dein Browser unterstützt die benötigte Audio-Aufnahme (Web Audio API)
+          nicht. Bitte öffne den Link in einer aktuellen Version von
+          <b>Chrome</b>, <b>Edge</b>, <b>Firefox</b> oder <b>Safari</b>.</p>
+        </div>`;
+      return false;
+    }
+    if (!hasAudioWorklet) {
+      // AudioWorklet fehlt (sehr alter Browser) -> ScriptProcessor-Fallback
+      // greift automatisch. Nur ein Log, kein harter Block.
+      console.warn("AudioWorklet nicht verfügbar — nutze ScriptProcessor-Fallback.");
+    }
+    return true;
+  }
+
+  if (!checkBrowserCompat()) return;
+
+  // ---------- IndexedDB-Persistenz fuer Chunks ----------
+  const DB_NAME = "podcast-recorder";
+  const DB_VERSION = 1;
+  const STORE = "chunks";
+  let db = null;
+
+  function openDb() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(DB_NAME, DB_VERSION);
+      req.onupgradeneeded = () => {
+        const d = req.result;
+        if (!d.objectStoreNames.contains(STORE)) {
+          const os = d.createObjectStore(STORE, { keyPath: "key" });
+          os.createIndex("bySession", "sessionKey", { unique: false });
+          os.createIndex("byCreatedAt", "createdAt", { unique: false });
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+  function tx(mode) { return db.transaction(STORE, mode).objectStore(STORE); }
+  function dbPut(record) {
+    return new Promise((res, rej) => {
+      const r = tx("readwrite").put(record);
+      r.onsuccess = () => res(); r.onerror = () => rej(r.error);
+    });
+  }
+  function dbGet(key) {
+    return new Promise((res, rej) => {
+      const r = tx("readonly").get(key);
+      r.onsuccess = () => res(r.result || null); r.onerror = () => rej(r.error);
+    });
+  }
+  function dbDelete(key) {
+    return new Promise((res, rej) => {
+      const r = tx("readwrite").delete(key);
+      r.onsuccess = () => res(); r.onerror = () => rej(r.error);
+    });
+  }
+  function dbGetAll() {
+    return new Promise((res, rej) => {
+      const r = tx("readonly").getAll();
+      r.onsuccess = () => res(r.result || []); r.onerror = () => rej(r.error);
+    });
+  }
+  function dbDeleteBySession(sessionKey) {
+    return new Promise((res, rej) => {
+      const store = tx("readwrite");
+      const idx = store.index("bySession");
+      const req = idx.openCursor(IDBKeyRange.only(sessionKey));
+      req.onsuccess = (e) => {
+        const cur = e.target.result;
+        if (cur) { cur.delete(); cur.continue(); } else res();
+      };
+      req.onerror = () => rej(req.error);
+    });
+  }
+
+  async function requestPersistence() {
+    if (navigator.storage && navigator.storage.persist) {
+      try {
+        const granted = await navigator.storage.persist();
+        log(granted
+          ? "Persistenter Speicher gewährt — Chunks überleben Crash"
+          : "Persistenter Speicher NICHT gewährt — Browser könnte Daten räumen",
+          granted ? "ok" : "err");
+      } catch {}
+    }
+    if (navigator.storage && navigator.storage.estimate) {
+      try {
+        const est = await navigator.storage.estimate();
+        const freeMb = ((est.quota - est.usage) / 1024 / 1024).toFixed(0);
+        log(`Verfügbarer lokaler Speicher: ~${freeMb} MB`);
+      } catch {}
+    }
+  }
+
+  function chunkKey(r, g, s, idx) { return `${r}/${g}/${s}/${String(idx).padStart(6, "0")}`; }
+  function sessionKeyOf(r, g, s) { return `${r}/${g}/${s}`; }
+
+  async function gcOldChunks() {
+    const all = await dbGetAll();
+    const cutoff = Date.now() - 7 * 24 * 3600 * 1000;
+    for (const rec of all) {
+      if (rec.createdAt < cutoff) {
+        try { await dbDelete(rec.key); } catch {}
+      }
+    }
+  }
+
+  async function recoverPendingUploads() {
+    const all = await dbGetAll();
+    if (all.length === 0) return;
+
+    const bySession = new Map();
+    for (const rec of all) {
+      if (!bySession.has(rec.sessionKey)) bySession.set(rec.sessionKey, []);
+      bySession.get(rec.sessionKey).push(rec);
+    }
+
+    for (const [sk, recs] of bySession) {
+      const totalMb = (recs.reduce((s, r) => s + (r.size || 0), 0) / 1024 / 1024).toFixed(1);
+      const oldest = new Date(Math.min(...recs.map(r => r.createdAt))).toLocaleString();
+      const ok = confirm(
+        `Unvollständige Aufnahme im lokalen Speicher gefunden:\n\n` +
+        `  Session: ${sk}\n` +
+        `  Begonnen: ${oldest}\n` +
+        `  Offene Chunks: ${recs.length} (${totalMb} MB)\n\n` +
+        `Jetzt hochladen?\n\n` +
+        `OK = Hochladen   ·   Abbrechen = Verwerfen`
+      );
+      if (ok) {
+        recs.sort((a, b) => a.idx - b.idx);
+        for (const rec of recs) {
+          uploadQueue.push({ key: rec.key, idx: rec.idx, size: rec.size,
+                             room: rec.room, guest: rec.guest, sessionId: rec.sessionId,
+                             ext: rec.ext || "pcm" });
+        }
+        const ql = $("queueLen"); if (ql) ql.textContent = uploadQueue.length;
+        log(`Recovery: ${recs.length} Chunks aus vorheriger Session werden hochgeladen`, "ok");
+        const [r, g, s] = sk.split("/");
+        runUploader().then(async () => {
+          try {
+            await fetch(`${SERVER}/finish/${r}/${g}/${s}`, { method: "POST" });
+            log(`Recovery-Session ${sk} abgeschlossen ✔`, "ok");
+          } catch (e) { log("Recovery-Finish fehlgeschlagen: " + e.message, "err"); }
+        });
+      } else {
+        await dbDeleteBySession(sk);
+        log(`Verworfene Session: ${sk}`);
+      }
+    }
+  }
+
+  // ---------- Wake Lock ----------
+  let wakeLock = null;
+  async function acquireWakeLock() {
+    if (!("wakeLock" in navigator)) {
+      log("Wake Lock API nicht verfügbar (z. B. Firefox) — Bildschirm bitte manuell wachhalten", "err");
+      return;
+    }
+    try {
+      wakeLock = await navigator.wakeLock.request("screen");
+      wakeLock.addEventListener("release", () => { log("Wake Lock freigegeben"); });
+      log("Wake Lock aktiv — Bildschirm bleibt an", "ok");
+    } catch (err) {
+      log("Wake Lock fehlgeschlagen: " + err.message, "err");
+    }
+  }
+  async function releaseWakeLock() {
+    if (wakeLock) { try { await wakeLock.release(); } catch {} wakeLock = null; }
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && isRecording && !wakeLock) {
+      acquireWakeLock();
+    }
+  });
+
+  // ---------- PCM-Aufnahme via Web Audio (Safari/iOS-kompatibel) ----------
+  // Statt MediaRecorder (WebM/MP4-Container) greifen wir den Mikrofon-Stream
+  // direkt als rohe Int16-PCM-Samples ab. Diese werden in ~CHUNK_MS-Bloecke
+  // gepuffert und als .pcm hochgeladen. Der Server baut daraus ein WAV.
+  let pcmCtx = null;          // AudioContext fuer die Aufnahme
+  let pcmNode = null;         // AudioWorkletNode oder ScriptProcessorNode
+  let pcmSourceNode = null;   // MediaStreamSource
+  let pcmSilent = null;       // stiller Sink (haelt den Graphen am Laufen)
+  let pcmSampleRate = AUDIO_SAMPLE_RATE;
+  let pcmChannels = 1;
+  let pcmBuffer = [];         // gesammelte Int16-Arrays fuer den aktuellen Chunk
+  let pcmBufferedSamples = 0; // Anzahl Frames im aktuellen Chunk
+  let pcmFlushTimer = null;
+
+  // Float32 [-1..1] -> Int16 LE
+  function floatToInt16(float32) {
+    const out = new Int16Array(float32.length);
+    for (let i = 0; i < float32.length; i++) {
+      let s = Math.max(-1, Math.min(1, float32[i]));
+      out[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    }
+    return out;
+  }
+
+  // Sammelt Int16-Samples und schiebt fertige Chunks in die Upload-Queue.
+  function pcmCollect(int16) {
+    pcmBuffer.push(int16);
+    pcmBufferedSamples += int16.length;
+  }
+
+  function pcmFlush(force) {
+    if (!pcmBuffer.length) return;
+    // Ein Chunk ~ CHUNK_MS; bei force (Stop) alles rausschreiben.
+    const targetSamples = Math.round(pcmSampleRate * pcmChannels * (CHUNK_MS / 1000));
+    if (!force && pcmBufferedSamples < targetSamples) return;
+
+    // Alle gepufferten Int16-Arrays zu einem Blob zusammenfuegen.
+    let total = 0;
+    for (const a of pcmBuffer) total += a.length;
+    const merged = new Int16Array(total);
+    let off = 0;
+    for (const a of pcmBuffer) { merged.set(a, off); off += a.length; }
+    pcmBuffer = [];
+    pcmBufferedSamples = 0;
+
+    const blob = new Blob([merged.buffer], { type: "application/octet-stream" });
+    enqueuePcmChunk(blob);
+  }
+
+  async function enqueuePcmChunk(blob) {
+    if (!blob || blob.size === 0) return;
+    const idx = chunkIndex++;
+    recBytes += blob.size;
+    const cc2 = $("chunkCount"); if (cc2) cc2.textContent = chunkIndex;
+    const rs2 = $("recSize"); if (rs2) rs2.textContent = fmtMB(recBytes);
+    const key = chunkKey(room, guest, sessionId, idx);
+    try {
+      await dbPut({
+        key, sessionKey: sessionKeyOf(room, guest, sessionId),
+        room, guest, sessionId, idx, blob, size: blob.size, ext: "pcm",
+        createdAt: Date.now(), uploaded: false
+      });
+    } catch (err) {
+      log(`DB-Schreibfehler (Chunk ${idx}): ${err.message}`, "err");
+    }
+    uploadQueue.push({ key, idx, size: blob.size, room, guest, sessionId, blob, ext: "pcm" });
+    const ql = $("queueLen"); if (ql) ql.textContent = uploadQueue.length;
+    runUploader();
+  }
+
+  // Feature 9: Video-/Media-Chunks (WebM bzw. Safari-Fallback) in dieselbe
+  // Upload-Queue einreihen -- mit eigener Endung, damit der Server sie als
+  // Video erkennt und daraus WAV + H.264-MP4 erzeugt.
+  async function enqueueMediaChunk(blob, ext) {
+    if (!blob || blob.size === 0) return;
+    const idx = chunkIndex++;
+    recBytes += blob.size;
+    const cc2 = $("chunkCount"); if (cc2) cc2.textContent = chunkIndex;
+    const rs2 = $("recSize"); if (rs2) rs2.textContent = fmtMB(recBytes);
+    const key = chunkKey(room, guest, sessionId, idx);
+    try {
+      await dbPut({
+        key, sessionKey: sessionKeyOf(room, guest, sessionId),
+        room, guest, sessionId, idx, blob, size: blob.size, ext: ext || "webm",
+        createdAt: Date.now(), uploaded: false
+      });
+    } catch (err) {
+      log(`DB-Schreibfehler (Video-Chunk ${idx}): ${err.message}`, "err");
+    }
+    uploadQueue.push({ key, idx, size: blob.size, room, guest, sessionId, blob, ext: ext || "webm" });
+    const ql = $("queueLen"); if (ql) ql.textContent = uploadQueue.length;
+    runUploader();
+  }
+
+  // AudioWorklet-Prozessor als Blob-URL (kein separates File noetig).
+  const WORKLET_SRC = `
+    class PcmTap extends AudioWorkletProcessor {
+      process(inputs) {
+        const input = inputs[0];
+        if (input && input[0]) {
+          // Auf Mono mischen (Mittelwert der Kanaele), kopieren ist Pflicht.
+          const ch0 = input[0];
+          const ch1 = input[1];
+          const out = new Float32Array(ch0.length);
+          if (ch1) {
+            for (let i = 0; i < ch0.length; i++) out[i] = (ch0[i] + ch1[i]) * 0.5;
+          } else {
+            out.set(ch0);
+          }
+          this.port.postMessage(out, [out.buffer]);
+        }
+        return true;
+      }
+    }
+    registerProcessor("pcm-tap", PcmTap);
+  `;
+
+  async function _doStartRecording() {
+    if (!stream) return;
+    const audioTracks = stream.getAudioTracks();
+    if (!audioTracks.length) { log("Kein Audio-Track verfügbar!", "err"); return; }
+
+    // Gemeinsame Session-ID: kommt vom Host (command.session). Falls der Host
+    // extrem alt ist und keine Session liefert, fallback auf lokale ID.
+    if (!sessionId) sessionId = pendingSessionId || Date.now().toString(36);
+    pendingSessionId = null;
+    const sInfo = $("sessionInfo");
+    if (sInfo && guest) sInfo.textContent =
+      `Raum: ${room} · Gast: ${displayName} (${guest}) · Session: ${sessionId}`;
+
+    chunkIndex = 0; recBytes = 0; upBytes = 0;
+    pcmBuffer = []; pcmBufferedSamples = 0;
+    const cc = $("chunkCount"); if (cc) cc.textContent = "0";
+    const rs = $("recSize"); if (rs) rs.textContent = "0 MB";
+    const us = $("upSize"); if (us) us.textContent = "0 MB";
+
+    // Video-Modus (host-gesteuert) + vorhandener Video-Track -> MediaRecorder.
+    // Sonst der bewaehrte Audio-only-PCM-Pfad (Safari/iOS-sicher).
+    if (!audioOnly && stream.getVideoTracks().length) {
+      const okVideo = await _startVideoRecording();
+      if (okVideo) return;
+      log("Video-Aufnahme nicht möglich — falle auf Audio-Only zurück.", "err");
+    }
+    await _startPcmRecording(audioTracks);
+  }
+
+  // ---------- Video-Aufnahme via MediaRecorder (VP8/9, Safari-Fallback H.264) ----------
+  function _startVideoRecording() {
+    return new Promise((resolve) => {
+      try {
+        const pick = pickVideoMime();
+        mediaExt = pick.ext;
+        const opts = { videoBitsPerSecond: VIDEO_BITRATE, audioBitsPerSecond: AUDIO_BITRATE };
+        if (pick.mime) opts.mimeType = pick.mime;
+
+        try {
+          recorder = new MediaRecorder(stream, opts);
+        } catch (e) {
+          // Letzter Versuch ohne explizite Optionen.
+          recorder = new MediaRecorder(stream);
+          mediaExt = "webm";
+        }
+
+        recorder.ondataavailable = (e) => {
+          if (e.data && e.data.size > 0) enqueueMediaChunk(e.data, mediaExt);
+        };
+        recorder.onerror = (e) => {
+          log("MediaRecorder-Fehler: " + (e.error && e.error.name || "unbekannt"), "err");
+        };
+
+        isRecording = true;
+        startTs = Date.now();
+
+        // Format-Meta (Audio-Teil) an den Server.
+        fetch(`${SERVER}/meta/${room}/${guest}/${sessionId}`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sample_rate: AUDIO_SAMPLE_RATE, channels: 2 })
+        }).catch(() => {});
+
+        recorder.start(CHUNK_MS);   // ein Chunk pro CHUNK_MS
+
+        durationTimer = setInterval(() => {
+          const t = fmtTime(Date.now() - startTs);
+          $("duration").textContent = t;
+          const dbg = $("durationDbg"); if (dbg) dbg.textContent = t;
+        }, 500);
+
+        setStatus("🔴 Video-Aufnahme läuft…");
+        $("warnBanner").classList.add("show");
+        acquireWakeLock();
+        log(`Video-Aufnahme gestartet (${pick.label})`, "ok");
+        resolve(true);
+      } catch (err) {
+        log("Video-Aufnahme-Setup fehlgeschlagen: " + err.message, "err");
+        recorder = null;
+        resolve(false);
+      }
+    });
+  }
+
+  async function _startPcmRecording(audioTracks) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    try {
+      pcmCtx = new AC();
+      // iOS startet den Context teils "suspended" -> nach User-Geste reaktivieren.
+      if (pcmCtx.state === "suspended") { try { await pcmCtx.resume(); } catch {} }
+      pcmSampleRate = pcmCtx.sampleRate;     // ECHTE Rate (z. B. 44100 auf iOS)
+      pcmChannels = 1;                       // wir mischen auf Mono
+
+      const micStream = new MediaStream([audioTracks[0]]);
+      pcmSourceNode = pcmCtx.createMediaStreamSource(micStream);
+
+      let usedWorklet = false;
+      if (pcmCtx.audioWorklet) {
+        try {
+          const blobUrl = URL.createObjectURL(
+            new Blob([WORKLET_SRC], { type: "application/javascript" }));
+          await pcmCtx.audioWorklet.addModule(blobUrl);
+          URL.revokeObjectURL(blobUrl);
+          pcmNode = new AudioWorkletNode(pcmCtx, "pcm-tap");
+          pcmNode.port.onmessage = (e) => {
+            if (!isRecording) return;
+            pcmCollect(floatToInt16(e.data));
+          };
+          usedWorklet = true;
+        } catch (err) {
+          log("AudioWorklet fehlgeschlagen, nutze Fallback: " + err.message, "err");
+        }
+      }
+
+      if (!usedWorklet) {
+        // ScriptProcessor-Fallback (deprecated, aber breit verfuegbar).
+        const bufSize = 4096;
+        pcmNode = pcmCtx.createScriptProcessor(bufSize, 1, 1);
+        pcmNode.onaudioprocess = (e) => {
+          if (!isRecording) return;
+          pcmCollect(floatToInt16(e.inputBuffer.getChannelData(0)));
+        };
+      }
+
+      pcmSourceNode.connect(pcmNode);
+      // Stiller Sink, damit der Graph in allen Browsern zuverlaessig laeuft.
+      pcmSilent = pcmCtx.createGain();
+      pcmSilent.gain.value = 0;
+      pcmNode.connect(pcmSilent);
+      pcmSilent.connect(pcmCtx.destination);
+    } catch (err) {
+      log("Aufnahme-Setup fehlgeschlagen: " + err.message, "err");
+      return;
+    }
+
+    isRecording = true;
+    startTs = Date.now();
+
+    // Format-Meta vorab an den Server (fuer korrekten WAV-Header).
+    fetch(`${SERVER}/meta/${room}/${guest}/${sessionId}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sample_rate: pcmSampleRate, channels: pcmChannels })
+    }).catch(() => {});
+
+    // Regelmaessig Chunks ausschreiben.
+    clearInterval(pcmFlushTimer);
+    pcmFlushTimer = setInterval(() => pcmFlush(false), CHUNK_MS);
+
+    durationTimer = setInterval(() => {
+      const t = fmtTime(Date.now() - startTs);
+      $("duration").textContent = t;
+      const dbg = $("durationDbg"); if (dbg) dbg.textContent = t;
+    }, 500);
+
+    setStatus("🔴 Aufnahme läuft…");
+    $("warnBanner").classList.add("show");
+    acquireWakeLock();
+    log(`Aufnahme gestartet (PCM ${pcmSampleRate}Hz, ${pcmChannels}ch)`, "ok");
+  }
+
+  async function stopRecording() {
+    if (!isRecording) return;
+    isRecording = false;
+    clearInterval(durationTimer);
+
+    // Video-Pfad (MediaRecorder): sauber stoppen, letzten Chunk anstossen.
+    if (recorder) {
+      try {
+        if (recorder.state !== "inactive") {
+          // requestData() erzwingt das Ausschreiben des aktuellen Puffers,
+          // bevor wir stoppen -- so geht das letzte Segment nicht verloren.
+          try { recorder.requestData(); } catch {}
+          recorder.stop();
+        }
+      } catch (err) {
+        log("MediaRecorder-Stop-Fehler: " + err.message, "err");
+      }
+      recorder.ondataavailable = null;
+      recorder.onerror = null;
+      recorder = null;
+    }
+
+    // Audio-Pfad (PCM): Graph abbauen + letzten Chunk ausschreiben.
+    clearInterval(pcmFlushTimer); pcmFlushTimer = null;
+    try { pcmSourceNode && pcmSourceNode.disconnect(); } catch {}
+    try { pcmNode && pcmNode.disconnect(); } catch {}
+    try { pcmSilent && pcmSilent.disconnect(); } catch {}
+    if (pcmNode) { try { pcmNode.port && (pcmNode.port.onmessage = null); } catch {} pcmNode.onaudioprocess = null; }
+    pcmSourceNode = pcmNode = pcmSilent = null;
+    try { if (pcmCtx && pcmCtx.state !== "closed") await pcmCtx.close(); } catch {}
+    pcmCtx = null;
+    pcmFlush(true);
+
+    setStatus("Stoppe, lade restliche Chunks hoch…");
+    log("Aufnahme gestoppt, warte auf Upload-Queue…");
+
+    // Auf vollstaendigen Upload warten, dann finalisieren.
+    (async () => {
+      while (uploadQueue.length > 0 || uploaderRunning) {
+        await new Promise(r => setTimeout(r, 200));
+      }
+      try {
+        await fetch(`${SERVER}/finish/${room}/${guest}/${sessionId}`, { method: "POST" });
+        log("Session abgeschlossen ✔ (full.wav erstellt)", "ok");
+        setStatus("Fertig. Alles hochgeladen.");
+        $("warnBanner").classList.remove("show");
+        releaseWakeLock();
+        try { await dbDeleteBySession(sessionKeyOf(room, guest, sessionId)); } catch {}
+      } catch (err) {
+        log("Finish-Call fehlgeschlagen: " + err.message, "err");
+      }
+      // Sprint 2 (Option A): aufgeschobenen Mic-Wechsel jetzt nachholen.
+      if (deferredMicCmd) {
+        const d = deferredMicCmd;
+        deferredMicCmd = null;
+        log("Wende aufgeschobenen Mikrofon-Wechsel an…", "info");
+        try { await applyMicChange(d.deviceId, d.label); } catch {}
+      }
+    })();
+    // Vorschau-Stream bleibt aktiv -- der Gast sieht/hoert sich weiter (VU laeuft weiter).
+  }
+
+  // ---------- Uploader (sequentiell, Backoff + Online-Erkennung) ----------
+  const MIN_BACKOFF = 1000;
+  const MAX_BACKOFF = 30_000;
+  let backoff = MIN_BACKOFF;
+  let wakeUploader = null;
+
+  function sleepInterruptible(ms) {
+    return new Promise(resolve => {
+      const t = setTimeout(() => { wakeUploader = null; resolve(); }, ms);
+      wakeUploader = () => { clearTimeout(t); wakeUploader = null; resolve(); };
+    });
+  }
+
+  async function healthProbe() {
+    try {
+      const res = await fetch(`${SERVER}/health`, { method: "HEAD", cache: "no-store" });
+      return res.ok;
+    } catch {
+      return true;
+    }
+  }
+
+  function updateConnectionStatus() {
+    if (!navigator.onLine) {
+      setStatus(`🔴 Offline — warte auf Verbindung… (Queue: ${uploadQueue.length})`);
+    } else if (uploadQueue.length > 3) {
+      setStatus(`🟡 Verbindung schwach — ${uploadQueue.length} Chunks im Rückstand`);
+    } else if (isRecording) {
+      setStatus("🟢 Aufnahme läuft · Upload synchron");
+    }
+  }
+
+  window.addEventListener("online", () => {
+    log("Browser meldet: wieder online", "ok");
+    updateConnectionStatus();
+    if (wakeUploader) wakeUploader();
+  });
+  window.addEventListener("offline", () => {
+    log("Browser meldet: offline — Uploads pausieren", "err");
+    updateConnectionStatus();
+  });
+
+  async function runUploader() {
+    if (uploaderRunning) return;
+    uploaderRunning = true;
+    while (uploadQueue.length > 0) {
+      if (!navigator.onLine) {
+        updateConnectionStatus();
+        await sleepInterruptible(60_000);
+        continue;
+      }
+
+      const item = uploadQueue[0];
+      if (!item.blob) {
+        try {
+          const rec = await dbGet(item.key);
+          if (!rec) {
+            log(`Chunk ${item.idx} fehlt in DB — übersprungen`, "err");
+            uploadQueue.shift();
+            continue;
+          }
+          item.blob = rec.blob;
+        } catch (err) {
+          log(`DB-Lese-Fehler: ${err.message}`, "err");
+          await sleepInterruptible(backoff);
+          backoff = Math.min(backoff * 2, MAX_BACKOFF);
+          continue;
+        }
+      }
+      const ok = await uploadChunk(item);
+
+      if (ok) {
+        uploadQueue.shift();
+        if (item.key) { try { await dbDelete(item.key); } catch {} }
+        upBytes += (item.size || item.blob.size);
+        const us = $("upSize"); if (us) us.textContent = fmtMB(upBytes);
+        const ql = $("queueLen"); if (ql) ql.textContent = uploadQueue.length;
+        backoff = MIN_BACKOFF;
+        updateConnectionStatus();
+      } else {
+        log(`Chunk ${item.idx} fehlgeschlagen — neuer Versuch in ${(backoff/1000).toFixed(0)}s`, "err");
+        setStatus(`⚠ Upload-Fehler — neuer Versuch in ${(backoff/1000).toFixed(0)}s (Queue: ${uploadQueue.length})`);
+        await sleepInterruptible(backoff);
+        backoff = Math.min(backoff * 2, MAX_BACKOFF);
+        if (navigator.onLine) {
+          const alive = await healthProbe();
+          if (!alive) {
+            log("Server antwortet auf /health nicht — weiterer Backoff", "err");
+            continue;
+          }
+        }
+      }
+    }
+    uploaderRunning = false;
+    updateConnectionStatus();
+  }
+
+  async function uploadChunk(item) {
+    try {
+      const r = item.room || room;
+      const g = item.guest || guest;
+      const s = item.sessionId || sessionId;
+      const url = `${SERVER}/upload/${r}/${g}/${s}/${String(item.idx).padStart(6, "0")}?ext=${encodeURIComponent(item.ext || "pcm")}`;
+      const res = await fetch(url, {
+        method: "PUT",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: item.blob
+      });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      return true;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  // ---------- Warn on unload ----------
+  window.addEventListener("beforeunload", (e) => {
+    if (isRecording || uploadQueue.length > 0 || uploaderRunning) {
+      e.preventDefault();
+      e.returnValue = "Aufnahme laeuft oder Upload nicht fertig. Wirklich schliessen? Nicht hochgeladene Chunks gehen verloren.";
+      return e.returnValue;
+    }
+  });
+
+  // ---------- Phase 2: Host-Heartbeat + Remote-Trigger ----------
+  // Steuerung UND Telemetrie laufen ausschliesslich ueber den WebSocket.
+  // Der Gast sendet alle 2s einen Heartbeat (state, Mic-/Speaker-Label, RMS,
+  // Queue) und empfaengt:
+  //   - server_time : fuer Clock-Offset
+  //   - command     : { action: "start"|"stop"|null, start_at, session }
+  //   - settings    : { audio_only, debug_level }
+  // Nur der Chunk-Upload laeuft weiterhin ueber HTTP (PUT /upload ...).
+  const HEARTBEAT_MS = 2000;
+  const WS_PING_MS   = 25000;     // Keepalive gegen Proxy-/Idle-Timeouts
+  const LEVEL_MS     = 200;       // Pegel-Updates an den Host (klein + haeufig)
+  let serverOffset = 0;           // server_time - client_time (ms)
+  let lastCmdSession = null;      // schon verarbeitete Host-Aktion (Idempotenz)
+  let scheduledStart = null;      // Timer-Handle fuer geplanten Start
+  let pendingSessionId = null;    // Session-ID vom Host (gemeinsam für Uploads + Marker)
+
+  function currentState() {
+    if (isRecording) return "recording";
+    if (uploaderRunning || uploadQueue.length > 0) return "uploading";
+    return "idle";
+  }
+
+  // ---------- Unauffälliger Verbindungshinweis ----------
+  // Spiegelt den WebSocket-Zustand als kleine Statusanzeige im Header.
+  function setConnState(state) {
+    const el = $("connIndicator");
+    if (!el) return;
+    el.setAttribute("data-state", state);
+    const t = $("connText");
+    if (t) t.textContent = state === "connected" ? "verbunden"
+                          : state === "offline"   ? "getrennt — verbinde neu…"
+                          : "verbinde…";
+  }
+
+  // ---------- WebSocket-Kanal (Echtzeit, einzige Steuer-/Telemetrie-Verbindung) ----------
+  let ws = null;
+  let wsConnected = false;
+  let wsReconnectTimer = null;
+  let wsReconnectDelay = 1000;    // waechst bei wiederholten Fehlversuchen (Backoff)
+
+  function wsUrl() {
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    return `${proto}//${location.host}/ws/guest/${encodeURIComponent(room)}/`
+         + `${encodeURIComponent(guest)}?token=${encodeURIComponent(guestToken)}`;
+  }
+
+  function connectWs() {
+    if (!guest || !room) {
+      // Diagnose: WS wird uebersprungen, weil guest/room noch fehlen.
+      try { console.warn('[ws] connectWs uebersprungen — guest=', guest, 'room=', room); } catch {}
+      // Wenn der Gastname bereits da ist, aber room noch nicht (Race mit resolveToken),
+      // plane einen erneuten Versuch ein.
+      if (guest && !room) scheduleWsReconnect();
+      return;     // erst nach Token + Name-Gate
+    }
+    const url = wsUrl();
+    try { console.log('[ws] connectWs -> ', url); } catch {}
+    setConnState("connecting");
+    try {
+      ws = new WebSocket(url);
+    } catch (e) {
+      try { console.error('[ws] WebSocket()-Konstruktor fehlgeschlagen:', e); } catch {}
+      try { log('WebSocket() Konstruktor fehlgeschlagen: ' + (e && e.message ? e.message : String(e)), 'err'); } catch {}
+      scheduleWsReconnect();
+      return;
+    }
+    ws.onopen = () => {
+      try { console.log('[ws] onopen — verbunden'); } catch {}
+      wsConnected = true;
+      wsReconnectDelay = 1000;       // Backoff zuruecksetzen
+      if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
+      setConnState("connected");
+      log("Echtzeit-Verbindung zum Host aktiv (WebSocket).", "ok");
+      sendHeartbeat();   // sofort initialen Status senden
+    };
+    ws.onmessage = (ev) => {
+      let msg; try { msg = JSON.parse(ev.data); } catch { return; }
+      if (msg.type === "command") {
+        if (typeof msg.server_time === "number") serverOffset = msg.server_time - Date.now();
+        applyHostSettings(msg.settings);
+        handleCommand(msg.command);
+        // Sprint 2: gast-gezieltes Mic-Kommando (falls vorhanden).
+        if (msg.mic_cmd) handleMicCommand(msg.mic_cmd);
+      }
+      // "pong" braucht keine Behandlung -- er haelt nur die Verbindung warm.
+    };
+    ws.onclose = (ev) => { try { console.warn('[ws] onclose code=', ev && ev.code, 'reason=', ev && ev.reason, 'clean=', ev && ev.wasClean); } catch {} wsConnected = false; ws = null; setConnState("offline"); scheduleWsReconnect(); };
+    ws.onerror = (ev) => { try { console.error('[ws] onerror', ev); } catch {} try { ws.close(); } catch {} };
+  }
+
+  function scheduleWsReconnect() {
+    if (wsReconnectTimer) return;
+    // Exponentielles Backoff mit Jitter, gedeckelt bei 10s.
+    const jitter = Math.floor(Math.random() * 400);
+    const delay = Math.min(wsReconnectDelay, 10000) + jitter;
+    wsReconnectTimer = setTimeout(() => { wsReconnectTimer = null; connectWs(); }, delay);
+    wsReconnectDelay = Math.min(wsReconnectDelay * 2, 10000);
+  }
+
+  function telemetryPayload() {
+    return {
+      display_name: displayName || guest,
+      session: sessionId,
+      state: currentState(),
+      mic_label: currentMicLabel(),
+      speaker_label: currentSpeakerLabel(),
+      rms: currentRms,
+      queue: uploadQueue.length,
+      rec_mb: +(recBytes / 1024 / 1024).toFixed(2),
+      up_mb: +(upBytes / 1024 / 1024).toFixed(2),
+      mode: audioOnly ? "audio" : "video",
+      // Sprint 2: Mikrofon-Inventar, damit der Host remote wechseln kann.
+      mic_devices: micInventory(),
+      current_mic_deviceId: currentMicDeviceId(),
+      // Ergebnis eines zuvor angeforderten Wechsels (Host zeigt es an).
+      mic_last_result: micLastResult,
+      console: consoleBuf.splice(0)
+    };
+  }
+
+  // Sendet Telemetrie ueber den WebSocket. Kein HTTP-Fallback mehr:
+  // Ist der Socket gerade getrennt, wird der Heartbeat einfach uebersprungen;
+  // beim naechsten Reconnect (onopen) geht sofort wieder einer raus.
+  function sendHeartbeat() {
+    if (!guest) return;
+    if (ws && wsConnected && ws.readyState === 1) {
+      try { ws.send(JSON.stringify({ type: "heartbeat", ...telemetryPayload() })); }
+      catch { /* naechster Tick / Reconnect uebernimmt */ }
+    }
+  }
+
+  // Keepalive: haelt die Verbindung auch bei ruhigen Phasen (z.B. waehrend der
+  // Aufnahme, wenn der Main-Thread ausgelastet ist) gegen Proxy-Timeouts offen.
+  function wsPing() {
+    if (ws && wsConnected && ws.readyState === 1) {
+      try { ws.send(JSON.stringify({ type: "ping" })); } catch {}
+    }
+  }
+
+  // Kompatibler Einstiegspunkt fuer bestehende Aufrufer.
+  function heartbeat() { sendHeartbeat(); }
+
+  // Sprint 2 (QA): Pegel haeufiger senden als der 2s-Heartbeat, damit die
+  // Host-Anzeige live wirkt. Das Paket ist bewusst winzig (nur RMS) und
+  // loest serverseitig KEINEN vollen Status-Rebuild aus.
+  // Wir senden nur, wenn sich der Pegel spuerbar geaendert hat oder er noch
+  // nicht auf Null ausgelaufen ist -- Stille erzeugt so keinen Traffic.
+  // Wichtig: KEINE "hat sich kaum geaendert"-Unterdrueckung mehr. Die alte
+  // Variante konnte den Host auf einem Wert einfrieren lassen, wenn der Pegel
+  // knapp unter der Schwelle blieb -- genau das Symptom "Balken haengt fest".
+  // Das Paket ist winzig (~40 Byte), 5/s sind vernachlaessigbar.
+  function sendLevel() {
+    if (!guest) return;
+    if (!(ws && wsConnected && ws.readyState === 1)) return;
+    // Wir senden den ROHEN RMS und zusaetzlich den Peak. Die Ballistik
+    // (Attack/Release/Peak-Hold) macht ausschliesslich der Host.
+    try {
+      ws.send(JSON.stringify({
+        type: "level",
+        rms:  currentRms || 0,
+        peak: currentPeak || 0
+      }));
+    } catch {}
+  }
+
+  function handleCommand(cmd) {
+    // Best-practice: Idempotenz muss Action (und idealerweise issued_at) berücksichtigen.
+    // Der Server nutzt für START und STOP dieselbe session-ID (rec_session).
+    // Ein reines session-Dedupe würde STOP fälschlich wegfiltern.
+    if (!cmd || !cmd.action) return;
+
+    const action = String(cmd.action || "");
+    const sess = String(cmd.session || "");
+    const issued = (typeof cmd.issued_at === "number") ? cmd.issued_at : 0;
+
+    // Dedupe-Key: action + session + issued_at (falls vorhanden), sonst action+session.
+    const cmdKey = issued ? `${action}:${sess}:${issued}` : `${action}:${sess}`;
+    if (cmdKey === lastCmdSession) return;   // schon verarbeitet
+    lastCmdSession = cmdKey;
+
+    if (action === "start" && cmd.start_at && !isRecording) {
+      if (!sess) return;
+
+      // Gemeinsame Session-ID vom Host übernehmen (für Uploads + später Marker).
+      pendingSessionId = sess;
+
+      const localStart = cmd.start_at - serverOffset;
+      const delay = Math.max(0, localStart - Date.now());
+      log(`Host hat Aufnahme ausgelöst — Start in ${(delay/1000).toFixed(1)}s`, "ok");
+      if (scheduledStart) clearTimeout(scheduledStart);
+      const secs = Math.max(1, Math.ceil(delay / 1000));
+      setStatus(`▶ Host startet die Aufnahme — Countdown ${secs}…`);
+      runCountdown(secs, () => {
+        if (!isRecording) _doStartRecording();
+      });
+      // Safety: falls Tab gedrosselt wird, zusaetzlich exakter Timer.
+      scheduledStart = setTimeout(() => {
+        scheduledStart = null;
+        if (!isRecording && !countingDown) _doStartRecording();
+      }, delay);
+
+    } else if (action === "stop") {
+      if (scheduledStart) { clearTimeout(scheduledStart); scheduledStart = null; }
+      cancelCountdown();
+
+      // UI-Feedback IMMER anzeigen, auch wenn wir aus irgendeinem Grund nicht mehr "isRecording" sind.
+      setStatus("⏹ Host hat die Aufnahme beendet — stoppe…");
+      log("Host hat Stopp ausgelöst", "ok");
+
+      if (isRecording) {
+        stopRecording();
+      }
+    }
+  }
+
+  // Feature 8: Custom Branding anwenden (inkl. Logo + bedingter Header-Linie)
+  // IMPORTANT: do NOT override semantic success color (--ok). Keep it green.
+  // Use --brand for branding accents.
+  (async () => {
+    try {
+      const b = await (await fetch('/branding', { cache: 'no-store' })).json();
+      const brandHead = $("lobbyBrand")?.closest(".guest-brand-head");
+      const brandImg = $("lobbyBrandImg");
+      const hasLogo = !!(b && b.ok && b.favicon);
+      if (brandHead) brandHead.classList.toggle("has-logo", hasLogo);
+      if (brandImg && hasLogo) {
+        brandImg.src = b.favicon;
+        brandImg.onload = () => {
+          if (brandHead) brandHead.classList.add("has-logo");
+        };
+        brandImg.onerror = () => {
+          if (brandHead) brandHead.classList.remove("has-logo");
+        };
+        $("lobbyBrand")?.classList.add("show");
+      }
+      if (!b.ok) return;
+      if (b.color) {
+        /* Farben kommen serverseitig aus BRANDING-Block */;
+        try {
+          const hex = String(b.color).trim();
+          const m = /^#([0-9a-fA-F]{6})$/.exec(hex);
+          if (m) {
+            const n = parseInt(m[1], 16);
+            const r = (n >> 16) & 255, g = (n >> 8) & 255, bl = n & 255;
+            const mix = (c) => Math.max(0, Math.min(255, Math.round(c + (255 - c) * 0.18)));
+            const rh = mix(r), gh = mix(g), bh = mix(bl);
+            const hover = '#' + [rh, gh, bh].map(x => x.toString(16).padStart(2, '0')).join('');
+            /* Farben kommen serverseitig aus BRANDING-Block */;
+          }
+        } catch {}
+      }
+      if (b.name) document.title = 'Recorder · ' + b.name;
+      if (b.favicon) {
+        let link = document.querySelector('link[rel="icon"]');
+        if (!link) { link = document.createElement('link'); link.rel = 'icon'; document.head.appendChild(link); }
+        link.href = b.favicon;
+      }
+    } catch {}
+  })();
+
+  // ---------- Init ----------
+  async function init() {
+    try {
+      // Zuerst Token aufloesen -> Raum ermitteln
+      const tokenOk = await resolveToken();
+      if (!tokenOk) return;  // redirect zu token_error.html schon ausgeloest
+
+      try {
+        db = await openDb();
+        await requestPersistence();
+        await gcOldChunks();
+      } catch (err) {
+        log("IndexedDB nicht verfügbar: " + err.message + " — fahre im RAM-Modus fort", "err");
+      }
+      if (db) {
+        try { await recoverPendingUploads(); }
+        catch (err) { log("Recovery-Fehler: " + err.message, "err"); }
+      }
+
+      setStatus("Frage Berechtigungen ab…");
+      // Im Default (Audio-Only) reicht Audio. Bei Video-Modus holen wir Video beim Rebuild.
+      const tmp = await navigator.mediaDevices.getUserMedia({ video: audioOnly ? false : true, audio: true });
+      tmp.getTracks().forEach(t => t.stop());
+      await listDevices();
+      await startPreview();
+
+      // Log initial device choices once we have labels (after permissions + enumerateDevices).
+      try {
+        const micTxt = $("micSel")?.options[$("micSel").selectedIndex]?.text || "";
+        const camTxt = $("camSel")?.options[$("camSel").selectedIndex]?.text || "";
+        const spkTxt = $("spkSel")?.options[$("spkSel").selectedIndex]?.text || "";
+        if (micTxt) log("Mikrofon initial: " + micTxt, "ok");
+        if (camTxt && !audioOnly) log("Kamera initial: " + camTxt, "ok");
+        if (spkTxt) log("Ausgabe initial: " + spkTxt, "ok");
+      } catch {}
+
+      setStatus("Bereit. Warte auf Host-Start…");
+      log("Live-Vorschau aktiv. Warte auf Host-Start.", "ok");
+
+      // Phase 2: Heartbeat-Loop starten, damit der Host uns sieht
+      heartbeat();
+      setInterval(heartbeat, HEARTBEAT_MS);
+      setInterval(sendLevel, LEVEL_MS);  // feingranulare Pegel fuer den Host
+      setInterval(wsPing, WS_PING_MS);   // Keepalive gegen Idle-Timeouts
+
+      // Sprint 3: ab jetzt Geraete-Hotplug beobachten (Labels sind da).
+      watchDeviceChanges();
+    } catch (err) {
+      log("Init-Fehler: " + err.message, "err");
+      setStatus("Fehler: " + err.message);
+    }
+  }
+
+  // Geraete-Auswahl: nur wenn schon ein Stream laeuft, Stream neu aufbauen.
+  $("camSel").addEventListener("change", () => {
+    try {
+      const lbl = $("camSel")?.options[$("camSel").selectedIndex]?.text || "";
+      log("Kamera gewählt: " + lbl, "ok");
+      heartbeat();
+    } catch {}
+    if (stream) startPreview();
+  });
+  $("micSel").addEventListener("change", () => {
+    try {
+      const lbl = $("micSel")?.options[$("micSel").selectedIndex]?.text || "";
+      log("Mikrofon gewählt: " + lbl, "ok");
+      heartbeat();
+    } catch {}
+    if (stream) startPreview();
+  });
+  $("spkSel").addEventListener("change", async () => {
+    const v = $("preview");
+    const id = $("spkSel").value;
+    if (v && typeof v.setSinkId === "function" && id) {
+      try { await v.setSinkId(id); log("Tonausgabe gewechselt: " + currentSpeakerLabel(), "ok"); }
+      catch (e) { log("Tonausgabe-Wechsel fehlgeschlagen: " + e.message, "err"); }
+    }
+  });
+
+  // ---------- Hochkant-Umschalter (reine Anzeige) ----------
+  {
+    const pBtn = $("portraitBtn");
+    if (pBtn) pBtn.addEventListener("click", () => setPortrait(!portrait));
+    const fBtn = $("flip180Btn");
+    if (fBtn) fBtn.addEventListener("click", () => setFlip180(!flip180));
+    const pv = $("preview");
+    if (pv) pv.addEventListener("loadedmetadata", () => applyPortraitLayout());
+    window.addEventListener("resize", () => { if (portrait) applyPortraitLayout(); });
+  }
+
+  // ---------- Name-Gate ----------
+  function slugifyName(s) {
+    return s.trim()
+      .replace(/\s+/g, "-")
+      .replace(/[^a-zA-Z0-9_-]/g, "")
+      .slice(0, 40);
+  }
+
+  // ---------- Debug hooks (UI-visible) ----------
+  // Helps diagnose cases where the guest never appears / WS never handshakes.
+  try {
+    window.addEventListener('error', (e) => {
+      try { log('JS-Fehler: ' + (e && e.message ? e.message : 'unbekannt'), 'err'); } catch {}
+    });
+    window.addEventListener('unhandledrejection', (e) => {
+      try {
+        const r = (e && e.reason) ? e.reason : 'unbekannt';
+        const msg = (r && r.message) ? r.message : String(r);
+        log('Promise-Fehler: ' + msg, 'err');
+      } catch {}
+    });
+  } catch {}
+
+  async function submitName() {
+    try { log('submitName(): Klick/Enter empfangen', 'ok'); } catch {}
+
+    // Ensure token was resolved (room is needed for WS + uploads).
+    if (!room) {
+      try { console.log('[submitName] room fehlt — resolveToken() nachholen…'); } catch {}
+      const ok = await resolveToken();
+      if (!ok) return;
+    }
+
+    const raw = $("nameInput").value.trim();
+    const slug = slugifyName(raw);
+    if (slug.length < 2) {
+      $("nameHint").textContent = "Bitte mindestens 2 gültige Zeichen eingeben.";
+      $("nameHint").style.color = "var(--accent)";
+      return;
+    }
+    guest = slug;
+    displayName = raw;
+
+    // Log-Event: Gast hat seinen Namen eingegeben und betritt die Recorder-UI.
+    try { log(`Name bestätigt: ${displayName} (${guest})`, "ok"); } catch {}
+    const url = new URL(location.href);
+    url.searchParams.set("guest", guest);
+    history.replaceState(null, "", url.toString());
+
+    // Oben im Header nicht mehr den Token-/Name-Hinweis zeigen, sobald der Name feststeht.
+    // Session-ID kommt erst per Host-Command; deshalb hier ohne "Session:" anzeigen.
+    const sessionInfo = $("sessionInfo");
+    if (sessionInfo) {
+      sessionInfo.textContent = `Gast: ${displayName} (${guest})`;
+    }
+
+    $("nameGate").style.display = "none";
+    $("recorderUI").style.display = "flex";
+
+    // Recorder richtig initialisieren (Permissions, enumerateDevices, Preview, Heartbeat-Loop)
+    // nachdem der Name feststeht.
+    init();
+
+    // Echtzeit-Kanal aufbauen, sobald der Gastname (und damit guest) feststeht.
+    try { console.log('[submitName] fertig — guest=', guest, 'room=', room, '-> connectWs()'); } catch {}
+    try { log('connectWs(): versuche WebSocket zu ' + wsUrl(), 'ok'); } catch {}
+    connectWs();
+
+    // Sofort Heartbeat senden, damit UI/Host direkt den Namen sieht
+    try { heartbeat(); } catch {}
+
+  }
+
+  $("nameBtn").addEventListener("click", submitName);
+  $("nameInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") submitName();
+  });
+
+  // Log-Event: Gast hat die Seite aufgerufen, bevor er den Namen eingetragen hat.
+  // Das landet in der Admin-Log-Konsole (rooms -> Logs), sobald der erste Heartbeat gesendet wird.
+  try {
+    log("Name-Gate geöffnet (Gast hat Seite vor Namenseingabe aufgerufen).", "ok");
+    // Sofortigen (best-effort) Heartbeat versuchen: room ist nach resolveToken() bekannt,
+    // guest aber noch nicht. Daher nur puffern; der erste Heartbeat nach submitName() sendet es.
+  } catch {}
+
+  const preset = params.get("guest");
+  if (preset) { $("nameInput").value = preset; }
+  $("nameInput").focus();
+})();
+</script>
+</body>
+</html>

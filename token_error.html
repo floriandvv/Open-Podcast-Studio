@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Link ungültig · Podcast Studio</title>
+<style>
+  :root {
+    --bg:    #0f1115; --panel: #181b22; --border: #2a2f3a;
+    --text:  #e8eaed; --muted: #9aa3b2; --err: #e5484d;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--err);
+    border-radius: 14px; padding: 40px 36px;
+    max-width: 460px; width: 100%;
+    display: flex; flex-direction: column; gap: 16px;
+    text-align: center;
+  }
+  .brand-logo {
+    display: none;
+    max-width: min(420px, 82vw);
+    width: auto;
+    height: auto;
+    max-height: 125px;
+    object-fit: contain;
+    margin: 0 auto;
+  }
+  .brand-logo.show { display: block; }
+  h1     { font-size: 22px; font-weight: 700; margin: 0; color: var(--err); }
+  p      { color: var(--muted); font-size: 15px; line-height: 1.6; margin: 0; }
+  .hint  { font-size: 13px; color: var(--muted); border-top: 1px solid var(--border);
+           padding-top: 16px; }
+</style>
+<!-- Branding zuletzt: ueberschreibt die :root-Defaults oben. -->
+<!--BRANDING-->
+</head>
+<body>
+<div class="card">
+  <img class="brand-logo" id="brandLogo" alt="" />
+  <h1>Dieser Link ist nicht mehr gültig</h1>
+  <p>Der Einladungslink ist entweder abgelaufen, wurde widerrufen oder existiert nicht.</p>
+  <p class="hint">Bitte wende dich an den Host deiner Aufnahme und bitte um einen neuen Einladungslink.</p>
+</div>
+<script>
+(() => {
+  const b = window.__BRANDING__;
+  const img = document.getElementById('brandLogo');
+  if (!img || !b || !b.ok || !b.favicon) return;
+  img.src = b.favicon;
+  img.alt = b.name || '';
+  img.classList.add('show');
+  if (b.name) document.title = 'Link ungültig · ' + b.name;
+})();
+</script>
+</body>
+</html>

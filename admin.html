@@ -1,0 +1,1142 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Admin</title>
+<script>
+// Sprint 3: Branding kommt serverseitig im <head> (siehe BRANDING-Block oben).
+// Beim ersten Paint stimmen --brand/--brand-hover/--brand-on bereits -> kein
+// Aufblitzen der Default-Farbe, kein Verstecken der Seite.
+// Dieses Snippet setzt nur noch Titel + Favicon aus window.__BRANDING__ und
+// dient als Fallback, falls die Seite mal ohne SSR ausgeliefert wird.
+(() => {
+  const b = window.__BRANDING__;
+  if (!b || !b.ok) return;
+  try {
+    if (b.name) document.title = document.title.replace(/Podcast Studio/, b.name);
+  } catch {}
+})();
+</script>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #181b22; --panel2: #11141a; --border: #2a2f3a;
+    --text: #e8eaed; --muted: #9aa3b2;
+
+    /* Semantic success green (must NOT be affected by branding) */
+    --ok: #30a46c;
+    --ok-hover: #3cbf7e;
+
+    /* Brand accent (branded) */
+    --brand: var(--ok);
+    --brand-hover: var(--ok-hover);
+    --brand-on: #fff;
+
+    --warn: #f59e0b;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text);
+    font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  .auth-bar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 24px; border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+  .back-btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: none; color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 12px;
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    transition: border-color .15s, color .15s;
+    text-decoration: none;
+  }
+  .back-btn:hover { border-color: #3a4150; color: var(--text); }
+  .logout-btn {
+    background: none; color: var(--muted); border: 1px solid var(--border);
+    border-radius: 8px; padding: 7px 14px; font: inherit; font-size: 14px;
+    cursor: pointer; transition: border-color .15s, color .15s;
+  }
+  .logout-btn:hover { border-color: #3a4150; color: var(--text); }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 24px;
+    display: flex; flex-direction: column; gap: 16px; }
+  header { display: flex; align-items: baseline; justify-content: space-between;
+    flex-wrap: wrap; gap: 12px; }
+  header > div:first-child { width: 100%; }
+  h1 { font-size: 24px; font-weight: 700; margin: 0; }
+  .sub { color: var(--muted); font-size: 15px; }
+  a.back { color: var(--muted); text-decoration: none; font-size: 15px;
+    border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px;
+    background: var(--panel2); }
+  a.back:hover { border-color: #3a4150; color: var(--text); }
+  .panel { background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 16px; }
+  /* Aufnahmen-Accordion: einheitlich mit dem Logs-Accordion (.log-guest-*) */
+  .room-group { border: 1px solid var(--border); border-radius: 10px;
+    margin-bottom: 8px; overflow: hidden; }
+  .room-head {
+    display: flex; align-items: center; gap: 10px;
+    width: 100%; text-align: left; cursor: pointer;
+    background: var(--panel2); color: var(--text);
+    border: none; border-radius: 0;
+    padding: 12px 14px; font: inherit;
+    transition: background .15s;
+  }
+  .room-head:hover { background: #1c2029; }
+  .room-head:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
+  /* Caret: feste Breite, damit die Zeile beim Auf-/Zuklappen nicht springt */
+  .room-head .caret { flex: 0 0 auto; width: 14px; color: var(--muted);
+    display: inline-block; transition: transform .15s; }
+  .room-head .name  { font-size: 16px; font-weight: 700; }
+  .room-head .count { color: var(--muted); font-size: 13px; }
+  .room-head .total { margin-left: auto; color: var(--muted); font-size: 13px;
+    font-variant-numeric: tabular-nums; }
+  .room-body { padding: 6px 14px 10px; }
+  @media (prefers-reduced-motion: reduce) {
+    .room-head .caret { transition: none; }
+  }
+  .rec-row { display: grid; grid-template-columns: 1.2fr 1fr 90px 120px 1fr;
+    gap: 12px; align-items: center; padding: 9px 4px; font-size: 14px;
+    border-bottom: 1px solid var(--border); }
+  .rec-row > span:last-child { display:flex; justify-content:flex-end; align-items:center; gap:8px; }
+  .rec-row:last-child { border-bottom: none; }
+  .rec-row .g  { font-weight: 600; }
+  .rec-row .s  { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .rec-row .sz { font-variant-numeric: tabular-nums; }
+  a.dl { color: var(--brand); text-decoration: none; font-weight: 600; }
+  a.dl:hover { text-decoration: underline; }
+  .nomerge { color: var(--warn); }
+  .empty { color: var(--muted); text-align: center; padding: 40px; font-size: 16px; }
+
+  /* Sprint 6: Dashboard-Kennzahlen */
+  .overview-dashboard {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+    margin-top: 14px;
+  }
+  .overview-card {
+    background: var(--panel2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    min-height: 104px;
+  }
+  .overview-card .label {
+    color: var(--muted);
+    font-size: 12px;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+  }
+  .overview-card .value {
+    color: var(--brand);
+    font-size: clamp(28px, 4vw, 38px);
+    line-height: 1.05;
+    font-weight: 750;
+    font-variant-numeric: tabular-nums;
+    margin-top: 9px;
+  }
+  .overview-card .detail {
+    color: var(--muted);
+    font-size: 12px;
+    margin-top: 7px;
+  }
+  @media (max-width: 640px) {
+    .overview-dashboard { grid-template-columns: 1fr; }
+    .overview-card { min-height: 0; }
+  }
+
+  .head-row { display: grid; grid-template-columns: 1.2fr 1fr 90px 120px 1fr;
+    gap: 12px; padding: 0 6px 6px; font-size: 12px; text-transform: uppercase;
+    letter-spacing: .5px; color: #6b7280; }
+  .head-row > span:last-child { text-align: right; }
+  /* --- Settings rows: DEFAULT stays FLEX (avoid global unit spacing regressions) --- */
+  .cfg-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .cfg-row:last-child { border-bottom: none; }
+
+  /* Left text block */
+  .cfg-row > div:first-child { flex: 1; min-width: 220px; }
+  .cfg-row label { font-size: 14px; color: var(--text); display: block; }
+  .cfg-row .desc  { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+  /* Inputs (base) */
+  .cfg-row input[type=number],
+  .cfg-row input[type=password],
+  .cfg-row input[type=text] {
+    background: var(--panel2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 10px;
+    font: inherit;
+    outline: none;
+  }
+  .cfg-row input[type=number]:focus,
+  .cfg-row input[type=password]:focus,
+  .cfg-row input[type=text]:focus { border-color: var(--ok); }
+
+  /* Compact number inputs */
+  .cfg-row input[type=number] {
+    width: 96px;
+    text-align: right;
+    padding: 7px 10px;
+  }
+
+  /* Remove native spin buttons (settings only) */
+  .cfg-row input[type=number]::-webkit-outer-spin-button,
+  .cfg-row input[type=number]::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  .cfg-row input[type=number] { appearance: textfield; -moz-appearance: textfield; }
+
+  /* --- Global settings: keep number + unit together (scoped) --- */
+  .cfg-row.cfg-row-num {
+    display: grid;
+    grid-template-columns: minmax(220px, 1fr) max-content;
+    gap: 14px;
+    align-items: center;
+  }
+  .cfg-row.cfg-row-num .num-wrap {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    justify-self: start;
+    white-space: nowrap;
+  }
+  .cfg-row.cfg-row-num .unit { font-size: 14px; color: var(--muted); }
+
+  /* Color swatch: stable size */
+  .cfg-row input[type=color].color-swatch {
+    width: 54px;
+    height: 36px;
+    padding: 2px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--panel2);
+    cursor: pointer;
+  }
+
+  /* File button wrapper should not stretch weirdly */
+  .cfg-row .file-btn { justify-self: start; }
+
+  @media (max-width: 720px) {
+    .cfg-row { flex-direction: column; align-items: stretch; }
+    .cfg-row.cfg-row-num { grid-template-columns: 1fr; }
+    .cfg-row.cfg-row-num .num-wrap { justify-self: start; }
+  }
+  .btn-save { background: var(--brand); color: var(--brand-on); border: 1px solid var(--brand);
+    border-radius: 8px; padding: 8px 16px; font: inherit; font-size: 14px;
+    font-weight: 600; cursor: pointer; transition: background .15s; }
+  .btn-save:hover { background: var(--brand-hover); }
+
+  /* --- Unified buttons --- */
+  .btn {
+    background: var(--panel2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 14px;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: border-color .15s, background .15s, opacity .15s;
+  }
+  .btn:hover { border-color: #3a4150; background: #1c2029; }
+  .btn:disabled { opacity: .45; cursor: not-allowed; }
+  .btn-primary { background: var(--brand); border-color: var(--brand); color: var(--brand-on); }
+  .btn-primary:hover { background: var(--brand-hover); border-color: var(--brand-hover); }
+  .btn-warn { color: var(--warn); border-color: var(--warn); background: transparent; }
+  .btn-danger { color: #e5484d; border-color: #e5484d; background: transparent; }
+  .btn-brand { color: var(--brand); border-color: var(--brand); background: transparent; }
+  /* Hover soll sich wie bei .btn (nur eben in Brandfarbe) anfühlen */
+  .btn-brand:hover {
+    border-color: var(--brand-hover);
+    background: #1c2029;
+    color: var(--text);
+  }
+  .btn-ghost { background: transparent; color: var(--muted); }
+  .btn-ghost:hover { color: var(--text); }
+  .cfg-status { font-size: 13px; color: var(--ok); min-height: 18px; }
+
+  /* --- UI-consistent checkbox (Gast-Links) --- */
+  .check {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--panel2);
+    color: var(--muted);
+    user-select: none;
+  }
+  .check span { color: var(--muted); font-size: 13px; font-weight: 600; }
+  .check input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    accent-color: var(--brand);
+  }
+  .check:focus-within { outline: none; border-color: var(--brand); }
+
+  /* --- File input styled like a button (Favicon) --- */
+  .file-btn {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+  .file-btn input[type="file"] {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+    width: 100%;
+    height: 100%;
+  }
+
+  /* --- Room management: consistent action widths + green "Aktivieren" --- */
+  .btn-wide { min-width: 110px; text-align: center; }
+  /* NOTE: Aktivieren soll NICHT vom Branding abhängen -> feste Success-Farbe */
+  .btn-ok { color: #30a46c; border-color: #30a46c; background: transparent; }
+  .btn-ok:hover { border-color: #3cbf7e; background: #1c2029; }
+
+  /* --- Token-Tabelle (Feature 2) --- */
+  .tok-head, .tok-row {
+    display: grid;
+    grid-template-columns: 1fr 1.1fr 110px 110px 1.2fr;
+    gap: 12px; align-items: center;
+  }
+  .tok-head {
+    font-size: 12px; text-transform: uppercase; letter-spacing: .5px;
+    color: #6b7280; padding: 0 4px 8px;
+  }
+  .tok-row {
+    padding: 10px 4px; font-size: 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .tok-row:last-child { border-bottom: none; }
+  .tok-row .room { font-weight: 700; }
+  .tok-row .prev { font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--muted); }
+  .tok-row .when { font-variant-numeric: tabular-nums; color: var(--muted); }
+  .tok-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; align-items: center; }
+
+  /* Align Download cell contents to the right like other overviews */
+  .rec-row > span:last-child { display:flex; justify-content:flex-end; align-items:center; gap:8px; }
+  .rec-row > span:last-child .pill { margin-left: 0; }
+  .pill {
+    display: inline-block; font-size: 12px; font-weight: 600;
+    padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border);
+  }
+  /* "Aktiv" in Token-Liste soll NIE von Branding beeinflusst werden -> feste Farbe wie revoked */
+  .pill.active  { color: #30a46c;   border-color: #30a46c; }
+  .pill.revoked { color: #e5484d;     border-color: #e5484d; }
+  .pill.expired { color: var(--warn); border-color: var(--warn); }
+  .pill.rec    { color: #e5484d; border-color: #e5484d; }
+  .pill.err    { color: #e5484d; border-color: #e5484d; }
+
+  /* Gast-Link „aktiv“ darf nie mit Branding eingefärbt werden (immer Grün). */
+  .guest-links .pill.active,
+  .pill.active[data-scope="guest-link"],
+  .pill.active.guest-link {
+    color: var(--ok);
+    border-color: var(--ok);
+  }
+  @media (max-width: 720px) {
+    .tok-head { display: none; }
+    .tok-row { grid-template-columns: 1fr; gap: 4px; }
+    .tok-actions { justify-content: flex-start; }
+  }
+</style>
+<!-- Branding zuletzt: ueberschreibt die :root-Defaults oben. -->
+<!--BRANDING-->
+</head>
+<body>
+
+<div class="auth-bar">
+  <a class="back-btn" href="/">← Zurück</a>
+  <button class="logout-btn" id="logoutBtn">Abmelden</button>
+</div>
+
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Admin</h1>
+      <div id="overviewDashboard" class="overview-dashboard" aria-label="Aufnahmenübersicht">
+        <div class="overview-card"><div class="label">Aufnahmen</div><div class="value" id="overviewRecordings">–</div><div class="detail" id="overviewRecordingsDetail">Wird geladen</div></div>
+        <div class="overview-card"><div class="label">Räume</div><div class="value" id="overviewRooms">–</div><div class="detail" id="overviewRoomsDetail">Wird geladen</div></div>
+        <div class="overview-card"><div class="label">Speicher</div><div class="value" id="overviewStorage">–</div><div class="detail" id="overviewStorageDetail">Wird geladen</div></div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Globale Einstellungen -->
+  <div class="panel">
+    <b style="font-size:16px">Globale Einstellungen</b>
+    <div style="margin-top:14px">
+      <div class="cfg-row cfg-row-num">
+        <div>
+          <label>Gast-Token-Laufzeit</label>
+          <div class="desc">Wie viele Tage ist ein neu generierter Einladungslink gültig?</div>
+        </div>
+        <div class="num-wrap">
+          <input type="number" id="cfgTokenDays" min="1" max="365" value="7">
+          <span class="unit">Tage</span>
+        </div>
+      </div>
+      <div class="cfg-row cfg-row-num">
+        <div>
+          <label>Automatische Löschung alter Aufnahmen</label>
+          <div class="desc">Aufnahmen älter als N Tage werden automatisch gelöscht. <b>0 = deaktiviert.</b></div>
+        </div>
+        <div class="num-wrap">
+          <input type="number" id="cfgRecDays" min="0" max="3650" value="30">
+          <span class="unit">Tage</span>
+        </div>
+      </div>
+      <div class="cfg-row cfg-row-num">
+        <div>
+          <label>Rohe Chunks aufräumen</label>
+          <div class="desc">Nicht zusammengeführte Chunk-Dateien älter als N Stunden werden gelöscht (Standard 72).</div>
+        </div>
+        <div class="num-wrap">
+          <input type="number" id="cfgChunkHours" min="1" max="8760" value="72">
+          <span class="unit">Std.</span>
+        </div>
+      </div>
+      <div class="cfg-row cfg-row-num">
+        <div>
+          <label>Gast-Logs aufbewahren</label>
+          <div class="desc">Gespeicherte Gast-Console-Logs älter als N Tage werden automatisch gelöscht. <b>0 = deaktiviert.</b></div>
+        </div>
+        <div class="num-wrap">
+          <input type="number" id="cfgLogDays" min="0" max="3650" value="14">
+          <span class="unit">Tage</span>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:14px;margin-top:14px">
+        <button class="btn btn-primary" id="saveCfgBtn">Einstellungen speichern</button>
+        <span class="cfg-status" id="cfgStatus"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Custom Branding (Feature 8) -->
+  <div class="panel">
+    <b style="font-size:16px">Custom Branding</b>
+    <div style="margin-top:14px">
+      <div class="cfg-row">
+        <div>
+          <label>Name / Titel</label>
+          <div class="desc">Erscheint als Seitentitel und Überschrift.</div>
+        </div>
+        <input type="text" id="brandName" placeholder="Podcast Studio"
+               style="width:220px;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font:inherit">
+      </div>
+      <div class="cfg-row">
+        <div>
+          <label>Primärfarbe</label>
+          <div class="desc">Akzentfarbe für Buttons und Hervorhebungen.</div>
+        </div>
+        <input type="color" id="brandColor" value="#30a46c" class="color-swatch">
+      </div>
+      <div class="cfg-row">
+        <div>
+          <label>Favicon</label>
+          <div class="desc">PNG/SVG-Datei (klein). Wird als Data-URL gespeichert.</div>
+        </div>
+        <span class="btn file-btn" role="button" tabindex="0">Datei auswählen
+          <input type="file" id="brandFaviconFile" accept="image/*">
+        </span>
+        <button class="btn btn-ghost" id="brandFaviconClear">Entfernen</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:14px;margin-top:14px">
+        <button class="btn btn-primary" id="saveBrandBtn">Branding speichern</button>
+        <span class="cfg-status" id="brandStatus"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Passwoerter (Feature 2 + 13) -->
+  <div class="panel">
+    <b style="font-size:16px">Passwörter</b>
+    <p class="sub" style="margin:6px 0 0">Admin- und Host-Passwort zurücksetzen — ohne <code>.env</code>-Edit oder Neustart.</p>
+    <div style="margin-top:14px">
+      <div class="cfg-row">
+        <div>
+          <label>Neues Admin-Passwort</label>
+          <div class="desc">Vollzugriff: Admin-Panel + Host-Studio.</div>
+        </div>
+        <input type="password" id="newAdminPw" placeholder="mind. 4 Zeichen"
+               style="width:220px;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font:inherit">
+        <button class="btn btn-primary" id="setAdminPwBtn">Setzen</button>
+      </div>
+      <div class="cfg-row">
+        <div>
+          <label>Neues Host-Passwort</label>
+          <div class="desc">Eingeschränkt: nur Raum-Eingabe + Host-Studio.</div>
+        </div>
+        <input type="password" id="newHostPw" placeholder="mind. 4 Zeichen"
+               style="width:220px;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font:inherit">
+        <button class="btn btn-primary" id="setHostPwBtn">Setzen</button>
+      </div>
+      <span class="cfg-status" id="pwStatus"></span>
+    </div>
+  </div>
+
+  <!-- Raum-Management (Feature 6) -->
+  <div class="panel">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <b style="font-size:16px">Raum-Management</b>
+      <button class="btn btn-ghost" id="refreshRoomsBtn">↻ Aktualisieren</button>
+    </div>
+    <div id="roomsBox" style="margin-top:12px;font-size:14px;color:var(--muted)">Lade…</div>
+  </div>
+
+  <!-- Gast-Link-Token-Übersicht (Feature 2) -->
+  <div class="panel">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
+      <div>
+        <b style="font-size:16px">Gast-Links (Token)</b>
+        <p class="sub" style="margin:4px 0 0">Einladungslinks verwalten: widerrufen oder löschen.</p>
+      </div>
+      <button class="btn btn-ghost" id="refreshTokensBtn">↻ Aktualisieren</button>
+    </div>
+
+    <div style="margin-top:10px">
+      <label class="check">
+        <input type="checkbox" id="tokShowAll"> <span>Auch widerrufene/abgelaufene zeigen</span>
+      </label>
+    </div>
+
+    <div id="tokensBox" style="margin-top:12px;font-size:14px;color:var(--muted)">Lade…</div>
+  </div>
+
+  <div class="panel" id="content">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+      <div>
+        <b style="font-size:16px">Aufnahmen</b>
+        <p class="sub" style="margin:4px 0 0">Alle fertigen WAVs (oder „nur Chunks“ falls noch nicht gemerged).</p>
+      </div>
+      <button class="btn btn-ghost" id="refreshSessionsBtn">↻ Aktualisieren</button>
+    </div>
+    <div id="sessionsBox" style="margin-top:12px;font-size:14px;color:var(--muted)">Lade Aufnahmen…</div>
+  </div>
+</div>
+
+<!-- Modal: Gast-Logs eines Raums (Feature 6) -->
+<div id="logModalBg" style="position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;padding:20px;z-index:100">
+  <div style="background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:22px;max-width:760px;width:100%;max-height:80vh;overflow:auto">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <b id="logModalTitle" style="font-size:16px">Gast-Logs</b>
+      <button id="logModalClose" style="background:none;border:1px solid var(--border);color:var(--muted);border-radius:8px;padding:6px 12px;cursor:pointer">Schließen</button>
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:10px">Ein Eintrag pro Gast. Zum Aufklappen anklicken. Live-Aktualisierung aktiv · gespeichert laut Aufbewahrung.</div>
+    <div id="logModalBody" style="font-size:14px;color:var(--muted);max-height:62vh;overflow:auto">
+      <div id="logModalGuests"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const SERVER = location.origin;
+  const $ = id => document.getElementById(id);
+  const esc = s => String(s).replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const fmtDate = ts => new Date((ts||0)*1000).toLocaleDateString('de-DE',
+    { year:'numeric', month:'2-digit', day:'2-digit' });
+
+  async function apiFetch(url, opts = {}) {
+    const res = await fetch(url, opts);
+    if (res.status === 401 || res.status === 303) {
+      location.href = '/login?next=' + encodeURIComponent(location.pathname);
+      throw new Error('Nicht authentifiziert');
+    }
+    return res;
+  }
+
+  function flash(el, msg, ok = true) {
+    if (!el) return;
+
+    // Unified status UI: use pills for errors ("failed to fetch" etc.)
+    if (!ok) {
+      el.innerHTML = `<span class="pill err">${esc(msg)}</span>`;
+      return;
+    }
+
+    el.textContent = msg;
+    el.style.color = 'var(--ok)';
+    setTimeout(() => { if (el.textContent === msg) el.textContent = ''; }, 4000);
+  }
+
+  function showFetchError(targetEl, err) {
+    const msg = (err && err.message) ? err.message : String(err || 'Fehler');
+    // Normalize common fetch wording across browsers
+    const normalized = /Failed to fetch/i.test(msg) ? 'Failed to fetch' : msg;
+
+    if (!targetEl) return;
+    targetEl.innerHTML = `<span class="pill err">Fehler: ${esc(normalized)}</span>`;
+  }
+
+  // ── Globale Einstellungen ────────────────────────────────────────────────
+  async function loadConfig() {
+    try {
+      const res  = await apiFetch(`${SERVER}/admin/config`, { cache: 'no-store' });
+      const data = await res.json();
+      const cfg  = data.config || {};
+      $('cfgTokenDays').value  = cfg.token_days ?? 7;
+      $('cfgRecDays').value    = cfg.recording_days ?? 30;
+      $('cfgChunkHours').value = cfg.chunk_hours ?? 72;
+      $('cfgLogDays').value    = cfg.log_days ?? 14;
+      $('brandName').value     = cfg.brand_name || '';
+      if (cfg.brand_color) $('brandColor').value = cfg.brand_color;
+      brandFaviconData = cfg.brand_favicon || '';
+    } catch (err) {
+      if (err.message !== 'Nicht authentifiziert') flash($('cfgStatus'), 'Fehler: ' + err.message, false);
+    }
+  }
+
+  $('saveCfgBtn').addEventListener('click', async () => {
+    flash($('cfgStatus'), 'Speichere…');
+    try {
+      const body = {
+        token_days:     +$('cfgTokenDays').value,
+        recording_days: +$('cfgRecDays').value,
+        chunk_hours:    +$('cfgChunkHours').value,
+        log_days:       +$('cfgLogDays').value,
+      };
+      const res = await apiFetch(`${SERVER}/admin/config`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      flash($('cfgStatus'), '✔ Gespeichert.');
+    } catch (err) { flash($('cfgStatus'), 'Fehler: ' + err.message, false); }
+  });
+
+  // ── Branding ─────────────────────────────────────────────────────────────
+  let brandFaviconData = '';
+  $('brandFaviconFile').addEventListener('change', (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const r = new FileReader();
+    r.onload = () => { brandFaviconData = r.result; flash($('brandStatus'), 'Favicon geladen — jetzt speichern.'); };
+    r.readAsDataURL(file);
+  });
+  $('brandFaviconClear').addEventListener('click', () => {
+    brandFaviconData = ''; $('brandFaviconFile').value = '';
+    flash($('brandStatus'), 'Favicon entfernt — jetzt speichern.');
+  });
+  $('saveBrandBtn').addEventListener('click', async () => {
+    flash($('brandStatus'), 'Speichere…');
+    try {
+      const body = {
+        brand_name:    $('brandName').value,
+        brand_color:   $('brandColor').value,
+        brand_favicon: brandFaviconData,
+      };
+      const res = await apiFetch(`${SERVER}/admin/config`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      flash($('brandStatus'), '✔ Branding gespeichert.');
+    } catch (err) { flash($('brandStatus'), 'Fehler: ' + err.message, false); }
+  });
+
+  // ── Passwörter ───────────────────────────────────────────────────────────
+  async function setPassword(role, inputEl) {
+    const pw = inputEl.value;
+    if (!pw || pw.length < 4) { flash($('pwStatus'), 'Passwort muss mindestens 4 Zeichen haben.', false); return; }
+    try {
+      const res = await apiFetch(`${SERVER}/admin/password`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role, new_password: pw }),
+      });
+      if (!res.ok) { const d = await res.json().catch(()=>({})); throw new Error(d.detail || ('HTTP ' + res.status)); }
+      inputEl.value = '';
+      flash($('pwStatus'), `✔ ${role === 'admin' ? 'Admin' : 'Host'}-Passwort gesetzt.`);
+    } catch (err) { flash($('pwStatus'), 'Fehler: ' + err.message, false); }
+  }
+  $('setAdminPwBtn').addEventListener('click', () => setPassword('admin', $('newAdminPw')));
+  $('setHostPwBtn').addEventListener('click', () => setPassword('host', $('newHostPw')));
+
+  // ── Gast-Link-Token (Feature 2) ──────────────────────────────────────────
+  function tokenStatus(t) {
+    if (t.revoked) return { cls: 'revoked', label: 'Widerrufen' };
+    if (t.expired) return { cls: 'expired', label: 'Abgelaufen' };
+    return { cls: 'active', label: 'Aktiv' };
+  }
+
+  async function loadTokens() {
+    const box = $('tokensBox');
+    try {
+      const res  = await apiFetch(`${SERVER}/admin/tokens`, { cache: 'no-store' });
+      const data = await res.json();
+      let toks   = data.tokens || [];
+      if (!$('tokShowAll').checked) toks = toks.filter(t => t.active);
+
+      if (!toks.length) {
+        box.innerHTML = '<div class="empty" style="padding:24px">Keine Gast-Links vorhanden.</div>';
+        return;
+      }
+      const activeCount = (data.tokens || []).filter(t => t.active).length;
+      let html = `<div style="color:var(--muted);font-size:12px;margin-bottom:8px">`
+        + `${toks.length} angezeigt · ${activeCount} aktiv (gesamt ${(data.tokens||[]).length})</div>`;
+      html += `<div class="tok-head">
+        <span>Raum / Label</span><span>Token</span><span>Erstellt</span>
+        <span>Gültig bis</span><span style="text-align:right">Status / Aktion</span></div>`;
+      for (const t of toks) {
+        const st = tokenStatus(t);
+        html += `<div class="tok-row" data-id="${esc(t.id)}">
+          <div><div class="room">${esc(t.room)}</div>
+            ${t.label && t.label !== t.room ? `<div style="color:var(--muted);font-size:13px">${esc(t.label)}</div>` : ''}</div>
+          <div class="prev">${esc(t.token_preview)}</div>
+          <div class="when">${fmtDate(t.created_at)}</div>
+          <div class="when">${fmtDate(t.expires_at)}</div>
+          <div class="tok-actions">
+            <span class="pill ${st.cls}">${st.label}</span>
+            ${t.active ? `<button class="btn btn-warn" data-act="revoke" data-id="${esc(t.id)}">Widerrufen</button>` : ''}
+            <button class="btn btn-danger" data-act="delete" data-id="${esc(t.id)}">Löschen</button>
+          </div>
+        </div>`;
+      }
+      box.innerHTML = html;
+    } catch (err) {
+      if (err.message !== 'Nicht authentifiziert') showFetchError(box, err);
+    }
+  }
+
+  $('tokensBox').addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-act]');
+    if (!btn) return;
+    const id  = btn.dataset.id;
+    const act = btn.dataset.act;
+    if (act === 'revoke') {
+      if (!confirm('Diesen Gast-Link widerrufen? Er wird sofort ungültig.')) return;
+      btn.disabled = true;
+      try {
+        const res = await apiFetch(`${SERVER}/admin/token/${id}`, { method: 'DELETE' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        loadTokens();
+      } catch (err) { alert('Fehler: ' + err.message); btn.disabled = false; }
+    } else if (act === 'delete') {
+      if (!confirm('Diesen Gast-Link endgültig löschen? Das kann nicht rückgängig gemacht werden.')) return;
+      btn.disabled = true;
+      try {
+        const res = await apiFetch(`${SERVER}/admin/token/hard/${id}`, { method: 'DELETE' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        loadTokens();
+      } catch (err) { alert('Fehler: ' + err.message); btn.disabled = false; }
+    }
+  });
+  $('refreshTokensBtn').addEventListener('click', loadTokens);
+  $('tokShowAll').addEventListener('change', loadTokens);
+
+  // ── Raum-Management ──────────────────────────────────────────────────────
+  async function loadRooms() {
+    const box = $('roomsBox');
+    try {
+      const res  = await apiFetch(`${SERVER}/admin/rooms`, { cache: 'no-store' });
+      const data = await res.json();
+      const rooms = data.rooms || [];
+      if (!rooms.length) { box.innerHTML = '<div class="empty" style="padding:20px">Keine Räume.</div>'; return; }
+      let html = '';
+      for (const r of rooms) {
+        html += `<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 4px;border-bottom:1px solid var(--border)">
+          <div style="flex:1;min-width:180px">
+            <b style="color:var(--text);font-size:15px">${esc(r.room)}</b>
+            ${r.archived ? '<span class="pill expired" style="margin-left:8px">Archiviert</span>' : ''}
+            ${r.recording ? '<span class="pill rec" style="margin-left:8px">🔴 REC</span>' : (r.countdown ? '<span class="pill" style="margin-left:8px">⏱️ Startet…</span>' : (r.online ? '<span class="pill active" style="margin-left:8px">🟢 online</span>' : ''))}
+            <div style="font-size:13px;color:var(--muted);margin-top:2px">${r.sessions} Session(s) · ${r.size_mb} MB</div>
+          </div>
+          <a class="btn" href="${SERVER}/export/${encodeURIComponent(r.room)}">⬇ ZIP</a>
+          <button class="btn" data-room-act="logs" data-room="${esc(r.room)}">Logs</button>
+          <button class="btn ${r.archived ? 'btn-ok' : 'btn-warn'} btn-wide" data-room-act="archive" data-room="${esc(r.room)}" data-archived="${r.archived}">${r.archived ? 'Aktivieren' : 'Archivieren'}</button>
+          <button class="btn btn-danger" data-room-act="delete" data-room="${esc(r.room)}">Löschen</button>
+        </div>`;
+      }
+      box.innerHTML = html;
+    } catch (err) {
+      if (err.message !== 'Nicht authentifiziert') showFetchError(box, err);
+    }
+  }
+
+  $('roomsBox').addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-room-act]');
+    if (!btn) return;
+    const room = btn.dataset.room;
+    const act  = btn.dataset.roomAct;
+    if (act === 'logs') { openLogs(room); return; }
+    if (act === 'archive') {
+      const want = btn.dataset.archived !== 'true';
+      try {
+        const res = await apiFetch(`${SERVER}/admin/room/${encodeURIComponent(room)}/archive`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ archived: want }),
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        loadRooms();
+      } catch (err) { alert('Fehler: ' + err.message); }
+    } else if (act === 'delete') {
+      if (!confirm(`Raum "${room}" komplett löschen (alle Aufnahmen + Token)? Das kann nicht rückgängig gemacht werden.`)) return;
+      try {
+        const res = await apiFetch(`${SERVER}/admin/room/${encodeURIComponent(room)}`, { method: 'DELETE' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        loadRooms(); load(); loadTokens();
+      } catch (err) { alert('Fehler: ' + err.message); }
+    }
+  });
+  $('refreshRoomsBtn').addEventListener('click', loadRooms);
+  const refreshSessionsBtn = $('refreshSessionsBtn');
+  if (refreshSessionsBtn) refreshSessionsBtn.addEventListener('click', load);
+
+  // ── Gast-Logs-Modal (inline, pro Gast, aufklappbar) ───────────────────────
+  // Ein Eintrag pro Gast. Der Server liefert Logs gruppiert (/logs). Wir
+  // pollen mit `since` (Delta) und haengen neue Zeilen nur an, statt alles
+  // neu zu rendern. Der Aufklapp-Zustand pro Gast bleibt so erhalten.
+  let logsRoom = null;
+  let logsTimer = null;
+  let logsSince = 0;               // letzter gesehener Zeitstempel (Delta-Poll)
+  const logsExpanded = new Set();  // Gast-IDs, die aktuell aufgeklappt sind
+  // Zustand pro Gast: { count, lastTs, lastLine, counts }
+  let logsState = new Map();
+
+  const LVL_COL = (lv) => lv === 'err' ? '#e5484d' : lv === 'ok' ? 'var(--ok)' : 'var(--muted)';
+
+  function openLogs(room) {
+    logsRoom = room;
+    logsSince = 0;
+    logsExpanded.clear();
+    logsState = new Map();
+    $('logModalTitle').textContent = `Gast-Logs · ${room}`;
+    $('logModalGuests').innerHTML = '<div class="empty" style="padding:20px">Lade…</div>';
+    $('logModalBg').style.display = 'flex';
+
+    loadLogsInto(room, true);
+    if (logsTimer) clearInterval(logsTimer);
+    logsTimer = setInterval(() => { if (logsRoom) loadLogsInto(logsRoom, false); }, 2000);
+  }
+
+  function guestCardHtml(g) {
+    const open = logsExpanded.has(g.guest);
+    const t = g.lastTs ? new Date(g.lastTs*1000).toLocaleTimeString('de-DE') : '–';
+    const c = g.counts || { info:0, ok:0, err:0 };
+    const preview = g.lastLine
+      ? `<span style="color:${LVL_COL(g.lastLine.level)}">${esc(g.lastLine.msg||'')}</span>`
+      : '<span style="color:var(--muted)">Keine Ereignisse</span>';
+    return `<div class="log-guest" data-guest="${esc(g.guest)}" style="border:1px solid var(--border);border-radius:10px;margin-bottom:8px;overflow:hidden">
+      <button class="log-guest-head" data-guest="${esc(g.guest)}" style="width:100%;text-align:left;background:var(--panel2);border:none;color:var(--text);cursor:pointer;padding:10px 12px;display:flex;align-items:center;gap:10px;font:inherit">
+        <span style="transition:transform .15s;transform:rotate(${open?90:0}deg);color:var(--muted)">▶</span>
+        <b style="font-size:14px">${esc(g.guest)}</b>
+        <span style="font-size:12px;color:var(--muted)">${g.count} Ereignis(se) · ${t}</span>
+        ${c.err ? `<span class="pill err" style="margin-left:2px">${c.err} Fehler</span>` : ''}
+        <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;text-align:right">${preview}</span>
+      </button>
+      <div class="log-guest-body" data-guest="${esc(g.guest)}" style="display:${open?'block':'none'};max-height:38vh;overflow:auto;font-family:JetBrains Mono,monospace;padding:4px 0">
+        <div class="log-lines"></div>
+      </div>
+    </div>`;
+  }
+
+  function lineHtml(ln) {
+    const t = new Date((ln.ts||0)*1000).toLocaleTimeString('de-DE');
+    return `<div style="display:flex;gap:10px;align-items:baseline;padding:5px 12px;border-top:1px solid var(--border)">
+      <span style="font-size:12px;color:var(--muted);min-width:84px">${t}</span>
+      <span style="font-size:12px;color:${LVL_COL(ln.level)};min-width:34px">${esc(ln.level||'info')}</span>
+      <span style="color:var(--text);font-size:13px">${esc(ln.msg||'')}</span>
+    </div>`;
+  }
+
+  async function loadLogsInto(room, isFirst) {
+    const box = $('logModalGuests');
+    if (!box) return;
+    try {
+      const url = `${SERVER}/admin/room/${encodeURIComponent(room)}/logs?since=${logsSince}`;
+      const res  = await apiFetch(url, { cache: 'no-store' });
+      const data = await res.json();
+      const guests = data.guests || [];
+
+      // Delta-Cursor: hoechster tatsaechlich gesehener Zeilen-ts (Client-Zeit).
+      // NICHT server_time verwenden -- die Zeilen tragen Client-ts (Clock-Offset!),
+      // sonst wuerden Zeilen mit ts < server_time faelschlich weggefiltert.
+      let maxTs = logsSince;
+
+      // Merge Delta-Daten in den Zustand.
+      for (const g of guests) {
+        const prev = logsState.get(g.guest) || { count:0, lastTs:0, lastLine:null, counts:{info:0,ok:0,err:0} };
+        prev.count  += (g.lines||[]).length;
+        for (const k of ['info','ok','err']) prev.counts[k] += (g.counts?.[k]||0);
+        if (g.last && (g.last_ts||0) >= prev.lastTs) { prev.lastTs = g.last_ts||0; prev.lastLine = g.last; }
+        for (const ln of (g.lines||[])) { if ((ln.ts||0) > maxTs) maxTs = ln.ts||0; }
+        prev.guest = g.guest;
+        prev._new = g.lines || [];
+        logsState.set(g.guest, prev);
+      }
+      logsSince = maxTs;
+
+      const ordered = [...logsState.values()].sort((a,b) => (b.lastTs||0)-(a.lastTs||0));
+
+      if (!ordered.length) {
+        box.innerHTML = '<div class="empty" style="padding:20px">Noch keine gespeicherten Logs für diesen Raum.</div>';
+        return;
+      }
+
+      // Erst-Render (oder wenn neue Gäste dazukommen): Struktur neu aufbauen.
+      const haveCards = new Set([...box.querySelectorAll('.log-guest')].map(el => el.dataset.guest));
+      const needRebuild = isFirst || ordered.some(g => !haveCards.has(g.guest));
+      if (needRebuild) {
+        box.innerHTML = ordered.map(g => guestCardHtml({
+          guest:g.guest, count:g.count, lastTs:g.lastTs, lastLine:g.lastLine, counts:g.counts
+        })).join('');
+        // Vorhandene Zeilen (bei Erst-Render) einmal komplett füllen.
+        for (const g of ordered) {
+          const bodyLines = box.querySelector(`.log-guest-body[data-guest="${cssEsc(g.guest)}"] .log-lines`);
+          if (bodyLines && g._new && g._new.length) {
+            bodyLines.insertAdjacentHTML('beforeend', g._new.map(lineHtml).join(''));
+          }
+          g._new = [];
+        }
+        return;
+      }
+
+      // Delta-Update: nur Kopf-Infos aktualisieren + neue Zeilen anhängen.
+      for (const g of ordered) {
+        const card = box.querySelector(`.log-guest[data-guest="${cssEsc(g.guest)}"]`);
+        if (!card) continue;
+        // Kopf neu setzen (Zähler/Vorschau).
+        const head = card.querySelector('.log-guest-head');
+        if (head) {
+          const tmp = document.createElement('div');
+          tmp.innerHTML = guestCardHtml({ guest:g.guest, count:g.count, lastTs:g.lastTs, lastLine:g.lastLine, counts:g.counts });
+          head.innerHTML = tmp.querySelector('.log-guest-head').innerHTML;
+        }
+        // Neue Zeilen anhängen (falls aufgeklappt oder für später vorhalten).
+        if (g._new && g._new.length) {
+          const bodyLines = card.querySelector('.log-lines');
+          const bodyWrap  = card.querySelector('.log-guest-body');
+          if (bodyLines) {
+            const nearBottom = bodyWrap && (bodyWrap.scrollTop + bodyWrap.clientHeight) >= (bodyWrap.scrollHeight - 30);
+            bodyLines.insertAdjacentHTML('beforeend', g._new.map(lineHtml).join(''));
+            if (nearBottom && bodyWrap) bodyWrap.scrollTop = bodyWrap.scrollHeight;
+          }
+        }
+        g._new = [];
+      }
+    } catch (err) {
+      if (err.message !== 'Nicht authentifiziert') {
+        box.innerHTML = `<span class="pill err">Fehler: ${esc(err.message)}</span>`;
+      }
+    }
+  }
+
+  // CSS.escape-Fallback für Attribut-Selektoren mit Gastnamen.
+  function cssEsc(s) {
+    return (window.CSS && CSS.escape) ? CSS.escape(String(s))
+      : String(s).replace(/["\\\]]/g, '\\$&');
+  }
+
+  // Aufklappen/Zuklappen (Event-Delegation).
+  $('logModalGuests').addEventListener('click', (e) => {
+    const head = e.target.closest('.log-guest-head');
+    if (!head) return;
+    const guest = head.dataset.guest;
+    const card = head.closest('.log-guest');
+    const body = card && card.querySelector('.log-guest-body');
+    const caret = head.querySelector('span');
+    const willOpen = !logsExpanded.has(guest);
+    if (willOpen) logsExpanded.add(guest); else logsExpanded.delete(guest);
+    if (body) body.style.display = willOpen ? 'block' : 'none';
+    if (caret) caret.style.transform = `rotate(${willOpen?90:0}deg)`;
+    if (willOpen && body) body.scrollTop = body.scrollHeight;
+  });
+
+  function closeLogs() {
+    $('logModalBg').style.display = 'none';
+    logsRoom = null;
+    if (logsTimer) { clearInterval(logsTimer); logsTimer = null; }
+  }
+
+  $('logModalClose').addEventListener('click', closeLogs);
+  $('logModalBg').addEventListener('click', (e) => { if (e.target === $('logModalBg')) closeLogs(); });
+
+  // ── Aufnahmen-Liste + Sprint-6-Dashboard ─────────────────────────────────
+  function renderOverviewDashboard(sessions, byRoom, totalSize) {
+    const recordings = sessions.length;
+    const rooms = Object.keys(byRoom).length;
+    const size = Number(totalSize || 0);
+    const recordingLabel = recordings === 1 ? 'Aufnahme' : 'Aufnahmen';
+    const roomLabel = rooms === 1 ? 'Raum' : 'Räume';
+
+    $('overviewRecordings').textContent = recordings.toLocaleString('de-DE');
+    $('overviewRecordingsDetail').textContent = `${recordingLabel} über alle Räume`;
+    $('overviewRooms').textContent = rooms.toLocaleString('de-DE');
+    $('overviewRoomsDetail').textContent = `${roomLabel} mit gespeicherten Sessions`;
+    $('overviewStorage').textContent = `${size.toFixed(1)} MB`;
+    $('overviewStorageDetail').textContent = 'WAVs und vorhandene Chunks';
+
+  }
+
+  async function load() {
+    const sessionsBox = $('sessionsBox');
+    const content = sessionsBox || $('content');
+    try {
+      const res  = await apiFetch(`${SERVER}/sessions`, { cache: 'no-store' });
+      const sessions = await res.json();
+      if (!sessions.length) {
+        content.innerHTML = '<div class="empty">Noch keine Aufnahmen vorhanden.</div>';
+        renderOverviewDashboard([], {}, 0);
+        $('overviewRecordingsDetail').textContent = 'Noch keine Aufnahmen';
+        $('overviewRoomsDetail').textContent = 'Noch keine Räume';
+        $('overviewStorageDetail').textContent = 'Noch kein Speicher belegt';
+        return;
+      }
+      // nach Raum gruppieren
+      const byRoom = {};
+      let totalSize = 0;
+      for (const s of sessions) {
+        (byRoom[s.room] = byRoom[s.room] || []).push(s);
+        totalSize += s.size_mb || 0;
+      }
+      renderOverviewDashboard(sessions, byRoom, totalSize);
+      let html = '';
+      for (const room of Object.keys(byRoom).sort()) {
+        const recs = byRoom[room];
+        const roomSize = recs.reduce((a, r) => a + (r.size_mb || 0), 0);
+
+        // Rooms accordion: default collapsed (like the logs UI).
+        // Auto-open if the room has a live recording flag.
+        const hasLive = recs.some(r => r.recording);
+        const bodyStyle = hasLive ? 'block' : 'none';
+        const caretRot = hasLive ? '90deg' : '0deg';
+
+        html += `<div class="room-group" data-room="${esc(room)}">
+          <button type="button" class="room-head" data-room-toggle aria-expanded="${hasLive ? 'true' : 'false'}">
+            <span class="caret" aria-hidden="true" style="transform:rotate(${caretRot})">▶</span>
+            <span class="name">${esc(room)}</span>
+            <span class="count">${recs.length} Aufnahme(n)</span>
+            <span class="total">${roomSize.toFixed(1)} MB</span>
+          </button>
+          <div class="room-body" style="display:${bodyStyle}">
+            <div class="head-row"><span>Gast</span><span>Session</span><span>Chunks</span><span>Größe</span><span>Download</span></div>`;
+
+        for (const r of recs) {
+          const onlyChunks = !r.merged && (r.chunks || 0) > 0;
+          html += `<div class="rec-row">
+            <span class="g">${esc(r.guest)}</span>
+            <span class="s">${esc(r.session)}</span>
+            <span>${r.chunks}</span>
+            <span class="sz">${(r.size_mb||0).toFixed(2)} MB</span>
+            <span>${r.merged
+              ? `<a class="btn btn-brand" href="${SERVER}/download/${encodeURIComponent(room)}/${encodeURIComponent(r.guest)}/${encodeURIComponent(r.session)}">⬇ WAV</a>`
+              : (onlyChunks
+                  ? '<span class="pill expired" style="margin-left:0">nur Chunks</span>'
+                  : '<span class="pill expired" style="margin-left:0">leer</span>')}
+              <button class="btn btn-danger" data-rec-del data-room="${esc(room)}" data-guest="${esc(r.guest)}" data-session="${esc(r.session)}">Löschen</button>
+            </span>
+          </div>`;
+        }
+
+        html += `</div></div>`;
+      }
+      content.innerHTML = html;
+
+      // After rendering: remove entries that have neither WAV nor chunks anymore.
+      try {
+        content.querySelectorAll('.rec-row').forEach(row => {
+          const chunksCell = row.querySelector('span:nth-child(3)');
+          const hasWav = !!row.querySelector('a[href*="/download/"]');
+          const chunks = chunksCell ? parseInt((chunksCell.textContent||'0'), 10) : 0;
+          if (!hasWav && (!chunks || chunks <= 0)) row.remove();
+        });
+        content.querySelectorAll('.room-group').forEach(group => {
+          const body = group.querySelector('.room-body');
+          if (!body) return;
+          const rows = body.querySelectorAll('.rec-row');
+          if (!rows.length) group.remove();
+        });
+      } catch {}
+    } catch (err) {
+      if (err.message !== 'Nicht authentifiziert') showFetchError(content, err);
+    }
+  }
+
+  $('content').addEventListener('click', async (e) => {
+    // Rooms accordion toggle
+    const tog = e.target.closest('button[data-room-toggle]');
+    if (tog) {
+      const group = tog.closest('.room-group');
+      const body = group && group.querySelector('.room-body');
+      const caret = tog.querySelector('.caret');
+      const isOpen = body && body.style.display !== 'none';
+      const willOpen = !isOpen;
+      if (body) body.style.display = willOpen ? 'block' : 'none';
+      if (caret) caret.style.transform = `rotate(${willOpen ? 90 : 0}deg)`;
+      tog.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+      return;
+    }
+
+    // Delete recording
+    const btn = e.target.closest('button[data-rec-del]');
+    if (!btn) return;
+    const { room, guest, session } = btn.dataset;
+    if (!confirm(`Aufnahme ${guest}/${session} löschen?`)) return;
+    btn.disabled = true;
+    try {
+      const res = await apiFetch(
+        `${SERVER}/admin/session/${encodeURIComponent(room)}/${encodeURIComponent(guest)}/${encodeURIComponent(session)}`,
+        { method: 'DELETE' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      load();
+    } catch (err) { alert('Fehler: ' + err.message); btn.disabled = false; }
+  });
+
+  // ── Logout ───────────────────────────────────────────────────────────────
+  $('logoutBtn').addEventListener('click', async () => {
+    await fetch('/logout', { method: 'POST' });
+    location.href = '/login';
+  });
+
+  // Feature 8: Custom Branding — nur Titel/Favicon hier.
+  // WICHTIG: Farben werden ausschließlich vom Branding-Block im <head> gesetzt,
+  // und zwar NUR über --brand / --brand-hover. Semantische Farben (--ok = Erfolg/
+  // "connected"/online) dürfen NIE vom Branding überschrieben werden.
+  (async () => {
+    try {
+      const b = await (await fetch('/branding', { cache: 'no-store' })).json();
+      if (!b.ok) return;
+      if (b.name) document.title = 'Admin · ' + b.name;
+      if (b.favicon) {
+        let link = document.querySelector('link[rel="icon"]');
+        if (!link) { link = document.createElement('link'); link.rel = 'icon'; document.head.appendChild(link); }
+        link.href = b.favicon;
+      }
+    } catch {}
+  })();
+
+  // ── Init ─────────────────────────────────────────────────────────────────
+  loadConfig();
+  loadTokens();
+  loadRooms();
+  load();
+  setInterval(loadTokens, 30000);
+  setInterval(loadRooms, 15000);
+  setInterval(load, 15000);
+})();
+</script>
+</body>
+</html>

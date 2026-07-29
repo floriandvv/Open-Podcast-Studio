@@ -1,0 +1,1680 @@
+<!-- 
+  ÄNDERUNG gegenüber host (5).html:
+  - Logout-Button in der Topbar ergänzt
+  - fetch-Fehler 401/303 -> Redirect zu /login (globaler Handler)
+  Alle anderen Funktionen unverändert.
+-->
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Podcast Host-Studio</title>
+<script>
+// Sprint 3: Branding kommt serverseitig im <head> (siehe BRANDING-Block oben).
+// Beim ersten Paint stimmen --brand/--brand-hover/--brand-on bereits -> kein
+// Aufblitzen der Default-Farbe, kein Verstecken der Seite.
+// Dieses Snippet setzt nur noch Titel + Favicon aus window.__BRANDING__ und
+// dient als Fallback, falls die Seite mal ohne SSR ausgeliefert wird.
+(() => {
+  const b = window.__BRANDING__;
+  if (!b || !b.ok) return;
+  try {
+    if (b.name) document.title = document.title.replace(/Podcast Studio/, b.name);
+  } catch {}
+})();
+</script>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #181b22; --panel2: #11141a; --border: #2a2f3a;
+    --text: #e8eaed; --muted: #9aa3b2; --accent: #e5484d; --accent-hover: #ff5a60;
+    /* Semantic state colors (must never be overridden by branding) */
+    --ok: #30a46c; --ok-hover: #3cbf7e; --warn: #f59e0b;
+
+    /* Brand accent (used for secondary accents; recording CTA stays semantic) */
+    --brand: var(--ok);
+    --brand-hover: var(--ok-hover);
+    --brand-on: #fff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text);
+    font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  .auth-bar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 24px; border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+  .back-btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: none; color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 12px;
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    transition: border-color .15s, color .15s;
+    text-decoration: none;
+  }
+  .back-btn:hover { border-color: #3a4150; color: var(--text); }
+  .logout-btn {
+    background: none; color: var(--muted); border: 1px solid var(--border);
+    border-radius: 8px; padding: 7px 14px; font: inherit; font-size: 14px;
+    cursor: pointer; transition: border-color .15s, color .15s;
+  }
+  .logout-btn:hover { border-color: #3a4150; color: var(--text); }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 24px;
+    display: flex; flex-direction: column; gap: 16px; }
+  header { display: flex; align-items: baseline; justify-content: space-between;
+    flex-wrap: wrap; gap: 8px; }
+  h1 { font-size: 24px; font-weight: 700; margin: 0; }
+  .sub { color: var(--muted); font-size: 15px; }
+  .panel { background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 16px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+  button, input, select { background: var(--panel2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 12px; font: inherit; }
+  select { min-width: 0; max-width: 100%; width: 100%; text-overflow: ellipsis; }
+  button { cursor: pointer; font-weight: 600;
+    transition: background .15s, border-color .15s, opacity .15s; }
+  button:hover:not(:disabled) { border-color: #3a4150; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  .btn-rec { color: #fff; background: var(--ok); border-color: var(--ok);
+    font-size: 18px; padding: 14px 26px;
+    /* Fixe Button-Breite, damit sich der Aufnahmebutton nicht je nach Text ändert */
+    min-width: 320px;
+    text-align: center;
+    white-space: nowrap;
+  }
+  .btn-rec:hover:not(:disabled) { background: var(--ok-hover); border-color: var(--ok-hover); }
+  #mainBtn.is-stop { background: var(--accent); border-color: var(--accent); }
+  #mainBtn.is-stop:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
+  #mainBtn.is-busy { background: var(--warn); border-color: var(--warn); color: #1a1205;
+    opacity: 1; cursor: progress; }
+  #mainBtn.is-busy:hover { background: var(--warn); border-color: var(--warn); }
+
+  /* Start-Synchronisation: bewusst "kühles" Blau statt Upload-Warnfarbe */
+  #mainBtn.is-sync {
+    background: #2563eb; /* blue-600 */
+    border-color: #2563eb;
+    color: #fff;
+    opacity: 1;
+    cursor: progress;
+  }
+  #mainBtn.is-sync:hover { background: #2563eb; border-color: #2563eb; }
+  .btn-ghost { color: var(--text); }
+  .topbar { display: flex; justify-content: space-between; align-items: center;
+    flex-wrap: wrap; gap: 12px; }
+  .meta-pill { background: var(--panel2); border: 1px solid var(--border);
+    border-radius: 999px; padding: 6px 12px; font-size: 15px; color: var(--muted); }
+  .meta-pill b { color: var(--text); }
+
+  /* Unauffälliger Echtzeit-Verbindungshinweis (Link-Status zum Server) */
+  .conn-indicator {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-size: 13px; color: var(--muted); user-select: none;
+  }
+  .conn-indicator .conn-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--muted); flex: 0 0 auto;
+    transition: background-color .2s ease, box-shadow .2s ease;
+  }
+  .conn-indicator[data-state="connected"] .conn-dot {
+    background: var(--ok); box-shadow: 0 0 0 3px rgba(48,164,108,0.18);
+  }
+  .conn-indicator[data-state="connecting"] .conn-dot {
+    background: var(--warn); animation: connPulse 1.1s ease-in-out infinite;
+  }
+  .conn-indicator[data-state="offline"] .conn-dot { background: var(--accent); }
+  .conn-indicator[data-state="offline"] .conn-text { color: var(--accent); }
+  @keyframes connPulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+  @media (prefers-reduced-motion: reduce) {
+    .conn-indicator[data-state="connecting"] .conn-dot { animation: none; }
+  }
+  button.meta-pill { cursor: pointer; font: inherit;
+    transition: border-color .15s, background .15s; }
+  button.meta-pill:hover { border-color: #3a4150; background: #1c2029; }
+  button.meta-pill.active { border-color: var(--ok); color: var(--ok); }
+  button.meta-pill.active b { color: var(--ok); }
+  .guests { display: flex; flex-direction: column; gap: 10px; }
+  .guest { display: grid; grid-template-columns: 18px 1.4fr 340px 90px 1.1fr;
+    gap: 12px; align-items: center; background: var(--panel2); border: 1px solid var(--border);
+    border-radius: 10px; padding: 12px 14px; }
+  .guest .conn { font-size: 16px; }
+  .guest .who .nm { font-weight: 600; }
+  .guest .who .gid { color: var(--muted); font-size: 13px; }
+  .dev { font-size: 14px; color: var(--muted); line-height: 1.35; }
+  .dev .lbl { color: #6b7280; }
+  .dev b { color: var(--text); font-weight: 600; }
+  /* Gerätezeilen: immer einzeilig, mit Ellipsis bei sehr langen Namen */
+  .devline { display: flex; gap: 6px; align-items: baseline; white-space: nowrap; overflow: hidden; }
+  .devline .lbl { flex: 0 0 auto; }
+  .devline b { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
+  .vu { height: 10px; background: #0f1115; border: 1px solid var(--border);
+    border-radius: 5px; overflow: hidden; }
+  /* Breite wird per requestAnimationFrame gesetzt (eigene VU-Ballistik),
+     daher KEINE CSS-Transition auf width -- sonst laufen zwei Glaettungen
+     gegeneinander und der Balken wirkt traege. */
+  .vu > div { height: 100%; width: 0%; background: var(--ok);
+    transition: background-color 120ms linear; }
+  .vu > div.warn { background: var(--warn); }
+  .vu > div.clip { background: var(--accent); }
+  .up { font-size: 14px; font-variant-numeric: tabular-nums; }
+  .up .bad { color: var(--warn); }
+
+  /* Sprint 2: Host waehlt Gast-Mikrofon (per-guest Mic-Control) */
+  .mic-ctl { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
+  .mic-ctl select { flex: 1 1 auto; min-width: 0; padding: 6px 8px; font-size: 13px; }
+  .mic-ctl .mic-apply {
+    flex: 0 0 auto; background: transparent; color: var(--brand);
+    border: 1px solid var(--brand); border-radius: 8px; padding: 6px 10px;
+    font-size: 12px; font-weight: 700; cursor: pointer;
+    transition: border-color .15s, background .15s, color .15s;
+  }
+  .mic-ctl .mic-apply:hover:not(:disabled) { border-color: var(--brand-hover); color: var(--text); background: #1c2029; }
+  .mic-ctl .mic-apply:disabled { opacity: .4; cursor: not-allowed; }
+  .mic-hint { font-size: 12px; margin-top: 4px; min-height: 15px; color: var(--muted); }
+  .mic-hint.pending { color: var(--warn); }
+  .mic-hint.ok { color: var(--ok); }
+  .mic-hint.err { color: var(--accent); }
+  .state-tag { display: inline-block; font-size: 12px; text-transform: uppercase;
+    letter-spacing: .5px; padding: 2px 7px; border-radius: 5px; margin-top: 3px;
+    border: 1px solid var(--border); color: var(--muted); }
+  .state-tag.recording { color: var(--accent); border-color: var(--accent); }
+  .state-tag.uploading { color: var(--warn); border-color: var(--warn); }
+  .state-tag.done { color: var(--ok); border-color: var(--ok); }
+
+  /* Branded outline button (matches Admin action buttons) */
+  .btn-brand {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    text-decoration: none;
+    background: transparent;
+    color: var(--brand);
+    border: 1px solid var(--brand);
+    border-radius: 8px;
+    padding: 6px 10px;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: border-color .15s, background .15s, color .15s;
+    white-space: nowrap;
+  }
+  .btn-brand:hover { border-color: var(--brand-hover); color: var(--text); background: #1c2029; }
+  .empty { color: var(--muted); text-align: center; padding: 24px; font-size: 16px; }
+  .headcol { font-size: 13px; text-transform: uppercase; letter-spacing: .5px; color: #6b7280; }
+  .guest-head { display: grid; grid-template-columns: 18px 1.4fr 340px 90px 1.1fr;
+    gap: 12px; padding: 0 14px; }
+  .rec-bar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  .dur { font-size: 30px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .countdown { font-size: 50px; font-weight: 800; color: var(--ok); }
+  .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: none;
+    align-items: center; justify-content: center; padding: 20px; }
+  .modal-bg.show { display: flex; }
+  .modal { background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 22px; max-width: 520px; width: 100%; }
+  .modal h3 { margin: 0 0 12px; }
+  .link-box { display: flex; gap: 8px; }
+  .link-box input { flex: 1; font-family: 'JetBrains Mono', monospace; font-size: 14px; }
+  .conn-legend { font-size: 14px; color: var(--muted); }
+  a.dl { color: var(--ok); text-decoration: none; font-size: 14px; }
+  .hist-row { display: flex; justify-content: space-between; font-size: 14px;
+    padding: 6px 0; border-bottom: 1px solid var(--border); }
+  .hist-row:last-child { border-bottom: none; }
+  /* ---------- Marker ---------- */
+  .mk {
+    font-size: 15px;
+    padding: 10px 16px;
+    border-radius: 999px;
+
+    /* dezente Kontur-Farbigkeit statt Emoji */
+    background: transparent;
+    border-width: 1px;
+  }
+  .mk:disabled { opacity: .35; }
+
+  /* Farbzuordnung: Werbung=blau, Schnitt in=rot, Schnitt out=grün */
+  .mk-ad:not(:disabled)     { border-color: #3b82f6; color: #93c5fd; }
+  .mk-cutin:not(:disabled)  { border-color: #ef4444; color: #fca5a5; }
+  .mk-cutout:not(:disabled) { border-color: #22c55e; color: #86efac; }
+
+  .mk:not(:disabled):hover  { background: #1c2029; }
+  .marker-list { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; }
+  /* Etwas mehr Luft zur eigentlichen Liste */
+  #guestHead { margin-top: 8px; }
+  #guests { margin-top: 6px; }
+  .mk-row {
+    display: grid;
+    align-items: center;
+    gap: 10px;
+    font-size: 14px;
+
+    /* stabiles Zeilen-Raster: Zeit | Shifts | Typ | Notiz | Status | Delete */
+    grid-template-columns:
+      64px
+      192px
+      120px
+      minmax(220px, 1fr)
+      86px
+      84px;
+
+    padding: 8px 10px;
+    background: var(--panel2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+  }
+
+  /* Zeit bleibt immer gleich breit, sauber lesbar */
+  .mk-row .mk-time {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum" 1;
+    font-weight: 700;
+    min-width: 64px;
+    color: var(--text);
+    justify-self: start;
+  }
+
+  /* Shift-Buttons als feste Gruppe, damit nichts springt (auch wenn Buttons fehlen) */
+  .mk-shifts {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 6px;
+    align-items: center;
+    justify-items: stretch;
+    min-width: 192px;
+  }
+  .mk-shifts.is-hidden { visibility: hidden; }
+
+  .mk-shift {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 12px;
+    padding: 6px 0;
+    border-radius: 8px;
+    text-align: center;
+    white-space: nowrap;
+  }
+  .mk-shift:hover { border-color: #3a4150; color: var(--text); }
+
+  /* Typ-Badge ist immer gleich breit; Text kann ellipsen */
+  .mk-row .mk-tag {
+    font-weight: 700;
+    padding: 3px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    font-size: 12px;
+    letter-spacing: .2px;
+
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 120px;
+
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .mk-row .mk-tag.ad      { color: #93c5fd; border-color: #3b82f6; }
+  .mk-row .mk-tag.cut_in  { color: #fca5a5; border-color: #ef4444; }
+  .mk-row .mk-tag.cut_out { color: #86efac; border-color: #22c55e; }
+
+  /* Notiz: nimmt den Rest, bleibt aber layout-stabil */
+  .mk-note {
+    width: 100%;
+    min-width: 0;
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 7px 10px;
+    font: inherit;
+    font-size: 13px;
+    outline: none;
+  }
+  .mk-note:focus { border-color: #3a4150; }
+
+  /* Status-Badge: immer gleiche Spalte */
+  .mk-saved {
+    font-size: 12px;
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 2px 8px;
+    white-space: nowrap;
+    justify-self: start;
+    width: 86px;
+    text-align: center;
+  }
+
+  /* Delete: feste Button-Breite */
+  .mk-del {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 12px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    white-space: nowrap;
+    width: 84px;
+    text-align: center;
+    justify-self: end;
+  }
+  .mk-del:hover { border-color: #3a4150; color: var(--text); }
+
+  /* Mobile: Aktionen runterbrechen, aber weiterhin Raster-stabil */
+  @media (max-width: 720px) {
+    .mk-row {
+      grid-template-columns: 64px 1fr 84px;
+      grid-template-areas:
+        "time tag del"
+        "shifts shifts del"
+        "note note note"
+        "saved saved saved";
+      row-gap: 8px;
+    }
+    .mk-row .mk-time { grid-area: time; }
+    .mk-row .mk-tag  { grid-area: tag; width: auto; justify-self: start; }
+    .mk-shifts { grid-area: shifts; min-width: 0; }
+    .mk-note   { grid-area: note; }
+    .mk-saved  { grid-area: saved; width: fit-content; }
+    .mk-del    { grid-area: del; justify-self: end; }
+  }
+
+  /* mk-del Styling ist oben als .mk-del definiert */
+</style>
+<!-- Branding zuletzt: ueberschreibt die :root-Defaults oben. -->
+<!--BRANDING-->
+</head>
+<body>
+
+<!-- Auth-Leiste -->
+<div class="auth-bar">
+  <a class="back-btn" href="/">← Zurück</a>
+  <button class="logout-btn" id="logoutBtn">Abmelden</button>
+</div>
+
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Host-Studio</h1>
+      <div class="sub" id="roomInfo">Raum wird geladen…</div>
+    </div>
+  </header>
+
+  <div class="panel">
+    <div class="topbar">
+      <div class="row">
+        <span class="meta-pill" id="connPill">🟢 verbunden: <b>0</b></span>
+        <span class="meta-pill" id="clockPill">Server-Offset: <b>—</b></span>
+      </div>
+      <div class="row">
+        <button id="mainBtn" class="btn-rec">Aufnahme starten</button>
+        <button class="btn-ghost" id="inviteBtn">＋ Gast einladen</button>
+        <button class="meta-pill" id="modeBtn">Modus: <b id="modeVal">—</b></button>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel rec-bar">
+    <div id="countdownWrap" class="countdown" style="display:none">3</div>
+    <div>Aufnahme-Dauer</div>
+    <div class="dur" id="dur">00:00</div>
+    <div id="statusLine">Bereit. Sobald Gäste verbunden sind, kannst du synchron starten.</div>
+  </div>
+
+  <!-- Marker-Leiste -->
+  <div class="panel">
+    <div class="topbar" style="margin-bottom:10px">
+      <b>Marker</b>
+      <span class="conn-legend">Schnellmarken während der Aufnahme — werden im Raum gespeichert.</span>
+    </div>
+    <div class="row" id="markerBar">
+      <button class="mk mk-ad"      data-kind="ad"      disabled>Werbung</button>
+      <button class="mk mk-cutout"  data-kind="cut_out" disabled>Schnitt out</button>
+      <button class="mk mk-cutin"   data-kind="cut_in"  disabled>Schnitt in</button>
+      <span class="sub" id="markerHint">Marker sind nur während einer laufenden Aufnahme aktiv.</span>
+    </div>
+    <div id="markerList" class="marker-list">
+      <div class="empty">Noch keine Marker gesetzt.</div>
+    </div>
+
+    <div class="row" style="margin-top:12px;gap:10px;align-items:center">
+      <span class="sub" style="min-width:120px">Aufnahme</span>
+      <select id="markerSession" style="min-width:220px;max-width:420px"></select>
+      <button id="applyMarkersBtn" class="btn-ghost" style="padding:8px 12px;font-size:13px" disabled>
+        Marker in WAV anwenden
+      </button>
+      <span class="sub" id="markerSessionHint"></span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="topbar">
+      <b>Verbundene Gäste</b>
+      <span class="conn-legend">🟢 verbunden · 🟡 Verbindungsprobleme · 🔴 offline</span>
+    </div>
+    <div class="guest-head" id="guestHead" style="display:none">
+      <span></span>
+      <span class="headcol">Gast</span>
+      <span class="headcol">Geräte (Mic / Lautsprecher)</span>
+      <span class="headcol">Pegel</span>
+      <span class="headcol">Upload</span>
+    </div>
+    <div class="guests" id="guests">
+      <div id="guestList" style="display:flex;flex-direction:column;gap:10px"></div>
+      <div class="empty" id="emptyState">Noch keine Gäste verbunden. Teile den Einladungslink.</div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <b>Aufnahme-Historie</b>
+    <div id="history">Lade…</div>
+  </div>
+</div>
+
+<!-- Modal: Gast einladen (Token-basiert) -->
+<div class="modal-bg" id="modalBg">
+  <div class="modal">
+    <h3>🔗 Gastlink generieren</h3>
+    <p style="color:var(--muted);font-size:14px;margin:0 0 14px">
+      Der Link enthält einen sicheren Token — der Raumname ist darin verborgen.
+      Mehrere Gäste können denselben Link nutzen.
+    </p>
+
+    <!-- Token erzeugen -->
+    <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px">
+      <p style="font-size:13px;color:var(--muted);margin:0">
+        Laufzeit und Label werden automatisch aus den globalen Einstellungen (Admin-Panel) übernommen.
+      </p>
+      <div>
+        <button id="genTokenBtn" style="padding:9px 16px;font-size:14px">Neuen Link generieren</button>
+      </div>
+      <p id="genMsg" style="font-size:13px;color:var(--muted);margin:0"></p>
+    </div>
+
+    <!-- Aktuell gültiger Link -->
+    <div id="newLinkWrap" style="display:none;flex-direction:column;gap:8px;margin-bottom:16px">
+      <label style="font-size:12px;color:var(--muted)">Neuer Einladungslink</label>
+      <div class="link-box">
+        <input id="inviteLink" type="text" readonly>
+        <button id="copyBtn">Kopieren</button>
+      </div>
+      <p style="font-size:13px;color:var(--muted);margin:0" id="copyHint"></p>
+    </div>
+
+    <p style="font-size:12px;color:var(--muted);margin:0">
+      Hier siehst du nur den zuletzt generierten Link. Die Verwaltung aller aktiven Tokens
+      findest du im Admin-Panel.
+    </p>
+
+    <div style="margin-top:16px;text-align:right">
+      <button id="closeModal">Schließen</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const params = new URLSearchParams(location.search);
+  const room   = (params.get('room') || 'default').replace(/[^a-zA-Z0-9_-]/g, '');
+  const SERVER = location.origin;
+
+  // ── WebSocket-Kanal (Echtzeit) ────────────────────────────────────────────
+  // Steuerung (Start/Stopp/Settings/Marker) und der Raum-Status laufen
+  // ausschliesslich ueber WebSocket. Es gibt keinen HTTP-Poll-Fallback mehr.
+  let ws = null;
+  let wsConnected = false;
+  let wsReconnectTimer = null;
+  let wsReconnectDelay = 1000;   // Startwert fuer das exponentielle Backoff
+
+  function wsUrl() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${proto}//${location.host}/ws/host/${encodeURIComponent(room)}`;
+  }
+
+  function connectWs() {
+    try { ws = new WebSocket(wsUrl()); } catch { scheduleWsReconnect(); return; }
+    ws.onopen = () => {
+      wsConnected = true;
+      wsReconnectDelay = 1000;   // nach erfolgreichem Connect zuruecksetzen
+      if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
+    };
+    ws.onmessage = (ev) => {
+      let msg; try { msg = JSON.parse(ev.data); } catch { return; }
+      if (msg.type === 'status') renderStatus(msg);
+      else if (msg.type === 'levels') applyLevelsMessage(msg);
+    };
+    ws.onclose = () => { wsConnected = false; ws = null; scheduleWsReconnect(); };
+    ws.onerror = () => { try { ws.close(); } catch {} };
+  }
+
+  // Fix (Review): Frueher fester 2s-Takt. Bei einem Serverneustart haben alle
+  // offenen Host-Panels synchron im Sekundentakt gehaemmert. Jetzt dieselbe
+  // Strategie wie im Recorder: exponentielles Backoff mit Jitter, Deckel 10 s.
+  function scheduleWsReconnect() {
+    if (wsReconnectTimer) return;
+    const jitter = Math.floor(Math.random() * 400);
+    const delay = Math.min(wsReconnectDelay, 10000) + jitter;
+    wsReconnectTimer = setTimeout(() => { wsReconnectTimer = null; connectWs(); }, delay);
+    wsReconnectDelay = Math.min(wsReconnectDelay * 2, 10000);
+  }
+
+  function wsSend(obj) {
+    if (ws && wsConnected && ws.readyState === 1) {
+      try { ws.send(JSON.stringify(obj)); return true; } catch {}
+    }
+    return false;
+  }
+
+  // Globaler 401/303-Handler: bei Session-Ablauf -> Login
+  async function apiFetch(url, opts = {}) {
+    const res = await fetch(url, opts);
+    if (res.status === 401 || res.status === 303) {
+      location.href = '/login?next=' + encodeURIComponent(location.pathname + location.search);
+      throw new Error('Nicht authentifiziert');
+    }
+    return res;
+  }
+
+  let audioOnly  = true;
+  let debugLevel = 0;
+  const $ = id => document.getElementById(id);
+  const mainBtn = $('mainBtn');
+
+  function setMainButton(mode) {
+    mainBtn.classList.toggle('is-stop', mode === 'stop');
+    mainBtn.classList.toggle('is-busy', mode === 'busy');
+    mainBtn.classList.toggle('is-sync', mode === 'sync');
+
+    if (mode === 'start') {
+      mainBtn.textContent = '⏺ Aufnahme starten';
+      mainBtn.disabled = false;
+    } else if (mode === 'stop') {
+      mainBtn.textContent = '⏹ Stoppen';
+      mainBtn.disabled = false;
+    } else if (mode === 'sync') {
+      mainBtn.textContent = 'Start wird synchronisiert…';
+      mainBtn.disabled = true;
+    } else {
+      // busy = uploading
+      mainBtn.textContent = 'Gäste laden hoch…';
+      mainBtn.disabled = true;
+    }
+  }
+
+  let serverOffset = 0;
+  let recording    = false;
+  let phase        = 'idle';
+  let recStartAt   = 0;
+  let durTimer     = null;
+  let countdownTimer = null;
+
+  $('roomInfo').textContent = `Raum: ${room}`;
+  document.title = `Host · ${room}`;
+
+  // ── Token / Invite ────────────────────────────────────────────────────────
+  $('inviteBtn').addEventListener('click', () => {
+    $('modalBg').classList.add('show');
+  });
+  $('closeModal').addEventListener('click', () => $('modalBg').classList.remove('show'));
+  $('modalBg').addEventListener('click', e => {
+    if (e.target === $('modalBg')) $('modalBg').classList.remove('show');
+  });
+
+  // Kopieren
+  $('copyBtn').addEventListener('click', async () => {
+    const val = $('inviteLink').value;
+    if (!val) return;
+    try {
+      await navigator.clipboard.writeText(val);
+      $('copyHint').textContent = '✔ Link kopiert.';
+    } catch {
+      $('inviteLink').select();
+      $('copyHint').textContent = 'Bitte manuell kopieren (Strg+C).';
+    }
+    setTimeout(() => { $('copyHint').textContent = ''; }, 2500);
+  });
+
+  function resetInviteModalUI() {
+    $('genMsg').textContent = '';
+    $('copyHint').textContent = '';
+    $('newLinkWrap').style.display = 'none';
+    $('inviteLink').value = '';
+    $('genTokenBtn').style.display = 'inline-block';
+    $('genTokenBtn').disabled = false;
+  }
+
+  async function refreshRoomTokenUI() {
+    // Wenn ein aktiver Token existiert: Button verstecken, Token-Link anzeigen.
+    // Wenn kein aktiver Token existiert: Button zeigen, Link-Bereich ausblenden.
+    try {
+      const res = await apiFetch(`${SERVER}/host/tokens/${room}?active_only=1`, { cache: 'no-store' });
+      const data = await res.json();
+      const toks = (data && data.tokens) ? data.tokens : [];
+      const now = Date.now() / 1000;
+      const active = toks.find(t => t.active || (t.expires_at && t.expires_at > now && !t.revoked));
+
+      if (active && active.token) {
+        const link = `${SERVER}/recorder.html?token=${active.token}`;
+        $('inviteLink').value = link;
+        $('newLinkWrap').style.display = 'flex';
+        $('genTokenBtn').style.display = 'none';
+        const exp = active.expires_at ? new Date(active.expires_at * 1000).toLocaleDateString('de-DE') : '—';
+        $('genMsg').textContent = `Aktiver Link (gültig bis ${exp})`;
+      } else {
+        $('genTokenBtn').style.display = 'inline-block';
+        $('newLinkWrap').style.display = 'none';
+        $('genMsg').textContent = '';
+      }
+    } catch (err) {
+      // Bei Fehler nicht blockieren: Button lassen wir sichtbar.
+      $('genTokenBtn').style.display = 'inline-block';
+    }
+  }
+
+  // Modal öffnen: immer aktuellen Token-Status laden
+  $('inviteBtn').addEventListener('click', () => {
+    resetInviteModalUI();
+    maybeRefreshTokenUI(true);
+    $('modalBg').classList.add('show');
+  });
+
+  // Token generieren (idempotent: Server gibt ggf. bestehenden aktiven Token zurück)
+  $('genTokenBtn').addEventListener('click', async () => {
+    $('genMsg').textContent = 'Generiere…';
+    $('genTokenBtn').disabled = true;
+    try {
+      const res  = await apiFetch(`${SERVER}/host/token/${room}`, { method: 'POST' });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.detail || 'Fehler');
+      const link = `${SERVER}${data.link}`;
+      $('inviteLink').value = link;
+      $('newLinkWrap').style.display = 'flex';
+      const exp = new Date(data.expires_at * 1000).toLocaleDateString('de-DE');
+      $('genMsg').textContent = (data.existing
+        ? `Aktiver Link (gültig bis ${exp})`
+        : `✔ Neuer Link erstellt (gültig bis ${exp})`
+      );
+      // Pro Raum nur ein aktiver Token -> Button ausblenden
+      $('genTokenBtn').style.display = 'none';
+    } catch (err) {
+      $('genMsg').textContent = 'Fehler: ' + err.message;
+      $('genTokenBtn').disabled = false;
+    }
+  });
+
+  const fmtTime = ms => {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
+  };
+  const connIcon   = c => c === 'online' ? '🟢' : c === 'stale' ? '🟡' : c === 'offline' ? '🔴' : '🔴';
+  const stateLabel = s => ({idle:'bereit',recording:'Aufnahme',uploading:'Upload',done:'fertig'}[s] || s || '—');
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c =>
+      ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  // Sprint 2: Host waehlt Gast-Mikrofon.
+  // Pro-Gast merken wir uns die aktuell im Dropdown gewaehlte deviceId,
+  // damit die Auswahl beim 2s-Status-Refresh NICHT zurueckspringt
+  // (gleiches Prinzip wie beim Marker-Dropdown-Fix).
+  const micChoice = new Map();          // guestId -> deviceId (Host-Auswahl, noch nicht gesendet)
+  const micListSig = new Map();         // guestId -> Signatur der bekannten Geraeteliste (Diffing)
+
+  function micDevicesSig(devs) {
+    return (devs || []).map(d => `${d.deviceId}|${d.label || ''}`).join('~');
+  }
+
+  // Sprint 2 (QA-Fix): Gastkarten werden INKREMENTELL aktualisiert.
+  // Frueher wurde #guestList alle 2s komplett neu aufgebaut -- dadurch hat der
+  // Browser ein gerade geoeffnetes <select> mitsamt Popup verworfen ("Dropdown
+  // schliesst sich sofort wieder"). Jetzt existiert pro Gast genau EIN DOM-Knoten,
+  // der nur noch in seinen Feldern gepatcht wird. Neu/entfernt wird ausschliesslich
+  // bei echten Gastwechseln.
+  const guestCards = new Map();   // guestId -> { el, refs }
+
+  // Zusaetzliche Sicherung: solange der Nutzer eine Mic-Control anfasst
+  // (Fokus oder Pointer), fassen wir genau diese Control nicht an.
+  let micInteractGuest = null;
+  function isInteracting(guestId) {
+    if (micInteractGuest === guestId) return true;
+    const a = document.activeElement;
+    return !!(a && a.closest && a.closest('.mic-ctl') &&
+              a.closest('.guest') && a.closest('.guest').dataset.guest === guestId);
+  }
+
+  function buildGuestCard(guestId) {
+    const el = document.createElement('div');
+    el.className = 'guest';
+    el.dataset.guest = guestId;
+    el.innerHTML = `
+      <div class="conn"></div>
+      <div class="who">
+        <div class="nm"></div>
+        <div class="gid"></div>
+        <span class="state-tag"></span>
+      </div>
+      <div class="dev">
+        <div class="devline"><span class="lbl">Mic:</span> <b class="mic-label"></b></div>
+        <div class="devline"><span class="lbl">Out:</span> <b class="spk-label"></b></div>
+        <div class="mic-ctl" hidden>
+          <select class="mic-select"></select>
+          <button type="button" class="mic-apply">Übernehmen</button>
+        </div>
+        <div class="mic-hint"></div>
+      </div>
+      <div class="vu"><div></div></div>
+      <div class="up"></div>`;
+    const refs = {
+      conn:  el.querySelector('.conn'),
+      nm:    el.querySelector('.nm'),
+      gid:   el.querySelector('.gid'),
+      tag:   el.querySelector('.state-tag'),
+      mic:   el.querySelector('.mic-label'),
+      spk:   el.querySelector('.spk-label'),
+      ctl:   el.querySelector('.mic-ctl'),
+      sel:   el.querySelector('.mic-select'),
+      btn:   el.querySelector('.mic-apply'),
+      hint:  el.querySelector('.mic-hint'),
+      vu:    el.querySelector('.vu > div'),
+      up:    el.querySelector('.up'),
+    };
+    refs.sel.dataset.guest = guestId;
+    refs.btn.dataset.guest = guestId;
+    return { el, refs };
+  }
+
+  // Nur schreiben, wenn sich etwas geaendert hat -- spart Layout-Arbeit und
+  // verhindert, dass Screenreader jede Sekunde denselben Text erneut vorlesen.
+  function setText(node, value) {
+    const v = value == null ? '' : String(value);
+    if (node.textContent !== v) node.textContent = v;
+  }
+
+  function renderGuests(guests) {
+    const box = $('guestList');
+
+    $('emptyState').style.display  = guests.length ? 'none'  : 'block';
+    $('guestHead').style.display   = guests.length ? 'grid'  : 'none';
+
+    const alive = new Set(guests.map(g => g.guest));
+
+    // Verwaiste Zustaende + Karten abgegangener Gaeste aufraeumen.
+    for (const k of [...micChoice.keys()])  if (!alive.has(k)) micChoice.delete(k);
+    for (const k of [...micListSig.keys()]) if (!alive.has(k)) micListSig.delete(k);
+    for (const k of [...guestLevels.keys()]) if (!alive.has(k)) guestLevels.delete(k);
+    for (const [k, card] of [...guestCards]) {
+      if (!alive.has(k)) { card.el.remove(); guestCards.delete(k); }
+    }
+
+    guests.forEach((g, idx) => {
+      let card = guestCards.get(g.guest);
+      if (!card) { card = buildGuestCard(g.guest); guestCards.set(g.guest, card); }
+      const { el, refs } = card;
+
+      // Reihenfolge angleichen, ohne bestehende Knoten zu ersetzen.
+      if (box.children[idx] !== el) box.insertBefore(el, box.children[idx] || null);
+
+      el.title = '';
+      refs.conn.title = `${g.connection} · zuletzt vor ${g.seconds_since_seen}s`;
+      setText(refs.conn, connIcon(g.connection));
+      setText(refs.nm,  g.display_name || g.guest);
+      setText(refs.gid, g.guest);
+      setText(refs.tag, stateLabel(g.state));
+      refs.tag.className = 'state-tag ' + (g.state || '');
+      setText(refs.mic, g.mic_label || 'unbekannt');
+      setText(refs.spk, g.speaker_label || 'Standard');
+
+      const backlog = (g.queue || 0) > 0;
+      const upTxt = `↑ ${(g.up_mb || 0).toFixed(0)} MB · ` +
+                    (backlog ? `${g.queue} Chunk(s) Rückstand` : 'synchron');
+      if (refs.up.dataset.txt !== upTxt) {
+        refs.up.dataset.txt = upTxt;
+        refs.up.innerHTML = `↑ ${(g.up_mb || 0).toFixed(0)} MB ` +
+          (backlog ? `<span class="bad">· ${g.queue} Chunk(s) Rückstand</span>`
+                   : `<span>· synchron</span>`);
+      }
+
+      // Pegel: Zielwert setzen, die Anzeige selbst laeuft in der Animationsschleife.
+      levelFromStatus(g.guest, g.rms);
+
+      // --- Mic-Control ---
+      const devs = Array.isArray(g.mic_devices) ? g.mic_devices : [];
+      refs.ctl.hidden = !devs.length;
+      if (devs.length && !isInteracting(g.guest)) {
+        const sig = micDevicesSig(devs);
+        if (micListSig.get(g.guest) !== sig) {
+          micListSig.set(g.guest, sig);
+          refs.sel.innerHTML = '';
+          for (const d of devs) refs.sel.add(new Option(d.label || 'Mikrofon', d.deviceId));
+        }
+        refs.sel.setAttribute('aria-label', `Mikrofon für ${g.display_name || g.guest}`);
+
+        // Auswahl bestimmen: Host-Wahl > aktuelles Gast-Geraet > erstes Geraet.
+        const known = new Set(devs.map(d => d.deviceId));
+        let want = micChoice.get(g.guest);
+        if (!want || !known.has(want)) want = g.current_mic_deviceId;
+        if (!want || !known.has(want)) want = devs[0].deviceId;
+        if (refs.sel.value !== want) refs.sel.value = want;
+        micChoice.set(g.guest, refs.sel.value);
+
+        const differs = refs.sel.value !== (g.current_mic_deviceId || '');
+        refs.btn.disabled = !!g.mic_pending || !differs;
+
+        // Status-/Ergebnis-Hinweis.
+        let cls = 'mic-hint', txt = '';
+        if (g.mic_pending) {
+          cls += ' pending';
+          txt = g.state === 'recording'
+            ? 'Wechsel wartet — wird nach Stopp angewendet…'
+            : 'Wechsel angefordert…';
+        } else if (g.mic_last_result) {
+          const res = g.mic_last_result;
+          cls += res.ok ? ' ok' : ' err';
+          txt = res.ok
+            ? `Gewechselt auf ${res.label || 'Mikrofon'} ✔`
+            : `Wechsel fehlgeschlagen: ${res.error || 'unbekannt'}`;
+        }
+        if (refs.hint.className !== cls) refs.hint.className = cls;
+        setText(refs.hint, txt);
+      }
+    });
+  }
+
+  // Sprint 2 (QA-Fix, ueberarbeitet): Pegelanzeige.
+  //
+  // Frueher gab es drei Ursachen fuer "laedt einmal und haengt dann fest":
+  //  1. Bei prefers-reduced-motion wurde die rAF-Schleife NIE gestartet; der
+  //     Pegel bekam nur beim allerersten levelTarget() einen Wert.
+  //  2. startVuLoop() kehrte bei vuRaf !== null sofort zurueck. Nach einem
+  //     visibilitychange (vuRaf = null) lief das zwar wieder, aber ein
+  //     einmaliger Fehler in vuTick haette die Schleife dauerhaft getoetet.
+  //  3. renderGuests() ueberschrieb das feingranulare 200ms-Ziel alle 2 s mit
+  //     dem alten rms aus dem Heartbeat-Snapshot -> sichtbares Zurueckspringen.
+  //
+  // Jetzt: EINE dauerhaft laufende Schleife, der Level-Kanal hat Vorrang vor
+  // dem Heartbeat, und der Balken laeuft bei ausbleibenden Paketen sauber gegen
+  // Null statt einzufrieren.
+  const guestLevels = new Map();   // guestId -> { target, shown, peak, peakAt, lastMsg, fromLevelChan }
+  const VU_RELEASE_TAU = 0.35;     // Sekunden (Abfall der Balkenanzeige)
+  const VU_PEAK_HOLD   = 900;      // ms  (Halten der warn/clip-Einfaerbung)
+  const VU_STALE_MS    = 1500;     // ohne neue Pakete -> Pegel gegen 0 laufen
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let vuRaf = null, vuLastTs = 0;
+
+  function rmsToNorm(v) {
+    const db = 20 * Math.log10(v || 1e-7);
+    return Math.max(0, Math.min(1, (db + 60) / 60));
+  }
+
+  function levelState(guestId) {
+    let st = guestLevels.get(guestId);
+    if (!st) {
+      st = { target: 0, shown: 0, peak: 0, peakAt: 0, lastMsg: 0, fromLevelChan: false };
+      guestLevels.set(guestId, st);
+    }
+    return st;
+  }
+
+  // Pegel aus dem schnellen level-Kanal (200ms). Hat Vorrang.
+  function levelFromChannel(guestId, rms, peak) {
+    const st = levelState(guestId);
+    st.target = rmsToNorm(rms);
+    st.peakTarget = rmsToNorm(peak != null ? peak : rms);
+    st.lastMsg = performance.now();
+    st.fromLevelChan = true;
+  }
+
+  // Pegel aus dem 2s-Heartbeat. Nur nutzen, solange der schnelle Kanal
+  // (noch) nichts geliefert hat -- sonst ruckelt es wieder im 2s-Takt.
+  function levelFromStatus(guestId, rms) {
+    const st = levelState(guestId);
+    if (st.fromLevelChan && performance.now() - st.lastMsg < 4000) return;
+    st.target = rmsToNorm(rms);
+    st.peakTarget = st.target;
+    st.lastMsg = performance.now();
+  }
+
+  function applyLevel(guestId, st) {
+    const card = guestCards.get(guestId);
+    if (!card) return;
+    const bar = card.refs.vu;
+    const pct = (st.shown * 100).toFixed(1) + '%';
+    if (bar.style.width !== pct) bar.style.width = pct;
+    const cls = st.peak >= 0.90 ? 'clip' : st.peak >= 0.50 ? 'warn' : '';
+    if (bar.className !== cls) bar.className = cls;
+  }
+
+  function vuTick(ts) {
+    try {
+      const dt = vuLastTs ? Math.min(0.1, (ts - vuLastTs) / 1000) : 0.016;
+      vuLastTs = ts;
+      const k = Math.exp(-dt / VU_RELEASE_TAU);
+
+      for (const [guestId, st] of guestLevels) {
+        // Keine frischen Pakete mehr (Gast weg / Tab eingefroren / Mic aus):
+        // sauber gegen Null laufen statt auf dem letzten Wert kleben bleiben.
+        if (ts - st.lastMsg > VU_STALE_MS) { st.target = 0; st.peakTarget = 0; }
+
+        // Ballistik: Attack sofort, Release exponentiell gedaempft.
+        st.shown = (st.target >= st.shown) ? st.target
+                                           : st.target + (st.shown - st.target) * k;
+
+        // Peak-Hold fuer die Einfaerbung.
+        const pt = st.peakTarget != null ? st.peakTarget : st.shown;
+        if (pt >= st.peak) { st.peak = pt; st.peakAt = ts; }
+        else if (ts - st.peakAt > VU_PEAK_HOLD) {
+          st.peak = pt + (st.peak - pt) * k;
+        }
+        applyLevel(guestId, st);
+      }
+    } catch (err) {
+      // Ein Fehler darf die Schleife NIEMALS dauerhaft beenden.
+      console.error('[vu] tick failed', err);
+    }
+    vuRaf = requestAnimationFrame(vuTick);
+  }
+
+  function startVuLoop() {
+    if (vuRaf != null) return;
+    vuLastTs = 0;
+    vuRaf = requestAnimationFrame(vuTick);
+  }
+
+  function stopVuLoop() {
+    if (vuRaf != null) { cancelAnimationFrame(vuRaf); vuRaf = null; }
+  }
+
+  // Bei reduzierter Bewegung laeuft die Schleife ebenfalls -- aber ohne
+  // Glaettung: der Wert wird direkt gesetzt (kein "Wabern", trotzdem live).
+  if (reduceMotion) {
+    setInterval(() => {
+      const now = performance.now();
+      for (const [guestId, st] of guestLevels) {
+        if (now - st.lastMsg > VU_STALE_MS) { st.target = 0; st.peakTarget = 0; }
+        st.shown = st.target;
+        st.peak  = st.peakTarget != null ? st.peakTarget : st.target;
+        applyLevel(guestId, st);
+      }
+    }, 250);
+  } else {
+    startVuLoop();
+    // Im Hintergrund-Tab pausieren (spart Akku/CPU), beim Zurueckkommen weiter.
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) stopVuLoop(); else startVuLoop();
+    });
+  }
+
+  // Pegel-Push vom Server verarbeiten (nur RMS/Peak, kein voller Status).
+  function applyLevelsMessage(msg) {
+    for (const l of (msg.levels || [])) levelFromChannel(l.guest, l.rms, l.peak);
+  }
+
+  // Sprint 2: Event-Delegation fuer die Mic-Control der Gast-Karten.
+  // - change auf dem Dropdown merkt die Host-Auswahl (stabil ueber Refreshs).
+  // - Klick auf "Übernehmen" sendet set_mic gezielt an genau diesen Gast.
+  (() => {
+    const list = $('guestList');
+    if (!list) return;
+
+    // Waehrend Fokus/Pointer-Interaktion die betroffene Karte einfrieren.
+    const markInteract = (e) => {
+      const ctl = e.target.closest && e.target.closest('.mic-ctl');
+      const card = ctl && ctl.closest('.guest');
+      micInteractGuest = card ? card.dataset.guest : null;
+    };
+    list.addEventListener('pointerdown', markInteract);
+    list.addEventListener('focusin', markInteract);
+    list.addEventListener('focusout', (e) => {
+      // Erst freigeben, wenn der Fokus die Control wirklich verlassen hat.
+      const to = e.relatedTarget;
+      if (!to || !to.closest || !to.closest('.mic-ctl')) micInteractGuest = null;
+    });
+
+    list.addEventListener('change', (e) => {
+      const sel = e.target.closest('select.mic-select');
+      if (!sel) return;
+      micInteractGuest = null;                 // Auswahl steht -- Karte wieder freigeben
+      const guest = sel.dataset.guest;
+      if (guest) micChoice.set(guest, sel.value);
+      const btn = sel.parentElement && sel.parentElement.querySelector('.mic-apply');
+      if (btn) btn.disabled = false;
+    });
+
+    list.addEventListener('click', (e) => {
+      const btn = e.target.closest('button.mic-apply');
+      if (!btn) return;
+      const guest = btn.dataset.guest;
+      const sel = btn.parentElement && btn.parentElement.querySelector('select.mic-select');
+      if (!guest || !sel) return;
+      const deviceId = sel.value;
+      const label = sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text : '';
+      if (!deviceId) return;
+
+      micInteractGuest = null;
+      const hint = btn.closest('.dev').querySelector('.mic-hint');
+      const sent = wsSend({ type: 'set_mic', guest, deviceId, label });
+      if (sent) {
+        micChoice.set(guest, deviceId);
+        btn.disabled = true;
+        if (hint) { hint.className = 'mic-hint pending'; hint.textContent = 'Wechsel angefordert…'; }
+      } else if (hint) {
+        hint.className = 'mic-hint err';
+        hint.textContent = 'Nicht verbunden — bitte erneut versuchen.';
+      }
+    });
+  })();
+
+  // Gemeinsame Render-Funktion fuer WebSocket-Push UND HTTP-Poll-Fallback.
+  // Erwartet das Status-Objekt (server_time, guests, markers, settings, command).
+  async function renderStatus(data) {
+    if (!data) return;
+    try {
+      // Fix (Review): Die Token-UI wurde frueher bei JEDEM Status-Push (alle 2 s)
+      // neu geladen -- ein HTTP-Request pro Tick, obwohl sich Tokens praktisch
+      // nie aendern. Jetzt hoechstens alle 30 s (und weiterhin sofort beim
+      // Oeffnen des Invite-Modals).
+      maybeRefreshTokenUI();
+
+      serverOffset = data.server_time - Date.now();
+      $('clockPill').innerHTML = `Server-Offset: <b>${serverOffset >= 0 ? '+' : ''}${serverOffset} ms</b>`;
+      $('connPill').innerHTML  = `🟢 verbunden: <b>${data.online_count || 0}</b>`;
+      renderGuests(data.guests || []);
+
+      // Marker-UI. Fix (Review): Frueher liefen hier pro Status-Push bis zu ZWEI
+      // zusaetzliche HTTP-Requests -- bei 2s-Takt und mehreren offenen Host-Tabs
+      // spuerbare Last. Der Server liefert die Marker der laufenden Session und
+      // die Liste bekannter Sessions jetzt direkt im Status-Push mit.
+      // Nachgeladen wird nur noch, wenn im Dropdown eine ANDERE (historische)
+      // Session gewaehlt ist, deren Marker wir noch nicht gepuffert haben.
+      if (Array.isArray(data.marker_sessions)) {
+        for (const sid of data.marker_sessions) {
+          const k = String(sid || '');
+          if (k && !markerStore.bySession.has(k)) markerStore.bySession.set(k, []);
+        }
+        markerStore._sessionsLoaded = true;
+      } else {
+        await loadMarkerSessionsOnce();
+      }
+
+      // Marker der laufenden Session kommen ohne Extra-Request mit.
+      if (data.session && Array.isArray(data.markers)) {
+        markerStore.bySession.set(String(data.session), data.markers);
+      }
+
+      // Session-Dropdown aktualisieren (aktueller Status + bekannte Sessions)
+      updateMarkerSessionOptions(data.session);
+
+      // Nur fuer eine abweichende, noch ungepufferte Session nachladen.
+      const sid = String(($('markerSession') && $('markerSession').value) || '');
+      if (sid && sid !== String(data.session || '') && !markerFetchDone.has(sid)) {
+        markerFetchDone.add(sid);
+        try {
+          const mr = await apiFetch(`${SERVER}/host/markers/${room}?session=${encodeURIComponent(sid)}`, { cache: 'no-store' });
+          const md = await mr.json();
+          if (md && md.ok) markerStore.bySession.set(sid, md.markers || []);
+        } catch { markerFetchDone.delete(sid); }
+      }
+      renderMarkers(_markersForSelectedSession());
+
+      const gs           = data.guests || [];
+      const anyRecording = gs.some(g => (g.state || '') === 'recording');
+      const anyPending = gs.some(g => ((g.seconds_since_seen||0) < 90) && ((['recording','uploading'].includes((g.state||''))) || (g.queue || 0) > 0));
+
+      if (phase === 'armed' || phase === 'live') {
+        if (anyRecording) phase = 'live';
+        setMainButton('stop');
+      } else if (phase === 'stopping') {
+        if (anyPending) {
+          setMainButton('busy');
+          $('statusLine').textContent = 'Aufnahme beendet. Gäste laden letzte Chunks hoch…';
+        } else {
+          finishRecordingUI();
+          $('statusLine').textContent = '✔ Fertig. Bereit für die nächste Aufnahme.';
+        }
+      }
+
+      // Marker-Buttons nur bei laufender Aufnahme aktiv.
+      setMarkerButtonsEnabled(phase === 'armed' || phase === 'live');
+
+      if (data.settings) {
+        audioOnly  = !!data.settings.audio_only;
+        debugLevel = +data.settings.debug_level || 0;
+        $('modeVal').textContent = audioOnly ? 'Audio' : 'Video';
+        $('modeBtn').classList.toggle('active', !audioOnly);
+      }
+
+      syncCommandState(data.command);
+    } catch (err) {
+      // Render-Fehler still loggen, Verbindungs-Pille bleibt gruen.
+      console.error('Render-Fehler in renderStatus:', err);
+    }
+  }
+
+  function syncCommandState(cmd) {
+    if (!cmd || recording) return;
+    if (cmd.action === 'start' && cmd.start_at) {
+      const localStart = cmd.start_at - serverOffset;
+      if (localStart > Date.now() - 1000) {
+        setMainButton('stop');
+        beginCountdownTo(localStart);
+      }
+    }
+  }
+
+  async function trigger(action) {
+    // Steuerung laeuft ausschliesslich ueber WebSocket (kein HTTP-Fallback mehr).
+    if (!wsSend({ type: 'trigger', action })) {
+      throw new Error('Keine Echtzeit-Verbindung — bitte warten, bis der Link wieder steht.');
+    }
+    try {
+      $('statusLine').textContent = (action === 'stop')
+        ? 'Stopp gesendet — warte auf Gäste…'
+        : (action === 'start')
+          ? 'Start gesendet — synchronisiere…'
+          : 'Befehl gesendet…';
+    } catch {}
+    return { ok: true, via: 'ws' };
+  }
+
+  async function setSettings(patch) {
+    if (!wsSend({ type: 'settings', ...patch })) {
+      throw new Error('Keine Echtzeit-Verbindung — Einstellung nicht gesendet.');
+    }
+    return { ok: true, via: 'ws' };
+  }
+
+  mainBtn.addEventListener('click', async () => {
+    if (recording) {
+      phase = 'stopping'; setMainButton('busy');
+      try {
+        await trigger('stop');
+        $('statusLine').textContent = 'Stopp gesendet. Gäste beenden & laden letzte Chunks hoch…';
+      } catch (err) {
+        $('statusLine').textContent = 'Fehler beim Stoppen: ' + err.message;
+        setMainButton('stop');
+      }
+      return;
+    }
+    setMainButton('sync');
+    try {
+      const r = await trigger('start');
+      if (r && r.command && r.command.start_at) {
+        // HTTP-Antwort enthaelt das Kommando -> Countdown sofort starten.
+        beginCountdownTo(r.command.start_at - serverOffset);
+      }
+      // Bei WS-Pfad startet der Countdown ueber den eingehenden Status-Push
+      // (syncCommandState in renderStatus).
+      $('statusLine').textContent = 'Start an alle Gäste gesendet — synchroner Countdown läuft…';
+    } catch (err) {
+      $('statusLine').textContent = 'Fehler beim Starten: ' + err.message;
+      setMainButton('start');
+    }
+  });
+
+  $('modeBtn').addEventListener('click', async () => {
+    try {
+      const next = !audioOnly;
+      await setSettings({ audio_only: next });
+      audioOnly = next;
+      $('modeVal').textContent = audioOnly ? 'Audio' : 'Video';
+      $('modeBtn').classList.toggle('active', !audioOnly);
+      $('statusLine').textContent = audioOnly
+        ? 'Modus geändert: Audio-Only.' : 'Modus geändert: Video+Audio.';
+    } catch (err) { $('statusLine').textContent = 'Fehler: ' + err.message; }
+  });
+
+  function beginCountdownTo(localStartMs) {
+    // Countdown ist "armed" – wir sind noch nicht live.
+    // Wichtig: Button soll in dieser Phase NICHT klickbar sein.
+    recording = true;
+    phase = 'armed';
+    setMainButton('sync');
+
+    clearInterval(countdownTimer);
+    $('countdownWrap').style.display = 'block';
+    const tick = () => {
+      const remain = localStartMs - Date.now();
+      if (remain <= 0) {
+        clearInterval(countdownTimer);
+        $('countdownWrap').style.display = 'none';
+        startRecordingUI(localStartMs);
+        return;
+      }
+      $('countdownWrap').textContent = Math.ceil(remain / 1000);
+    };
+    tick();
+    countdownTimer = setInterval(tick, 100);
+  }
+
+  function startRecordingUI(localStartMs) {
+    recording = true; phase = 'live'; recStartAt = localStartMs;
+    setMainButton('stop');
+    $('statusLine').textContent = '🔴 Aufnahme läuft bei allen verbundenen Gästen.';
+    clearInterval(durTimer);
+    durTimer = setInterval(() => { $('dur').textContent = fmtTime(Date.now() - recStartAt); }, 250);
+  }
+
+  function finishRecordingUI() {
+    if (!recording) return;
+    recording = false; phase = 'idle';
+    clearInterval(durTimer); clearInterval(countdownTimer);
+    $('countdownWrap').style.display = 'none';
+    setMainButton('start');
+    trigger('clear').catch(() => {});
+  }
+
+  // ---------- Marker ----------
+  const MK_LABEL = { ad: 'Werbung', cut_in: 'Schnitt in', cut_out: 'Schnitt out' };
+
+  // Marker-Historie pro Session im Browser puffern, damit Marker nach einer
+  // zweiten Aufnahme weiterhin einsehbar bleiben.
+  // Sessions, deren Marker bereits einmal per HTTP nachgeladen wurden
+  // (verhindert Wiederhol-Requests bei jedem Status-Push).
+  const markerFetchDone = new Set();
+
+  // Drossel fuer die Token-UI (siehe renderStatus).
+  let lastTokenUiRefresh = 0;
+  function maybeRefreshTokenUI(force) {
+    const now = Date.now();
+    if (!force && now - lastTokenUiRefresh < 30000) return;
+    lastTokenUiRefresh = now;
+    refreshRoomTokenUI().catch(() => {});
+  }
+
+  const markerStore = {
+    // sessionId -> markers[]
+    bySession: new Map(),
+    // sessionId -> lastSeenTs
+    seen: new Map(),
+  };
+
+  async function loadMarkerSessionsOnce() {
+    // Lädt bestehende Marker-Sessions aus der DB (für alte Räume, in denen aktuell
+    // keine Aufnahme läuft -> data.session ist leer, sonst bleibt das Dropdown leer).
+    if (markerStore._sessionsLoaded) return;
+    markerStore._sessionsLoaded = true;
+    try {
+      const res = await apiFetch(`${SERVER}/host/marker_sessions/${room}`, { cache: 'no-store' });
+      const data = await res.json();
+      const sessions = (data && data.sessions) ? data.sessions : [];
+      for (const s of sessions) {
+        const sid = String(s || '');
+        if (sid && !markerStore.bySession.has(sid)) markerStore.bySession.set(sid, []);
+      }
+    } catch {}
+  }
+
+  // Marker-Session-Auswahl: muss stabil bleiben, wenn der User eine ältere
+  // Aufnahme/Session auswählt. Dafür speichern wir die "User-Choice" separat
+  // vom aktuellen Live-Status (currentSession).
+  let markerSessionUserChoice = '';
+
+  // Signatur der zuletzt gerenderten Optionsliste. Nur wenn sich die Liste
+  // wirklich ändert, bauen wir das <select> neu auf. So kann ein Status-Push
+  // (alle ~2s) die native Dropdown-Auswahl nicht mehr zurücksetzen.
+  let markerSessionListSig = null;
+
+  function updateMarkerSessionOptions(currentSession) {
+    const sel = $('markerSession');
+    if (!sel) return;
+
+    // Aktuelle Session bevorzugen, aber auch alte Sessions anbieten.
+    const sessions = new Set();
+    if (currentSession) sessions.add(String(currentSession));
+    for (const s of markerStore.bySession.keys()) sessions.add(String(s));
+    const list = Array.from(sessions).filter(Boolean).sort().reverse();
+
+    // Aktuelle Auswahl (vor evtl. Rebuild) – single source of truth ist
+    // markerSessionUserChoice, sobald der User einmal gewählt hat.
+    const prev = sel.value ? String(sel.value) : '';
+
+    // Nur neu aufbauen, wenn sich die Optionsliste tatsächlich geändert hat.
+    // (Diffing über eine stabile Signatur.)
+    const sig = list.join('\u0001');
+    const listChanged = (sig !== markerSessionListSig);
+
+    if (listChanged) {
+      markerSessionListSig = sig;
+      sel.innerHTML = '';
+      for (const s of list) {
+        const opt = document.createElement('option');
+        opt.value = s;
+        opt.textContent = s;
+        sel.appendChild(opt);
+      }
+    }
+
+    // Gewünschte Auswahl (Priorität):
+    // 1) explizite User-Wahl (persistiert über Status-Pushs)
+    // 2) bisherige Auswahl (falls noch vorhanden)
+    // 3) aktuelle Live-Session
+    // 4) neueste bekannte Session
+    const want = (markerSessionUserChoice || prev || String(currentSession || ''));
+
+    // sel.value NIEMALS bei jedem Render überschreiben. Nur setzen, wenn:
+    //   (a) noch gar nichts sinnvoll ausgewählt ist, oder
+    //   (b) die aktuell ausgewählte Session nicht mehr in der Liste existiert.
+    const curValid = prev && list.includes(prev);
+    let target = null;
+    if (!curValid) {
+      if (want && list.includes(want)) target = want;
+      else if (currentSession && list.includes(String(currentSession))) target = String(currentSession);
+      else if (list.length) target = list[0];
+    }
+
+    if (target !== null && target !== sel.value) {
+      // Telemetrie: nachvollziehen, warum die Auswahl geändert wurde.
+      try {
+        console.debug('[marker] selection changed', {
+          from: prev, to: target,
+          reason: !curValid ? 'current-not-in-list' : 'noop',
+          userChoice: markerSessionUserChoice, currentSession
+        });
+      } catch {}
+      sel.value = target;
+    }
+
+    // "Marker in WAV anwenden" ist nur sinnvoll, wenn eine Session gewählt ist.
+    const applyBtn = $('applyMarkersBtn');
+    if (applyBtn) applyBtn.disabled = !sel.value;
+
+    $('markerSessionHint').textContent = sel.value ? `Session: ${sel.value}` : '';
+  }
+
+  function _markersForSelectedSession() {
+    const sel = $('markerSession');
+    const sid = sel && sel.value ? String(sel.value) : '';
+    if (!sid) return [];
+    return markerStore.bySession.get(sid) || [];
+  }
+
+  const mkFmt = ms => {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
+  };
+
+  function setMarkerButtonsEnabled(on) {
+    document.querySelectorAll('#markerBar .mk').forEach(b => { b.disabled = !on; });
+    $('markerHint').textContent = on
+      ? 'Klicke, um an der aktuellen Stelle einen Marker zu setzen.'
+      : 'Marker sind nur während einer laufenden Aufnahme aktiv.';
+  }
+
+  // Dropdown-Interaktion: Auswahl wechseln => Marker neu rendern
+  $('markerSession').addEventListener('change', () => {
+    // User-Auswahl merken, damit Status-Pushs die Auswahl nicht zurück auf
+    // die "aktuelle" Session drehen.
+    try { markerSessionUserChoice = String($('markerSession').value || ''); } catch {}
+
+    // Marker der neu gewaehlten Session einmalig nachladen duerfen.
+    try { markerFetchDone.delete(String($('markerSession').value || '')); } catch {}
+
+    renderMarkers(_markersForSelectedSession());
+    const applyBtn = $('applyMarkersBtn');
+    if (applyBtn) applyBtn.disabled = !$('markerSession').value;
+  });
+
+  function renderMarkers(markers) {
+    const box = $('markerList');
+    const canEditTime = (phase !== 'armed' && phase !== 'live');
+    if (!markers.length) {
+      box.innerHTML = '<div class="empty">Noch keine Marker gesetzt.</div>';
+      return;
+    }
+
+    box.innerHTML = '';
+    for (const m of markers) {
+      const row = document.createElement('div');
+      row.className = 'mk-row';
+
+      const noteVal = (m.note || '');
+      const hasNote = !!noteVal.trim();
+
+      row.innerHTML = `
+        <span class="mk-time">${mkFmt(m.offset_ms || 0)}</span>
+        <div class="mk-shifts ${canEditTime ? '' : 'is-hidden'}" aria-hidden="${canEditTime ? 'false' : 'true'}">
+          <button class="mk-shift" data-id="${m.id}" data-delta="-5000" title="-5s">−5s</button>
+          <button class="mk-shift" data-id="${m.id}" data-delta="-1000" title="-1s">−1s</button>
+          <button class="mk-shift" data-id="${m.id}" data-delta="1000"  title="+1s">+1s</button>
+          <button class="mk-shift" data-id="${m.id}" data-delta="5000"  title="+5s">+5s</button>
+        </div>
+        <span class="mk-tag ${m.kind}">${escapeHtml(MK_LABEL[m.kind] || m.kind)}</span>
+        <input class="mk-note" data-id="${m.id}" type="text"
+               value="${escapeHtml(noteVal)}"
+               placeholder="Notiz…"
+               title="${escapeHtml(noteVal)}"
+               aria-label="Notiz für Marker ${escapeHtml(MK_LABEL[m.kind] || m.kind)}" />
+        <span class="mk-saved" data-id="${m.id}" style="display:${hasNote ? 'inline' : 'none'}">notiert</span>
+        <button class="mk-del" data-id="${m.id}" title="Marker löschen">Löschen</button>`;
+
+      box.appendChild(row);
+    }
+
+    // Notizen speichern bei blur (mit kleinem, sichtbaren Feedback)
+    box.querySelectorAll('.mk-note').forEach(inp => {
+      let last = inp.value;
+
+      inp.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { inp.blur(); }
+      });
+
+      inp.addEventListener('blur', async () => {
+        const id = inp.dataset.id;
+        const val = (inp.value || '').trim();
+        if (val === (last || '').trim()) return;
+
+        inp.disabled = true;
+        try {
+          await apiFetch(`${SERVER}/host/marker/${id}/note`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ note: val }),
+          });
+          last = val;
+          const badge = box.querySelector(`.mk-saved[data-id="${id}"]`);
+          if (badge) {
+            badge.style.display = val ? 'inline' : 'none';
+            badge.textContent = 'gespeichert';
+            setTimeout(() => { badge.textContent = 'notiert'; }, 900);
+          }
+        } catch (err) {
+          console.error(err);
+          const badge = box.querySelector(`.mk-saved[data-id="${id}"]`);
+          if (badge) {
+            badge.style.display = 'inline';
+            badge.textContent = 'Fehler';
+            setTimeout(() => { badge.style.display = val ? 'inline' : 'none'; badge.textContent = 'notiert'; }, 1400);
+          }
+        } finally {
+          inp.disabled = false;
+        }
+      });
+    });
+
+    // Zeit verschieben (nur außerhalb der laufenden Aufnahme)
+    if (canEditTime) {
+      box.querySelectorAll('.mk-shift').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const id = btn.dataset.id;
+          const delta = parseInt(btn.dataset.delta || '0', 10) || 0;
+          btn.disabled = true;
+          try {
+            await apiFetch(`${SERVER}/host/marker/${id}/shift`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ delta_ms: delta }),
+            });
+            // Der Server sendet nach dem Shift einen Status-Push -> Liste aktualisiert sich.
+          } catch (err) {
+            console.error(err);
+          } finally {
+            btn.disabled = false;
+          }
+        });
+      });
+    }
+
+    box.querySelectorAll('.mk-del').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        try {
+          // Marker-Loeschen laeuft ueber WebSocket; der Status-Push aktualisiert die Liste.
+          if (!wsSend({ type: 'marker_delete', id: btn.dataset.id })) {
+            console.error('Marker konnte nicht geloescht werden: keine Echtzeit-Verbindung.');
+          }
+        } catch (err) { console.error(err); }
+      });
+    });
+  }
+
+  document.querySelectorAll('#markerBar .mk').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const kind = btn.dataset.kind;
+      btn.disabled = true;
+      try {
+        // Marker setzen laeuft ueber WebSocket; der Status-Push aktualisiert die Liste.
+        if (!wsSend({ type: 'marker', kind })) {
+          console.error('Marker fehlgeschlagen: keine Echtzeit-Verbindung.');
+        }
+      } catch (err) {
+        console.error('Marker fehlgeschlagen:', err);
+      } finally {
+        // Wird beim naechsten Status-Update korrekt je nach Phase gesetzt.
+        if (phase === 'armed' || phase === 'live') btn.disabled = false;
+      }
+    });
+  });
+
+  // Marker in WAV anwenden (überschreibt full.wav pro Gastspur in dieser Session)
+  $('applyMarkersBtn').addEventListener('click', async () => {
+    const sid = String($('markerSession').value || '');
+    if (!sid) return;
+    if (!confirm('Marker in die WAV-Dateien schreiben und bestehende Marker überschreiben?')) return;
+
+    const btn = $('applyMarkersBtn');
+    const old = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Wende Marker an…';
+    try {
+      const res = await apiFetch(`${SERVER}/host/apply_markers/${room}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session: sid }),
+      });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.detail || 'Fehler');
+      btn.textContent = `✔ angewendet (${(data.wavs || []).length} WAV)`;
+      setTimeout(() => { btn.textContent = old; btn.disabled = false; }, 1800);
+    } catch (err) {
+      console.error(err);
+      btn.textContent = 'Fehler';
+      setTimeout(() => { btn.textContent = old; btn.disabled = false; }, 1800);
+    }
+  });
+
+
+  async function loadHistory() {
+    try {
+      const res = await apiFetch(`${SERVER}/sessions`, { cache: 'no-store' });
+      const all = await res.json();
+      const mine = all.filter(s => s.room === room);
+      const box  = $('history');
+      if (!mine.length) { box.innerHTML = '<div class="empty">Noch keine abgeschlossenen Aufnahmen.</div>'; return; }
+      box.innerHTML = '';
+      for (const s of mine) {
+        const row = document.createElement('div');
+        row.className = 'hist-row';
+        const prev = `${SERVER}/preview/${encodeURIComponent(s.room)}/${encodeURIComponent(s.guest)}/${encodeURIComponent(s.session)}`;
+        const dlUrl = `${SERVER}/download/${encodeURIComponent(s.room)}/${encodeURIComponent(s.guest)}/${encodeURIComponent(s.session)}`;
+        const right = s.merged
+          ? `<span style="display:flex;gap:8px;align-items:center">
+               <button class="hist-prev" data-url="${prev}" style="font-size:12px;padding:4px 8px">▶ Anhören</button>
+               <a class="btn-brand" href="${dlUrl}" download>⬇ WAV</a></span>`
+          : `<span class="sub">${s.chunks} Chunks (nicht zusammengeführt)</span>`;
+        row.innerHTML = `<span><b>${escapeHtml(s.guest)}</b> · ${escapeHtml(s.session)} · ${s.size_mb} MB</span>${right}`;
+        box.appendChild(row);
+        if (s.merged) {
+          const slot = document.createElement('div');
+          slot.style.cssText = 'display:none;padding:6px 0 10px';
+          box.appendChild(slot);
+          row.querySelector('.hist-prev').addEventListener('click', (e) => {
+            const btn = e.currentTarget;
+            if (slot.style.display === 'none') {
+              slot.innerHTML = `<audio controls preload="none" style="width:100%" src="${btn.dataset.url}"></audio>`;
+              slot.style.display = 'block'; btn.textContent = '⏹ Schließen';
+            } else { slot.innerHTML = ''; slot.style.display = 'none'; btn.textContent = '▶ Anhören'; }
+          });
+        }
+      }
+    } catch { $('history').innerHTML = '<div class="empty">Historie konnte nicht geladen werden.</div>'; }
+  }
+
+  // Feature 8: Custom Branding
+  // IMPORTANT: Never brand semantic state colors. Recording button uses --ok.
+  (async () => {
+    try {
+      const b = await (await fetch('/branding', { cache: 'no-store' })).json();
+      if (!b.ok) return;
+
+      // Only apply brand to --brand (NOT --ok).
+      if (b.color) {
+        /* Farben kommen serverseitig aus BRANDING-Block */;
+        // Hover-Farbe automatisch aus Primärfarbe ableiten (leicht heller).
+        try {
+          const hex = String(b.color).trim();
+          const m = /^#([0-9a-fA-F]{6})$/.exec(hex);
+          if (m) {
+            const n = parseInt(m[1], 16);
+            const r = (n >> 16) & 255, g = (n >> 8) & 255, bl = n & 255;
+            const mix = (c) => Math.max(0, Math.min(255, Math.round(c + (255 - c) * 0.18)));
+            const rh = mix(r), gh = mix(g), bh = mix(bl);
+            const hover = '#' + [rh, gh, bh].map(x => x.toString(16).padStart(2, '0')).join('');
+            /* Farben kommen serverseitig aus BRANDING-Block */;
+          }
+        } catch {}
+      }
+
+      if (b.name) {
+        document.title = 'Host · ' + room + ' · ' + b.name;
+      }
+      if (b.favicon) {
+        let link = document.querySelector('link[rel="icon"]');
+        if (!link) { link = document.createElement('link'); link.rel = 'icon'; document.head.appendChild(link); }
+        link.href = b.favicon;
+      }
+    } catch {}
+  })();
+
+  // Logout
+  $('logoutBtn').addEventListener('click', async () => {
+    await fetch('/logout', { method: 'POST' });
+    location.href = '/login';
+  });
+
+  setMainButton('start');
+
+  // Raum sofort serverseitig registrieren, damit er ohne Verzoegerung in der
+  // Admin-Raumuebersicht erscheint (vor dem ersten Token/der ersten Aufnahme).
+  apiFetch(`${SERVER}/host/room/${room}/ensure`, { method: 'POST' }).catch(() => {});
+
+  // Echtzeit-Kanal aufbauen. Der Server sendet den Raum-Status beim Connect
+  // und nach jeder Mutation (Trigger/Settings/Marker) per Push.
+  connectWs();
+
+  // Heartbeat-Ping, damit tote Verbindungen erkannt werden.
+  setInterval(() => { wsSend({ type: 'ping' }); }, 25000);
+
+  loadHistory();
+  setInterval(loadHistory, 15000);
+})();
+</script>
+</body>
+</html>
