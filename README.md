@@ -21,7 +21,7 @@ The host opens a room, invites guests through secure token links, and controls s
 - ✅ Admin dashboard with recording, room, and storage-usage metrics
 - ✅ Recording markers, individual WAV downloads, and ZIP export
 
-See `Roadmap_Open_Podcast_Studio.md` for the longer-term plan and `Open_Podcast_Studio_Dokumentation.md` for the technical documentation.
+See `Roadmap.md` for the longer-term plan and `documentation.md` for the technical documentation.
 
 ## Features
 
