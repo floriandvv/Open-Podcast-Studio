@@ -188,10 +188,14 @@ DEFAULT_CHANNELS    = 1
 SAMPLE_WIDTH        = 2
 
 BASE       = Path(__file__).parent
-UPLOADS    = BASE / "uploads"
-UPLOADS.mkdir(exist_ok=True)
-CONFIG_PATH = BASE / "config.json"
-AUTH_PATH   = BASE / "auth.json"
+# Keep mutable runtime data separate from the application code. This allows
+# Docker deployments to mount one persistent volume at DATA_DIR.
+DATA_DIR   = Path(os.environ.get("DATA_DIR", str(BASE))).resolve()
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+UPLOADS    = DATA_DIR / "uploads"
+UPLOADS.mkdir(parents=True, exist_ok=True)
+CONFIG_PATH = DATA_DIR / "config.json"
+AUTH_PATH   = DATA_DIR / "auth.json"
 
 # ---------------------------------------------------------------------------
 # Persistente Konfiguration (config.json)
@@ -267,7 +271,7 @@ LOGIN_WINDOW_SECONDS = 60
 # ---------------------------------------------------------------------------
 # SQLite – Token-Datenbank
 # ---------------------------------------------------------------------------
-DB_PATH = BASE / "tokens.db"
+DB_PATH = DATA_DIR / "tokens.db"
 _DB_LOCK = threading.Lock()
 
 
@@ -721,6 +725,72 @@ def _maybe_make_mp4(tmp_webm, dest_dir):
     return mp4_path
 
 
+def _session_wavs(room: str, session: str) -> list[tuple[str, Path]]:
+    """Liefert alle fertigen Gast-WAVs einer Session, stabil nach Gast sortiert."""
+    check_ident(room, session)
+    room_dir = UPLOADS / room
+    if not room_dir.exists():
+        return []
+    wavs = []
+    for guest_dir in sorted(room_dir.iterdir()):
+        if not guest_dir.is_dir() or guest_dir.name.startswith("."):
+            continue
+        wav = guest_dir / session / "full.wav"
+        if wav.exists() and wav.stat().st_size > 44:
+            wavs.append((guest_dir.name, wav))
+    return wavs
+
+
+def _mixdown_path(room: str, session: str) -> Path:
+    check_ident(room, session)
+    # Abgeleitete Dateien bewusst ausserhalb der Gast-/Session-Baumstruktur
+    # halten, damit /sessions und Cleanup sie nicht als Gastaufnahme interpretieren.
+    return DATA_DIR / "mixdowns" / room / session / "mixdown.mp3"
+
+
+def _ensure_session_mixdown(room: str, session: str, force: bool = False) -> Path | None:
+    """Erzeugt bzw. aktualisiert den MP3-Mixdown aller Gastspuren einer Session.
+
+    Der Mix wird atomar ersetzt. Dadurch kann der Host nie eine halb geschriebene
+    MP3 abrufen, waehrend ein weiterer Gast gerade fertig wird.
+    """
+    wavs = _session_wavs(room, session)
+    if not wavs:
+        return None
+    dest = _mixdown_path(room, session)
+    newest_wav = max(p.stat().st_mtime for _, p in wavs)
+    if (not force and dest.exists() and dest.stat().st_size > 0
+            and dest.stat().st_mtime >= newest_wav):
+        return dest
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name("mixdown.tmp.mp3")
+    cmd = [FFMPEG, "-y"]
+    for _, wav in wavs:
+        cmd += ["-i", str(wav)]
+    if len(wavs) == 1:
+        cmd += ["-map", "0:a:0", "-vn", "-codec:a", "libmp3lame", "-b:a", "192k", str(tmp)]
+    else:
+        inputs = "".join(f"[{i}:a:0]" for i in range(len(wavs)))
+        graph = f"{inputs}amix=inputs={len(wavs)}:duration=longest:dropout_transition=0:normalize=1[mix]"
+        cmd += ["-filter_complex", graph, "-map", "[mix]", "-vn",
+                "-codec:a", "libmp3lame", "-b:a", "192k", str(tmp)]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+    except OSError as exc:
+        print("[mixdown] FFmpeg konnte nicht gestartet werden:", exc)
+        return None
+    if proc.returncode != 0 or not tmp.exists() or tmp.stat().st_size == 0:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        print("[mixdown] Fehler:", (proc.stderr or "")[-800:])
+        return None
+    os.replace(tmp, dest)
+    return dest
+
+
 def safe(*parts):
     for p in parts:
         if not SAFE.match(p):
@@ -959,6 +1029,14 @@ def _build_status(room: str) -> dict:
             # Sprint 2: Mic-Inventar + aktuelles Geraet + Wechsel-Status.
             row["mic_devices"]          = info.get("mic_devices", [])
             row["current_mic_deviceId"] = info.get("current_mic_deviceId", "")
+            row["active_mic_deviceId"]  = info.get("active_mic_deviceId", "")
+            row["mic_active"]           = bool(info.get("mic_active", True))
+            row["mic_alert"]            = info.get("mic_alert")
+            row["mic_lost_during_recording"] = bool(info.get("mic_lost_during_recording"))
+            # Auswahl != aktives Geraet -> der Host sieht die Abweichung direkt.
+            row["mic_mismatch"] = bool(
+                info.get("current_mic_deviceId") and info.get("active_mic_deviceId")
+                and info.get("current_mic_deviceId") != info.get("active_mic_deviceId"))
             row["mic_pending"]          = bool(info.get("mic_cmd"))
             row["mic_last_result"]      = info.get("mic_last_result")
             row["connection"]         = conn
@@ -1470,8 +1548,13 @@ async def finish(room, guest, session):
     except Exception:
         pass
 
+    # Nach jedem fertiggestellten Gast die gemeinsame Session-MP3 aktualisieren.
+    # Bereits fertige Gastspuren werden dabei zusammen mit der neuen Spur gemischt.
+    mixdown = _ensure_session_mixdown(room, session, force=True)
+
     return {"ok": True, "chunks": n_chunks,
             "merged": str(wav_path.relative_to(BASE)),
+            "mixdown": f"/host/mixdown/{room}/{session}" if mixdown else None,
             "size_mb": round(wav_path.stat().st_size / 1024 / 1024, 2)}
 
 
@@ -1661,7 +1744,7 @@ def host_marker_list(room, session: str | None = None, _auth=Depends(require_aut
 
 
 @app.post("/host/apply_markers/{room}")
-async def host_apply_markers(room: str, request: Request, _auth=Depends(require_auth)):
+async def host_apply_markers(room: str, request: Request, _role=Depends(require_admin)):
     """Wendet die Marker einer Session auf alle full.wav dieser Session an.
 
     Body: { session: str }
@@ -1699,6 +1782,8 @@ async def host_apply_markers(room: str, request: Request, _auth=Depends(require_
     if not updated:
         raise HTTPException(404, "Keine full.wav für diese Session gefunden")
 
+    # Marker veraendern die WAV-Dateien; deshalb den abgeleiteten Mixdown erneuern.
+    _ensure_session_mixdown(room, session, force=True)
     await _broadcast_host_status(room)
     return {"ok": True, "room": room, "session": session, "markers": len(markers), "wavs": updated}
 
@@ -1726,7 +1811,7 @@ async def host_marker_delete(marker_id: str, _auth=Depends(require_auth)):
 # ── Download (geschuetzt, korrekter Dateiname + MIME) ─────────────────────────
 
 @app.get("/download/{room}/{guest}/{session}")
-def download_recording(room, guest, session, _auth=Depends(require_auth)):
+def download_recording(room, guest, session, _role=Depends(require_admin)):
     """Liefert die fertige WAV mit korrektem Content-Type und sprechendem
     Dateinamen aus. Behebt den Bug, bei dem der Browser sonst eine
     JSON-Fehlerseite als '.json' speichert bzw. eine falsche Endung waehlt.
@@ -1813,6 +1898,19 @@ def admin_delete_session(room, guest, session, _role=Depends(require_admin)):
     if not dest_dir.exists():
         raise HTTPException(404, "Session nicht gefunden")
     shutil.rmtree(dest_dir)
+    # Mixdown nach dem Loeschen einer Gastspur neu aufbauen bzw. entfernen.
+    remaining = _session_wavs(room, session)
+    mix_path = _mixdown_path(room, session)
+    if remaining:
+        _ensure_session_mixdown(room, session, force=True)
+    else:
+        try:
+            if mix_path.exists():
+                mix_path.unlink()
+            if mix_path.parent.exists() and not any(mix_path.parent.iterdir()):
+                mix_path.parent.rmdir()
+        except OSError:
+            pass
     # leere Eltern-Ordner aufraeumen
     for d in (dest_dir.parent, dest_dir.parent.parent):
         try:
@@ -1823,11 +1921,22 @@ def admin_delete_session(room, guest, session, _role=Depends(require_admin)):
     return {"ok": True, "deleted": f"{room}/{guest}/{session}"}
 
 
-# ── Audio-Vorschau: WAV inline streamen (Feature 5) ──────────────────────────
+# ── Rollengetrennte Audio-Ausgabe ───────────────────────────────────────────
 
-@app.get("/preview/{room}/{guest}/{session}")
-def preview_recording(room, guest, session, _auth=Depends(require_auth)):
-    """Wie /download, aber inline (Content-Disposition: inline) fuer <audio>."""
+@app.get("/host/mixdown/{room}/{session}")
+def host_mixdown(room, session, _auth=Depends(require_auth)):
+    """Einzige Audio-Ausgabe fuer Hosts: gemeinsamer MP3-Mixdown der Session."""
+    path = _ensure_session_mixdown(room, session)
+    if path is None or not path.exists():
+        raise HTTPException(404, "MP3-Mixdown noch nicht verfügbar")
+    return FileResponse(str(path), media_type="audio/mpeg",
+                        headers={"Content-Disposition": "inline",
+                                 "Cache-Control": "no-store"})
+
+
+@app.get("/admin/preview/{room}/{guest}/{session}")
+def admin_preview_recording(room, guest, session, _role=Depends(require_admin)):
+    """Admin-Vorschau einer einzelnen WAV-Spur."""
     dest_dir = safe(room, guest, session)
     wav_path = dest_dir / "full.wav"
     if not wav_path.exists():
@@ -1836,10 +1945,26 @@ def preview_recording(room, guest, session, _auth=Depends(require_auth)):
                         headers={"Content-Disposition": "inline"})
 
 
+@app.get("/admin/session-export/{room}/{session}")
+def admin_export_session_zip(room, session, _role=Depends(require_admin)):
+    """ZIP mit allen Gast-WAVs genau einer Session; nur fuer Admins."""
+    wavs = _session_wavs(room, session)
+    if not wavs:
+        raise HTTPException(404, "Keine fertigen WAVs in dieser Session")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for guest, wav in wavs:
+            zf.write(str(wav), f"{room}_{session}/{guest}.wav")
+    buf.seek(0)
+    fname = f"{room}_{session}_wavs.zip"
+    return StreamingResponse(buf, media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
 # ── ZIP-Export aller Spuren eines Raums (Feature 4) ──────────────────────────
 
 @app.get("/export/{room}")
-def export_room_zip(room, _auth=Depends(require_auth)):
+def export_room_zip(room, _role=Depends(require_admin)):
     """Packt alle full.wav eines Raums in ein ZIP und streamt es."""
     check_ident(room)
     room_dir = safe(room)
@@ -1966,6 +2091,13 @@ def admin_room_delete(room, _role=Depends(require_admin)):
             shutil.rmtree(room_dir)
         except ValueError:
             raise HTTPException(400, "Ungueltiger Pfad")
+    # Abgeleitete MP3-Mixdowns des Raums ebenfalls vollstaendig entfernen.
+    mix_room = DATA_DIR / "mixdowns" / room
+    if mix_room.exists():
+        try:
+            shutil.rmtree(mix_room)
+        except OSError as exc:
+            print("[mixdown] Raum-Cleanup fehlgeschlagen:", exc)
     with _DB_LOCK, _db_conn() as conn:
         conn.execute("DELETE FROM guest_tokens WHERE room=?", (room,))
         conn.execute("DELETE FROM markers WHERE room=?", (room,))
@@ -2062,8 +2194,17 @@ def admin_room_logs(room, since: float = 0.0, _role=Depends(require_admin)):
 
 
 @app.get("/sessions")
-def sessions(_auth=Depends(require_auth)):
+def sessions(role=Depends(require_auth)):
+    """Session-Inventar fuer Host und Admin.
+
+    Die Liste bleibt transportseitig flach (eine Zeile pro Gastspur), enthaelt
+    aber gemeinsame Mixdown-Felder. Die UIs gruppieren zuerst nach Raum+Session.
+    Hosts erhalten keine WAV-/ZIP-URLs; diese Endpunkte sind zusaetzlich
+    serverseitig auf die Admin-Rolle beschraenkt.
+    """
     out = []
+    archived = set(_cfg_get("archived_rooms") or [])
+    session_keys = set()
     for room_dir in (sorted(UPLOADS.iterdir()) if UPLOADS.exists() else []):
         if not room_dir.is_dir():
             continue
@@ -2073,20 +2214,42 @@ def sessions(_auth=Depends(require_auth)):
             for sess_dir in sorted(guest_dir.iterdir()):
                 if not sess_dir.is_dir():
                     continue
-                chunks = (list(sess_dir.glob("chunk-*.pcm"))
-                          or list(sess_dir.glob("chunk-*.webm")))
-                full   = sess_dir / "full.wav"
+                chunks = list(sess_dir.glob("chunk-*.pcm")) + list(sess_dir.glob("chunk-*.webm"))
+                full = sess_dir / "full.wav"
+                has_wav = full.exists() and full.stat().st_size > 44
+                last_seen = max([sess_dir.stat().st_mtime]
+                                + [p.stat().st_mtime for p in chunks]
+                                + ([full.stat().st_mtime] if has_wav else []))
+                created_at = sess_dir.stat().st_ctime
+                state = ("complete" if has_wav and chunks else
+                         "wav_only" if has_wav else
+                         "chunks_only" if chunks else "prepared")
                 out.append({
-                    "room":    room_dir.name,
-                    "guest":   guest_dir.name,
-                    "session": sess_dir.name,
-                    "chunks":  len(chunks),
-                    "merged":  full.exists(),
-                    "size_mb": round(
-                        (full.stat().st_size if full.exists()
-                         else sum(c.stat().st_size for c in chunks))
-                        / 1024 / 1024, 2),
+                    "room": room_dir.name, "guest": guest_dir.name,
+                    "session": sess_dir.name, "label": sess_dir.name,
+                    "chunks": len(chunks), "chunks_count": len(chunks),
+                    "merged": has_wav, "has_wav": has_wav,
+                    "size_mb": round((full.stat().st_size if has_wav else
+                        sum(c.stat().st_size for c in chunks)) / 1024 / 1024, 2),
+                    "created_at": created_at, "last_seen": last_seen,
+                    "archived": room_dir.name in archived, "online": False,
+                    "deleted": False, "state": state,
                 })
+                if has_wav:
+                    session_keys.add((room_dir.name, sess_dir.name))
+
+    # Alte Sessions bekommen ihren Mixdown beim ersten Listenabruf nachtraeglich.
+    mix_state = {}
+    for room_name, session_name in session_keys:
+        path = _ensure_session_mixdown(room_name, session_name)
+        mix_state[(room_name, session_name)] = bool(path and path.exists())
+    for row in out:
+        row["has_mixdown"] = mix_state.get((row["room"], row["session"]), False)
+        row["mixdown_url"] = (f"/host/mixdown/{row['room']}/{row['session']}"
+                              if row["has_mixdown"] else None)
+        # Explizit nur Admin-Metadaten markieren; keine privilegierten URLs an Hosts.
+        row["admin_assets"] = bool(role == "admin")
+    out.sort(key=lambda r: (r["last_seen"], r["room"], r["session"], r["guest"]), reverse=True)
     return JSONResponse(out)
 
 
@@ -2147,16 +2310,42 @@ def _apply_guest_telemetry(room: str, guest: str, payload: dict) -> None:
             g["mic_devices"] = clean[:20]
         if "current_mic_deviceId" in payload:
             g["current_mic_deviceId"] = str(payload.get("current_mic_deviceId", ""))[:200]
-        # Ergebnis eines zuvor angeforderten Wechsels aufnehmen und das
-        # gast-gezielte Kommando aufloesen (Pending -> erledigt).
+        # Tatsaechlich gebundenes Geraet + Warnhinweise. Auswahl und aktives
+        # Geraet koennen nach einem Hotplug auseinanderlaufen -- der Host soll
+        # sehen, was wirklich aufgenommen wird.
+        if "active_mic_deviceId" in payload:
+            g["active_mic_deviceId"] = str(payload.get("active_mic_deviceId", ""))[:200]
+        if "mic_active" in payload:
+            g["mic_active"] = bool(payload.get("mic_active"))
+        alert = payload.get("mic_alert")
+        if isinstance(alert, dict) and alert.get("text"):
+            g["mic_alert"] = {
+                "kind": str(alert.get("kind", "warn"))[:10],
+                "text": str(alert.get("text", ""))[:200],
+            }
+        elif "mic_alert" in payload:
+            g.pop("mic_alert", None)
+        if "mic_lost_during_recording" in payload:
+            g["mic_lost_during_recording"] = bool(payload.get("mic_lost_during_recording"))
+        # Ergebnis nur fuer den EXAKT passenden Mic-Befehl akzeptieren.
+        # Der Recorder sendet Telemetrie wiederholt; eine alte Bestaetigung darf
+        # daher keinen spaeteren Befehl loeschen oder dessen Status ueberschreiben.
         res = payload.get("mic_last_result")
         if isinstance(res, dict):
-            g["mic_last_result"] = {
-                "ok":     bool(res.get("ok")),
-                "label":  str(res.get("label", "") or "")[:120],
-                "error":  str(res.get("error", "") or "")[:160],
-            }
-            g.pop("mic_cmd", None)
+            current_cmd = g.get("mic_cmd")
+            result_cmd_id = str(res.get("command_id", ""))[:64]
+            expected_cmd_id = (
+                str(current_cmd.get("command_id", ""))[:64]
+                if isinstance(current_cmd, dict) else ""
+            )
+            if current_cmd and result_cmd_id and result_cmd_id == expected_cmd_id:
+                g["mic_last_result"] = {
+                    "command_id": result_cmd_id,
+                    "ok":     bool(res.get("ok")),
+                    "label":  str(res.get("label", "") or "")[:120],
+                    "error":  str(res.get("error", "") or "")[:160],
+                }
+                g.pop("mic_cmd", None)
         r["guests"][guest] = g
 
 
@@ -2307,9 +2496,13 @@ async def ws_host(websocket: WebSocket, room: str,
                         r = _room(room)
                         gi = r["guests"].get(tgt)
                         if gi is not None:
+                            # Eindeutige ID statt nur Millisekunden-Zeitstempel:
+                            # Sie koppelt Recorder-Antwort und Pending-Befehl 1:1.
+                            command_id = secrets.token_hex(12)
                             gi["mic_cmd"] = {
                                 "deviceId": did, "label": lbl,
                                 "issued_at": now_ms,
+                                "command_id": command_id,
                             }
                             gi.pop("mic_last_result", None)
                     await _broadcast_host_status(room)

@@ -920,6 +920,8 @@
   }
 
   async function onDeviceChange() {
+    if (previewRebuilding) return;   // mitten im Rebind -> naechster Tick
+    const before = currentMicDeviceId();
     let res;
     try {
       res = await listDevices();
@@ -927,28 +929,47 @@
       log("Geräteliste konnte nicht aktualisiert werden: " + err.message, "err");
       return;
     }
-    if (!res || !res.changed) return;
 
-    log("Geräteliste aktualisiert.", "ok");
+    // Zusätzlich zur Liste prüfen wir den tatsächlich laufenden Track.
+    // Ein Track kann tot sein, ohne dass sich die Liste geändert hat --
+    // und ein neues Gerät kann in der Liste stehen, ohne aktiv zu sein.
+    const track = activeAudioTrack();
+    const activeId = activeMicDeviceId();
 
-    if (res.lost) {
-      // Das aktive Mikrofon ist weg -> auf das erste verfuegbare wechseln.
-      const sel = $("micSel");
-      const next = sel && sel.options[0];
-      if (next) {
-        sel.value = next.value;
-        showMicToast("Mikrofon getrennt — jetzt aktiv: " + next.text, "info");
-        log("Mikrofon getrennt, wechsle auf: " + next.text, "info");
-        if (stream) { try { await startPreview(); } catch {} }
-      } else {
-        showMicToast("Kein Mikrofon mehr verfügbar.", "err");
-        log("Kein Mikrofon mehr verfügbar.", "err");
-      }
-    } else {
+    if (stream && !track) {
+      // Aktives Mikrofon ist weggefallen.
+      await onMicDisappeared(currentMicLabel());
+      return;
+    }
+
+    if (res && res.lost) {
+      await onMicDisappeared(currentMicLabel());
+      return;
+    }
+
+    if (res && res.changed) {
+      log("Geräteliste aktualisiert.", "ok");
       showMicToast("Geräteliste aktualisiert.", "ok");
     }
 
-    // Host sofort das neue Inventar melden (statt bis zum naechsten Takt zu warten).
+    // Kernfall dieses Milestones: Die Auswahl zeigt auf ein Gerät, das der
+    // Browser gar nicht liefert (z. B. frisch eingestecktes USB-Mikro, das
+    // in der Liste auftaucht, aber nie gebunden wurde). Dann explizit
+    // nachbinden statt darauf zu vertrauen, dass der Browser umschaltet.
+    const wanted = currentMicDeviceId();
+    if (stream && wanted && activeId && wanted !== activeId) {
+      log("Ausgewähltes Mikrofon ist nicht das aktive — binde neu.", "info");
+      await rebindMic(wanted, "Auswahl nicht aktiv");
+      return;
+    }
+
+    // Neu erschienenes Gerät, aber Auswahl unverändert und Stream läuft:
+    // nichts erzwingen -- der Gast bzw. der Host entscheidet. Wir melden nur.
+    if (res && res.changed && before === wanted) {
+      try { heartbeat(); } catch {}
+      return;
+    }
+
     try { heartbeat(); } catch {}
   }
 
@@ -968,6 +989,37 @@
     const sel = $("spkSel");
     const txt = sel && sel.options[sel.selectedIndex] && sel.options[sel.selectedIndex].text;
     return txt || "Standard";
+  }
+
+  // ---------- Aktives Mikrofon: Wahrheit ist der laufende Track ----------
+  // Die <select>-Auswahl ist nur ein Wunsch. Was wirklich aufgenommen wird,
+  // steht in den Settings des aktiven Audio-Tracks. Beide koennen nach einem
+  // Hotplug auseinanderlaufen -- genau das war der offene Hotplug-Fall.
+  let micAlert = null;          // { kind, text } fuer den Host-Heartbeat
+  let micLostDuringRec = false; // Geraet waehrend laufender Aufnahme verloren
+
+  function activeAudioTrack() {
+    try {
+      const t = stream && stream.getAudioTracks && stream.getAudioTracks()[0];
+      return (t && t.readyState === "live") ? t : null;
+    } catch { return null; }
+  }
+
+  function activeMicDeviceId() {
+    const t = activeAudioTrack();
+    if (!t) return "";
+    try { return (t.getSettings && t.getSettings().deviceId) || ""; } catch { return ""; }
+  }
+
+  function micLabelFor(deviceId) {
+    const sel = $("micSel");
+    if (!sel) return "";
+    const o = Array.from(sel.options).find(x => x.value === deviceId);
+    return (o && o.text) || "";
+  }
+
+  function setMicAlert(kind, text) {
+    micAlert = text ? { kind, text, ts: Date.now() } : null;
   }
 
   // ---------- Sprint 2: Host waehlt Gast-Mikrofon ----------
@@ -990,7 +1042,8 @@
   let micLastResult = null;
   // ID eines aufgeschobenen Wechsels (waehrend laufender Aufnahme, Option A).
   let deferredMicCmd = null;
-  let lastMicCmdIssued = 0;   // Idempotenz gegen wiederholte Auslieferung
+  let lastMicCmdIssued = 0;   // Fallback fuer alte Server ohne command_id
+  let lastMicCmdId = "";      // Idempotenz fuer eindeutig adressierte Befehle
 
   // Kleiner, unaufdringlicher Toast fuer den Gast.
   function showMicToast(text, kind) {
@@ -1018,7 +1071,7 @@
 
   // Wendet einen konkreten Mic-Wechsel an: setzt das <select> und bindet den
   // Stream neu (via startPreview). Meldet Ergebnis an den Host zurueck.
-  async function applyMicChange(deviceId, label) {
+  async function applyMicChange(deviceId, label, commandId = "") {
     const sel = $("micSel");
     if (!sel) return;
     const has = Array.from(sel.options).some(o => o.value === deviceId);
@@ -1028,7 +1081,7 @@
     }
     const still = Array.from(sel.options).some(o => o.value === deviceId);
     if (!still) {
-      micLastResult = { ok: false, error: "Gerät nicht gefunden", label: label || "" };
+      micLastResult = { command_id: commandId, ok: false, error: "Gerät nicht gefunden", label: label || "" };
       showMicToast("Mikrofon nicht gefunden — Wechsel abgebrochen.", "err");
       heartbeat();
       return;
@@ -1036,12 +1089,28 @@
     sel.value = deviceId;
     const shownLabel = (sel.options[sel.selectedIndex] && sel.options[sel.selectedIndex].text) || label || "Mikrofon";
     try {
-      if (stream) await startPreview();   // bindet den neuen Mic-Stream
-      micLastResult = { ok: true, label: shownLabel };
+      // Immer explizit über getUserMedia() an die deviceId binden -- auch wenn
+      // noch kein Stream läuft, sonst bliebe die Auswahl folgenlos.
+      const gotId = await rebindMic(deviceId, "Host-Wechsel");
+      if (gotId !== deviceId) {
+        // Erfolg nur bei exakt verifizierter deviceId. Eine leere ID ist keine
+        // Bestaetigung -- sonst koennte der Host erneut einen Wechsel anzeigen,
+        // obwohl der Browser weiterhin das Default-/alte Mikrofon nutzt.
+        const trackLabel = activeAudioTrack() && activeAudioTrack().label;
+        const gotLabel = micLabelFor(gotId) || trackLabel || "nicht verifizierbares Mikrofon";
+        micLastResult = { command_id: commandId, ok: false, error: `Aktives Gerät nicht bestätigt: „${gotLabel}“`, label: shownLabel };
+        showMicToast(`Wechsel nicht bestätigt — aktiv ist „${gotLabel}“.`, "err");
+        log(`Mic-Wechsel auf „${shownLabel}“ nicht bestätigt, aktiv: „${gotLabel}“.`, "err");
+        heartbeat();
+        return;
+      }
+      if (!activeAudioTrack()) throw new Error("kein aktiver Audio-Track");
+      micLastResult = { command_id: commandId, ok: true, label: shownLabel };
+      setMicAlert(null, "");
       showMicToast("Mikrofon gewechselt auf: " + shownLabel, "ok");
       log("Host hat Mikrofon gewechselt auf: " + shownLabel, "ok");
     } catch (err) {
-      micLastResult = { ok: false, error: (err && err.message) || "Fehler", label: shownLabel };
+      micLastResult = { command_id: commandId, ok: false, error: (err && err.message) || "Fehler", label: shownLabel };
       showMicToast("Mikrofon-Wechsel fehlgeschlagen.", "err");
       log("Mic-Wechsel fehlgeschlagen: " + ((err && err.message) || err), "err");
     }
@@ -1052,90 +1121,248 @@
   // Option A: waehrend laufender Aufnahme blocken und nach Stopp anwenden.
   function handleMicCommand(mic) {
     if (!mic || !mic.deviceId) return;
+    const commandId = String(mic.command_id || "");
     const issued = (typeof mic.issued_at === "number") ? mic.issued_at : 0;
-    if (issued && issued === lastMicCmdIssued) return;   // schon verarbeitet
-    lastMicCmdIssued = issued;
+    if (commandId) {
+      if (commandId === lastMicCmdId) return;          // exakt dieser Befehl lief schon
+      lastMicCmdId = commandId;
+    } else {
+      if (issued && issued === lastMicCmdIssued) return; // Legacy-Fallback
+      lastMicCmdIssued = issued;
+    }
+
+    // Eine alte Bestaetigung darf niemals zusammen mit einem neuen Kommando
+    // gesendet werden. Sonst koennte sie serverseitig den neuen Befehl loeschen.
+    micLastResult = null;
 
     if (isRecording || countingDown) {
       // Aufschieben bis nach dem Stopp (Option A).
-      deferredMicCmd = { deviceId: mic.deviceId, label: mic.label || "" };
+      deferredMicCmd = {
+        deviceId: mic.deviceId,
+        label: mic.label || "",
+        command_id: commandId,
+      };
       showMicToast("Mikrofon-Wechsel wird nach dem Stopp angewendet.", "info");
       log("Mic-Wechsel angefordert — aufgeschoben bis nach der Aufnahme.", "info");
-      // Host sieht den Pending-Status ohnehin ueber mic_pending; hier kein Ergebnis.
       return;
     }
-    applyMicChange(mic.deviceId, mic.label || "");
+    applyMicChange(mic.deviceId, mic.label || "", commandId);
   }
 
-  async function startPreview() {
-    // Alten Stream sauber freigeben, bevor wir das Geraet neu beanspruchen.
-    if (stream) {
-      stream.getTracks().forEach(t => { try { t.stop(); } catch {} });
-      stream = null;
-      $("preview").srcObject = null;
-      stopVuMeter();
-      await new Promise(r => setTimeout(r, 200));
-    }
+  // Wird gesetzt, solange ein Rebind laeuft -- verhindert, dass ein
+  // devicechange-Event mitten im Neuaufbau einen zweiten Rebind startet.
+  let previewRebuilding = false;
+  let previewGeneration = 0;
 
-    const camId = $("camSel").value;
-    const micId = $("micSel").value;
-
-    const buildConstraints = (useExact) => ({
-      // Audio-Only (host-gesteuert): kein Video anfordern.
-      video: audioOnly ? false : {
-        deviceId: camId ? (useExact ? { exact: camId } : { ideal: camId }) : undefined,
-        width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 }
-      },
-      audio: {
-        deviceId: micId ? (useExact ? { exact: micId } : { ideal: micId }) : undefined,
-        sampleRate: AUDIO_SAMPLE_RATE,
-        channelCount: 2,
-        echoCancellation: false,
-        noiseSuppression: false,
-        autoGainControl: false
-      }
+  // Haengt an den Tracks des aktuellen Streams: meldet, wenn ein Geraet
+  // waehrend des Betriebs verschwindet (USB abgezogen, Interface aus).
+  function watchTrackEnd(s, generation) {
+    if (!s) return;
+    s.getTracks().forEach(t => {
+      t.addEventListener("ended", () => {
+        if (generation !== previewGeneration) return;   // alter Stream, ignorieren
+        if (t.kind === "audio") onMicDisappeared(t.label || currentMicLabel());
+      }, { once: true });
     });
+  }
+
+  async function startPreview(requestedMicId = "") {
+    const generation = ++previewGeneration;
+    previewRebuilding = true;
+
+    // Auswahl fuer genau diesen Rebind einfrieren. Ein paralleles devicechange-
+    // Event darf einem Host-Kommando nicht nachtraeglich eine andere ID geben.
+    const camId = $("camSel").value;
+    const micId = requestedMicId || $("micSel").value;
+    const oldStream = stream;
+    let candidateStream = null;
 
     try {
-      stream = await navigator.mediaDevices.getUserMedia(buildConstraints(true));
-    } catch (err) {
-      log(`Stream-Start fehlgeschlagen (${err.name}: ${err.message}) — versuche Fallback…`, "err");
-      await new Promise(r => setTimeout(r, 400));
+      // Nur den Stream freigeben, den dieser Aufruf beim Start vorgefunden hat.
+      // Parallel gestartete Rebinds duerfen sich nicht gegenseitig stoppen.
+      if (oldStream && stream === oldStream) {
+        stopVuMeter();
+        oldStream.getTracks().forEach(t => { try { t.stop(); } catch {} });
+        stream = null;
+        $("preview").srcObject = null;
+        await new Promise(r => setTimeout(r, 200));
+      }
+
+      const buildConstraints = (useExact) => ({
+        video: audioOnly ? false : {
+          deviceId: camId ? (useExact ? { exact: camId } : { ideal: camId }) : undefined,
+          width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 }
+        },
+        audio: {
+          deviceId: micId ? (useExact ? { exact: micId } : { ideal: micId }) : undefined,
+          sampleRate: AUDIO_SAMPLE_RATE,
+          channelCount: 2,
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false
+        }
+      });
+
       try {
-        stream = await navigator.mediaDevices.getUserMedia(buildConstraints(false));
-      } catch (err2) {
-        log(`Zweiter Versuch fehlgeschlagen (${err2.name}). Versuche generisches Geraet…`, "err");
+        candidateStream = await navigator.mediaDevices.getUserMedia(buildConstraints(true));
+      } catch (err) {
+        log(`Stream-Start fehlgeschlagen (${err.name}: ${err.message}) — versuche Fallback…`, "err");
         await new Promise(r => setTimeout(r, 400));
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: audioOnly ? false : true,
-          audio: { deviceId: micId ? { ideal: micId } : undefined }
-        });
+        try {
+          candidateStream = await navigator.mediaDevices.getUserMedia(buildConstraints(false));
+        } catch (err2) {
+          log(`Zweiter Versuch fehlgeschlagen (${err2.name}). Versuche generisches Gerät…`, "err");
+          await new Promise(r => setTimeout(r, 400));
+          candidateStream = await navigator.mediaDevices.getUserMedia({
+            video: audioOnly ? false : true,
+            audio: { deviceId: micId ? { ideal: micId } : undefined }
+          });
+        }
       }
-    }
 
-    // Im Audio-Only-Modus kein Video an das <video>-Element haengen.
-    $("preview").srcObject = audioOnly ? null : stream;
-    const at = stream.getAudioTracks()[0]?.getSettings();
-    const vt = stream.getVideoTracks()[0]?.getSettings();
-    if (audioOnly) {
-      log(`Stream (Audio-only): Audio ${at?.sampleRate}Hz ${at?.channelCount}ch`, "ok");
-    } else {
-      log(`Stream: ${vt?.width}x${vt?.height}@${vt?.frameRate}fps · Audio ${at?.sampleRate}Hz ${at?.channelCount}ch`, "ok");
-      // Portrait-Anzeige neu berechnen, sobald das Video Maße kennt.
-      applyPortraitLayout();
-    }
+      // Ein neuerer Rebind hat uns ueberholt: ausschliesslich den eigenen
+      // Kandidaten stoppen. Niemals den inzwischen global aktiven Stream.
+      if (generation !== previewGeneration) {
+        candidateStream.getTracks().forEach(t => { try { t.stop(); } catch {} });
+        candidateStream = null;
+        throw new Error("Mikrofon-Wechsel wurde durch einen neueren Gerätewechsel ersetzt");
+      }
 
-    // Tonausgabe-Geraet auf das Vorschau-Element anwenden (falls unterstuetzt)
+      const audioTrack = candidateStream.getAudioTracks()[0];
+      if (!audioTrack || audioTrack.readyState !== "live") {
+        throw new Error("kein aktiver Audio-Track im neu angeforderten Stream");
+      }
+      const gotId = (audioTrack.getSettings && audioTrack.getSettings().deviceId) || "";
+
+      // Erst nach erfolgreicher, lokaler Validierung atomar aktivieren.
+      stream = candidateStream;
+      candidateStream = null;
+
+      if (micId && gotId && gotId !== micId) {
+        const wanted = micLabelFor(micId) || "gewähltes Mikrofon";
+        const gotLabel = micLabelFor(gotId) || audioTrack.label || "anderes Mikrofon";
+        log(`Browser lieferte „${gotLabel}“ statt „${wanted}“ — Auswahl wird angeglichen.`, "err");
+        setMicAlert("warn", `Aktiv ist „${gotLabel}“, nicht „${wanted}“.`);
+        showMicToast(`Aufnahme läuft über „${gotLabel}“.`, "info");
+        const sel = $("micSel");
+        if (sel && Array.from(sel.options).some(o => o.value === gotId)) sel.value = gotId;
+      } else if (micId && gotId === micId) {
+        setMicAlert(null, "");
+      }
+
+      $("preview").srcObject = audioOnly ? null : stream;
+      const at = audioTrack.getSettings ? audioTrack.getSettings() : {};
+      const vt = stream.getVideoTracks()[0]?.getSettings();
+      if (audioOnly) {
+        log(`Stream (Audio-only): Audio ${at?.sampleRate}Hz ${at?.channelCount}ch`, "ok");
+      } else {
+        log(`Stream: ${vt?.width}x${vt?.height}@${vt?.frameRate}fps · Audio ${at?.sampleRate}Hz ${at?.channelCount}ch`, "ok");
+        applyPortraitLayout();
+      }
+
+      try {
+        const v = $("preview");
+        const spkId = $("spkSel").value;
+        if (v && typeof v.setSinkId === "function" && spkId && spkId !== "default") {
+          await v.setSinkId(spkId);
+        }
+      } catch {}
+
+      watchTrackEnd(stream, generation);
+      if (!isRecording) micLostDuringRec = false;
+      startVuMeter(stream);
+
+      if (isRecording) {
+        try { await rebindRecordingSource(); }
+        catch (err) { log("Aufnahme-Graph konnte nicht umgehängt werden: " + err.message, "err"); }
+      }
+
+      return gotId;
+    } catch (err) {
+      if (candidateStream) {
+        candidateStream.getTracks().forEach(t => { try { t.stop(); } catch {} });
+      }
+      throw err;
+    } finally {
+      if (generation === previewGeneration) previewRebuilding = false;
+    }
+  }
+
+  // Hängt den laufenden PCM-Aufnahmegraphen auf den aktuellen Stream um,
+  // ohne die Session oder den Chunk-Zähler zu unterbrechen.
+  async function rebindRecordingSource() {
+    if (!pcmCtx || !pcmNode) return;                 // Video-Pfad oder nicht aktiv
+    const tracks = stream ? stream.getAudioTracks() : [];
+    if (!tracks.length) return;
+    try { pcmSourceNode && pcmSourceNode.disconnect(); } catch {}
+    if (pcmCtx.state === "suspended") { try { await pcmCtx.resume(); } catch {} }
+    pcmSourceNode = pcmCtx.createMediaStreamSource(new MediaStream([tracks[0]]));
+    pcmSourceNode.connect(pcmNode);
+    log("Aufnahme läuft weiter über: " + currentMicLabel(), "ok");
+  }
+
+  // Zentrale Stelle für einen expliziten Gerätewechsel: setzt die Auswahl und
+  // bindet den Stream über getUserMedia() neu an genau diese deviceId.
+  async function rebindMic(deviceId, reason) {
+    const sel = $("micSel");
+    if (sel && deviceId) sel.value = deviceId;
+    log(`Mikrofon wird neu gebunden (${reason || "Wechsel"}): ${micLabelFor(deviceId) || deviceId}`, "info");
+    // Die angeforderte ID direkt uebergeben und das Ergebnis des lokalen,
+    // atomar aktivierten Streams verwenden. Nicht spaeter erneut aus einer
+    // moeglicherweise bereits veraenderten globalen Variable lesen.
+    const gotId = await startPreview(deviceId);
+    try { heartbeat(); } catch {}
+    return gotId;
+  }
+
+  // Ein Mikrofon ist im Betrieb verschwunden (Track "ended" oder aus der Liste).
+  async function onMicDisappeared(lostLabel) {
+    const wasRecording = isRecording;
+    if (wasRecording) micLostDuringRec = true;
+
+    let mics = [];
     try {
-      const v = $("preview");
-      const spkId = $("spkSel").value;
-      if (v && typeof v.setSinkId === "function" && spkId && spkId !== "default") {
-        await v.setSinkId(spkId);
-      }
+      const devs = await navigator.mediaDevices.enumerateDevices();
+      mics = devs.filter(d => d.kind === "audioinput" && d.deviceId);
     } catch {}
+    try { await listDevices(); } catch {}
 
-    // VU-Meter (neu) starten -- funktioniert in BEIDEN Modi (Audio & Video).
-    startVuMeter(stream);
+    if (!mics.length) {
+      const text = wasRecording
+        ? "Mikrofon getrennt. Die Aufnahme läuft weiter, nimmt aber keinen Ton mehr auf. Gerät wieder anschließen."
+        : "Kein Mikrofon mehr verfügbar. Gerät anschließen und erneut auswählen.";
+      setMicAlert("err", text);
+      showMicToast(text, "err");
+      log(text, "err");
+      setStatus(wasRecording ? "🔴 Aufnahme läuft — kein Mikrofonsignal!" : "Kein Mikrofon verfügbar.");
+      stopVuMeter();
+      try { heartbeat(); } catch {}
+      return;
+    }
+
+    const next = mics[0];
+    const nextLabel = next.label || "Mikrofon";
+    try {
+      await rebindMic(next.deviceId, "Gerät getrennt");
+      const ok = activeMicDeviceId() === next.deviceId || !!activeAudioTrack();
+      if (ok) {
+        const text = wasRecording
+          ? `„${lostLabel || "Mikrofon"}“ getrennt. Aufnahme läuft weiter über „${nextLabel}“.`
+          : `„${lostLabel || "Mikrofon"}“ getrennt. Jetzt aktiv: „${nextLabel}“.`;
+        setMicAlert("warn", text);
+        showMicToast(text, "info");
+        log(text, "info");
+        if (wasRecording) setStatus("🔴 Aufnahme läuft… (Mikrofon gewechselt)");
+      } else {
+        throw new Error("kein aktiver Audio-Track");
+      }
+    } catch (err) {
+      const text = `Mikrofon getrennt und Ersatzgerät „${nextLabel}“ ließ sich nicht aktivieren.`;
+      setMicAlert("err", text);
+      showMicToast(text, "err");
+      log(text + " " + ((err && err.message) || ""), "err");
+    }
+    try { heartbeat(); } catch {}
   }
 
   // ---------- VU-Meter (Web Audio API) ----------
@@ -1705,6 +1932,7 @@
     }
 
     isRecording = true;
+    micLostDuringRec = false;
     startTs = Date.now();
 
     // Format-Meta vorab an den Server (fuer korrekten WAV-Header).
@@ -1780,12 +2008,18 @@
       } catch (err) {
         log("Finish-Call fehlgeschlagen: " + err.message, "err");
       }
+      // Ging waehrend der Aufnahme ein Geraet verloren, bleibt der Hinweis
+      // nach dem Stopp stehen -- der Gast soll die Aufnahme pruefen.
+      if (micLostDuringRec) {
+        log("Hinweis: Während dieser Aufnahme wurde das Mikrofon getrennt. Bitte die Datei prüfen.", "err");
+        showMicToast("Mikrofon war während der Aufnahme getrennt — bitte prüfen.", "err");
+      }
       // Sprint 2 (Option A): aufgeschobenen Mic-Wechsel jetzt nachholen.
       if (deferredMicCmd) {
         const d = deferredMicCmd;
         deferredMicCmd = null;
         log("Wende aufgeschobenen Mikrofon-Wechsel an…", "info");
-        try { await applyMicChange(d.deviceId, d.label); } catch {}
+        try { await applyMicChange(d.deviceId, d.label, d.command_id || ""); } catch {}
       }
     })();
     // Vorschau-Stream bleibt aktiv -- der Gast sieht/hoert sich weiter (VU laeuft weiter).
@@ -2029,6 +2263,11 @@
       // Sprint 2: Mikrofon-Inventar, damit der Host remote wechseln kann.
       mic_devices: micInventory(),
       current_mic_deviceId: currentMicDeviceId(),
+      // Was der Browser wirklich liefert (kann von der Auswahl abweichen).
+      active_mic_deviceId: activeMicDeviceId(),
+      mic_active: !!activeAudioTrack(),
+      mic_alert: micAlert,
+      mic_lost_during_recording: micLostDuringRec,
       // Ergebnis eines zuvor angeforderten Wechsels (Host zeigt es an).
       mic_last_result: micLastResult,
       console: consoleBuf.splice(0)
@@ -2237,13 +2476,16 @@
     } catch {}
     if (stream) startPreview();
   });
-  $("micSel").addEventListener("change", () => {
+  $("micSel").addEventListener("change", async () => {
+    const sel = $("micSel");
+    const id = sel && sel.value;
     try {
-      const lbl = $("micSel")?.options[$("micSel").selectedIndex]?.text || "";
-      log("Mikrofon gewählt: " + lbl, "ok");
-      heartbeat();
+      log("Mikrofon gewählt: " + (micLabelFor(id) || ""), "ok");
     } catch {}
-    if (stream) startPreview();
+    // Immer neu binden -- auch ohne laufenden Stream. Eine Auswahl ohne
+    // getUserMedia() ändert am aufgenommenen Signal nichts.
+    try { await rebindMic(id, "Auswahl im Gast-Panel"); }
+    catch (err) { log("Mikrofon-Wechsel fehlgeschlagen: " + err.message, "err"); }
   });
   $("spkSel").addEventListener("change", async () => {
     const v = $("preview");

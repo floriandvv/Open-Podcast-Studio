@@ -162,6 +162,8 @@
   .vu > div.clip { background: var(--accent); }
   .up { font-size: 14px; font-variant-numeric: tabular-nums; }
   .up .bad { color: var(--warn); }
+  /* Warnzustand für die Mikrofonzeile einer Gastkarte. */
+  .bad { color: var(--warn); }
 
   /* Sprint 2: Host waehlt Gast-Mikrofon (per-guest Mic-Control) */
   .mic-ctl { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
@@ -448,9 +450,6 @@
     <div class="row" style="margin-top:12px;gap:10px;align-items:center">
       <span class="sub" style="min-width:120px">Aufnahme</span>
       <select id="markerSession" style="min-width:220px;max-width:420px"></select>
-      <button id="applyMarkersBtn" class="btn-ghost" style="padding:8px 12px;font-size:13px" disabled>
-        Marker in WAV anwenden
-      </button>
       <span class="sub" id="markerSessionHint"></span>
     </div>
   </div>
@@ -830,7 +829,13 @@
       setText(refs.gid, g.guest);
       setText(refs.tag, stateLabel(g.state));
       refs.tag.className = 'state-tag ' + (g.state || '');
-      setText(refs.mic, g.mic_label || 'unbekannt');
+      // Mikrofon: Was der Gast wirklich aufnimmt, nicht nur was gewählt ist.
+      let micTxt = g.mic_label || 'unbekannt';
+      if (g.mic_active === false) micTxt += ' — kein Signal';
+      else if (g.mic_mismatch) micTxt += ' — Auswahl weicht ab';
+      setText(refs.mic, micTxt);
+      refs.mic.classList.toggle('bad', g.mic_active === false || !!g.mic_mismatch);
+      refs.mic.title = g.mic_alert && g.mic_alert.text ? g.mic_alert.text : '';
       setText(refs.spk, g.speaker_label || 'Standard');
 
       const backlog = (g.queue || 0) > 0;
@@ -876,12 +881,21 @@
           txt = g.state === 'recording'
             ? 'Wechsel wartet — wird nach Stopp angewendet…'
             : 'Wechsel angefordert…';
+        } else if (g.mic_alert && g.mic_alert.text) {
+          // Gerät verschwunden oder falsches Gerät aktiv: hat Vorrang vor dem
+          // Ergebnis des letzten Wechsels.
+          cls += g.mic_alert.kind === 'err' ? ' err' : ' pending';
+          txt = g.mic_alert.text;
         } else if (g.mic_last_result) {
           const res = g.mic_last_result;
           cls += res.ok ? ' ok' : ' err';
           txt = res.ok
             ? `Gewechselt auf ${res.label || 'Mikrofon'} ✔`
             : `Wechsel fehlgeschlagen: ${res.error || 'unbekannt'}`;
+        }
+        if (!txt && g.mic_lost_during_recording) {
+          cls += ' err';
+          txt = 'Mikrofon war während der Aufnahme getrennt — Datei prüfen.';
         }
         if (refs.hint.className !== cls) refs.hint.className = cls;
         setText(refs.hint, txt);
@@ -1553,68 +1567,46 @@
     });
   });
 
-  // Marker in WAV anwenden (überschreibt full.wav pro Gastspur in dieser Session)
-  $('applyMarkersBtn').addEventListener('click', async () => {
-    const sid = String($('markerSession').value || '');
-    if (!sid) return;
-    if (!confirm('Marker in die WAV-Dateien schreiben und bestehende Marker überschreiben?')) return;
-
-    const btn = $('applyMarkersBtn');
-    const old = btn.textContent;
-    btn.disabled = true;
-    btn.textContent = 'Wende Marker an…';
-    try {
-      const res = await apiFetch(`${SERVER}/host/apply_markers/${room}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session: sid }),
-      });
-      const data = await res.json();
-      if (!data.ok) throw new Error(data.detail || 'Fehler');
-      btn.textContent = `✔ angewendet (${(data.wavs || []).length} WAV)`;
-      setTimeout(() => { btn.textContent = old; btn.disabled = false; }, 1800);
-    } catch (err) {
-      console.error(err);
-      btn.textContent = 'Fehler';
-      setTimeout(() => { btn.textContent = old; btn.disabled = false; }, 1800);
-    }
-  });
-
-
   async function loadHistory() {
     try {
       const res = await apiFetch(`${SERVER}/sessions`, { cache: 'no-store' });
       const all = await res.json();
-      const mine = all.filter(s => s.room === room);
-      const box  = $('history');
-      if (!mine.length) { box.innerHTML = '<div class="empty">Noch keine abgeschlossenen Aufnahmen.</div>'; return; }
-      box.innerHTML = '';
-      for (const s of mine) {
-        const row = document.createElement('div');
-        row.className = 'hist-row';
-        const prev = `${SERVER}/preview/${encodeURIComponent(s.room)}/${encodeURIComponent(s.guest)}/${encodeURIComponent(s.session)}`;
-        const dlUrl = `${SERVER}/download/${encodeURIComponent(s.room)}/${encodeURIComponent(s.guest)}/${encodeURIComponent(s.session)}`;
-        const right = s.merged
-          ? `<span style="display:flex;gap:8px;align-items:center">
-               <button class="hist-prev" data-url="${prev}" style="font-size:12px;padding:4px 8px">▶ Anhören</button>
-               <a class="btn-brand" href="${dlUrl}" download>⬇ WAV</a></span>`
-          : `<span class="sub">${s.chunks} Chunks (nicht zusammengeführt)</span>`;
-        row.innerHTML = `<span><b>${escapeHtml(s.guest)}</b> · ${escapeHtml(s.session)} · ${s.size_mb} MB</span>${right}`;
-        box.appendChild(row);
-        if (s.merged) {
-          const slot = document.createElement('div');
-          slot.style.cssText = 'display:none;padding:6px 0 10px';
-          box.appendChild(slot);
-          row.querySelector('.hist-prev').addEventListener('click', (e) => {
-            const btn = e.currentTarget;
-            if (slot.style.display === 'none') {
-              slot.innerHTML = `<audio controls preload="none" style="width:100%" src="${btn.dataset.url}"></audio>`;
-              slot.style.display = 'block'; btn.textContent = '⏹ Schließen';
-            } else { slot.innerHTML = ''; slot.style.display = 'none'; btn.textContent = '▶ Anhören'; }
-          });
-        }
+      const mine = all.filter(s => s.room === room && !s.deleted);
+      const box = $('history');
+      if (!mine.length) {
+        box.innerHTML = '<div class="empty">Noch keine abgeschlossenen Aufnahmen.</div>';
+        return;
       }
-    } catch { $('history').innerHTML = '<div class="empty">Historie konnte nicht geladen werden.</div>'; }
+
+      // Host-Historie ist bewusst sessionzentriert und MP3-only. Gastspuren,
+      // WAV-Downloads und ZIP-Exporte werden hier weder verlinkt noch angezeigt.
+      const bySession = new Map();
+      for (const s of mine) {
+        const cur = bySession.get(s.session) || {
+          session: s.session, label: s.label || s.session, last_seen: 0,
+          has_mixdown: false, mixdown_url: null, guests: 0,
+        };
+        cur.last_seen = Math.max(cur.last_seen, Number(s.last_seen || 0));
+        cur.has_mixdown = cur.has_mixdown || !!s.has_mixdown;
+        cur.mixdown_url = cur.mixdown_url || s.mixdown_url;
+        cur.guests += 1;
+        bySession.set(s.session, cur);
+      }
+      const sessions = [...bySession.values()].sort((a, b) => b.last_seen - a.last_seen);
+      box.innerHTML = sessions.map(s => {
+        const when = s.last_seen ? new Date(s.last_seen * 1000).toLocaleString('de-DE') : '';
+        const player = s.has_mixdown && s.mixdown_url
+          ? `<audio controls preload="metadata" style="width:min(100%,560px)" src="${escapeHtml(s.mixdown_url)}"></audio>`
+          : '<span class="sub">MP3-Mixdown wird erstellt, sobald eine Spur fertig ist.</span>';
+        return `<div class="hist-row" style="align-items:center;gap:16px;flex-wrap:wrap">
+          <span style="min-width:210px"><b>${escapeHtml(s.label)}</b>
+            <span class="sub" style="display:block">${escapeHtml(when)} · ${s.guests} Gastspur(en)</span></span>
+          <span style="flex:1;min-width:260px">${player}</span>
+        </div>`;
+      }).join('');
+    } catch {
+      $('history').innerHTML = '<div class="empty">Historie konnte nicht geladen werden.</div>';
+    }
   }
 
   // Feature 8: Custom Branding

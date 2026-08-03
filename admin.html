@@ -98,7 +98,7 @@
   @media (prefers-reduced-motion: reduce) {
     .room-head .caret { transition: none; }
   }
-  .rec-row { display: grid; grid-template-columns: 1.2fr 1fr 90px 120px 1fr;
+  .rec-row { display: grid; grid-template-columns: 1.1fr 1.5fr 150px 80px 110px 1fr;
     gap: 12px; align-items: center; padding: 9px 4px; font-size: 14px;
     border-bottom: 1px solid var(--border); }
   .rec-row > span:last-child { display:flex; justify-content:flex-end; align-items:center; gap:8px; }
@@ -149,7 +149,7 @@
     .overview-card { min-height: 0; }
   }
 
-  .head-row { display: grid; grid-template-columns: 1.2fr 1fr 90px 120px 1fr;
+  .head-row { display: grid; grid-template-columns: 1.1fr 1.5fr 150px 80px 110px 1fr;
     gap: 12px; padding: 0 6px 6px; font-size: 12px; text-transform: uppercase;
     letter-spacing: .5px; color: #6b7280; }
   .head-row > span:last-child { text-align: right; }
@@ -347,6 +347,44 @@
   .pill.expired { color: var(--warn); border-color: var(--warn); }
   .pill.rec    { color: #e5484d; border-color: #e5484d; }
   .pill.err    { color: #e5484d; border-color: #e5484d; }
+  /* Aufnahme-Zustände (Milestone: Recording-Übersicht) */
+  .pill.st-live      { color:#e5484d; border-color:#e5484d; }
+  .pill.st-complete  { color:#30a46c; border-color:#30a46c; }
+  .pill.st-wav_only  { color:#3b82f6; border-color:#3b82f6; }
+  .pill.st-chunks_only { color:var(--warn); border-color:var(--warn); }
+  .pill.st-failed    { color:#e5484d; border-color:#e5484d; }
+  .pill.st-prepared  { color:var(--muted); border-color:var(--border); }
+  .pill.st-archived  { color:#a855f7; border-color:#a855f7; }
+  .rec-row .s { color: var(--text); font-variant-numeric: normal; }
+  .rec-row .sid { display:block; font-size:11px; color:var(--muted);
+                  font-variant-numeric: tabular-nums; margin-top:2px; }
+  .rec-row.is-archived { opacity: .85; }
+  .session-card { border:1px solid var(--border); border-radius:10px; margin:10px 0; overflow:hidden; background:var(--panel2); }
+  .session-head { display:grid; grid-template-columns:minmax(180px,1fr) minmax(260px,1.4fr) auto;
+    gap:14px; align-items:center; padding:14px; }
+  .session-title { font-weight:700; color:var(--text); }
+  .session-meta { display:block; margin-top:3px; color:var(--muted); font-size:12px; }
+  .session-player audio { display:block; width:100%; min-width:220px; height:36px; }
+  .session-actions { display:flex; gap:8px; justify-content:flex-end; align-items:center; }
+  .session-guests { border-top:1px solid var(--border); background:var(--panel); padding:4px 14px 10px; }
+  .session-guests .guest-head, .session-guests .guest-track {
+    display:grid; grid-template-columns:minmax(130px,1fr) 130px 80px 100px minmax(180px,auto);
+    gap:12px; align-items:center; padding:9px 4px; }
+  .session-guests .guest-head { color:var(--muted); font-size:12px; border-bottom:1px solid var(--border); }
+  .session-guests .guest-track { color:var(--text); font-size:14px; border-bottom:1px solid var(--border); }
+  .session-guests .guest-track:last-child { border-bottom:0; }
+  @media (max-width:800px) {
+    .session-head { grid-template-columns:1fr; }
+    .session-actions { justify-content:flex-start; }
+    .session-guests .guest-head { display:none; }
+    .session-guests .guest-track { grid-template-columns:1fr; gap:5px; }
+  }
+  .state-filter { display:flex; flex-wrap:wrap; gap:6px; margin:10px 0 4px; }
+  .state-filter button { background:transparent; border:1px solid var(--border);
+        color:var(--muted); border-radius:999px; padding:4px 10px; font-size:12px;
+        cursor:pointer; }
+  .state-filter button[aria-pressed="true"] { color:var(--text); border-color:currentColor; }
+  .state-filter button:focus-visible { outline:2px solid var(--brand); outline-offset:2px; }
 
   /* Gast-Link „aktiv“ darf nie mit Branding eingefärbt werden (immer Grün). */
   .guest-links .pill.active,
@@ -529,7 +567,7 @@
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
       <div>
         <b style="font-size:16px">Aufnahmen</b>
-        <p class="sub" style="margin:4px 0 0">Alle fertigen WAVs (oder „nur Chunks“ falls noch nicht gemerged).</p>
+        <p class="sub" style="margin:4px 0 0">Nach Sessions gruppiert: MP3-Mixdown, Session-ZIP und einzelne Gast-WAVs.</p>
       </div>
       <button class="btn btn-ghost" id="refreshSessionsBtn">↻ Aktualisieren</button>
     </div>
@@ -975,6 +1013,43 @@
   $('logModalBg').addEventListener('click', (e) => { if (e.target === $('logModalBg')) closeLogs(); });
 
   // ── Aufnahmen-Liste + Sprint-6-Dashboard ─────────────────────────────────
+  // /sessions ist die maßgebliche Quelle: has_wav, chunks_count, merged,
+  // deleted, last_seen, created_at, archived, online. Die Zustände hier
+  // spiegeln nur, was der Server liefert.
+  const STATE_META = {
+    live:        { label: 'Läuft gerade',      hint: 'Wird von einem aktiven Host-Panel aufgenommen' },
+    complete:    { label: 'Chunks + WAV',      hint: 'Vollständig: Rohdaten und fertige WAV vorhanden' },
+    wav_only:    { label: 'Nur WAV',           hint: 'Chunks wurden bereits aufgeräumt' },
+    chunks_only: { label: 'Nur Chunks',        hint: 'Noch nicht zusammengeführt' },
+    failed:      { label: 'Abgebrochen',       hint: 'Chunks ohne WAV, seit über einer Stunde keine Aktivität' },
+    prepared:    { label: 'Vorbereitet',       hint: 'Angelegt, aber nie Audio empfangen' },
+    archived:    { label: 'Archiviert',        hint: 'Raum archiviert: von der Aufräumung ausgenommen' },
+    deleted:     { label: 'Gelöscht',          hint: 'Kürzlich entfernt' },
+  };
+  const FILTERS = ['all', 'live', 'complete', 'wav_only', 'chunks_only', 'failed', 'prepared', 'archived'];
+  let stateFilter = 'all';
+  let lastSessions = [];
+
+  const fmtTime = ts => {
+    const n = Number(ts || 0);
+    if (!n) return '—';
+    return new Date(n * 1000).toLocaleString('de-DE',
+      { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  };
+
+  // Ein Datensatz kann fachlich zwei Zustände tragen: der Server liefert den
+  // Fortschritt (state), "archiviert" kommt vom Raum. Beides zeigen wir an.
+  const rowStates = s => {
+    const out = [s.state || 'prepared'];
+    if (s.archived) out.push('archived');
+    return out;
+  };
+
+  function matchesFilter(s) {
+    if (stateFilter === 'all') return true;
+    return rowStates(s).includes(stateFilter);
+  }
+
   function renderOverviewDashboard(sessions, byRoom, totalSize) {
     const recordings = sessions.length;
     const rooms = Object.keys(byRoom).length;
@@ -988,94 +1063,148 @@
     $('overviewRoomsDetail').textContent = `${roomLabel} mit gespeicherten Sessions`;
     $('overviewStorage').textContent = `${size.toFixed(1)} MB`;
     $('overviewStorageDetail').textContent = 'WAVs und vorhandene Chunks';
-
   }
 
-  async function load() {
-    const sessionsBox = $('sessionsBox');
-    const content = sessionsBox || $('content');
-    try {
-      const res  = await apiFetch(`${SERVER}/sessions`, { cache: 'no-store' });
-      const sessions = await res.json();
-      if (!sessions.length) {
-        content.innerHTML = '<div class="empty">Noch keine Aufnahmen vorhanden.</div>';
-        renderOverviewDashboard([], {}, 0);
-        $('overviewRecordingsDetail').textContent = 'Noch keine Aufnahmen';
-        $('overviewRoomsDetail').textContent = 'Noch keine Räume';
-        $('overviewStorageDetail').textContent = 'Noch kein Speicher belegt';
-        return;
+  function filterBarHtml(sessions) {
+    const counts = { all: sessions.length };
+    for (const s of sessions) for (const st of rowStates(s)) counts[st] = (counts[st] || 0) + 1;
+    let html = '<div class="state-filter" role="group" aria-label="Aufnahmen nach Zustand filtern">';
+    for (const f of FILTERS) {
+      const n = counts[f] || 0;
+      if (f !== 'all' && !n) continue;
+      const label = f === 'all' ? 'Alle' : STATE_META[f].label;
+      const title = f === 'all' ? 'Alle Aufnahmen zeigen' : STATE_META[f].hint;
+      html += `<button type="button" data-state-filter="${f}" title="${esc(title)}"
+        aria-pressed="${stateFilter === f ? 'true' : 'false'}">${esc(label)} (${n})</button>`;
+    }
+    return html + '</div>';
+  }
+
+  function renderSessions() {
+    const content = $('sessionsBox') || $('content');
+    // Gelöschte Einträge fliegen sofort raus – keine Zombie-Zeilen.
+    const sessions = lastSessions.filter(s => !s.deleted);
+
+    if (!sessions.length) {
+      content.innerHTML = '<div class="empty">Noch keine Aufnahmen vorhanden.</div>';
+      renderOverviewDashboard([], {}, 0);
+      $('overviewRecordingsDetail').textContent = 'Noch keine Aufnahmen';
+      $('overviewRoomsDetail').textContent = 'Noch keine Räume';
+      $('overviewStorageDetail').textContent = 'Noch kein Speicher belegt';
+      return;
+    }
+
+    const byRoom = {};
+    let totalSize = 0;
+    for (const s of sessions) {
+      (byRoom[s.room] = byRoom[s.room] || []).push(s);
+      totalSize += s.size_mb || 0;
+    }
+    renderOverviewDashboard(sessions, byRoom, totalSize);
+
+    let html = filterBarHtml(sessions);
+    let shown = 0;
+
+    for (const room of Object.keys(byRoom).sort()) {
+      const recs = byRoom[room].filter(matchesFilter);
+      if (!recs.length) continue;
+      shown += recs.length;
+      const roomSize = recs.reduce((a, r) => a + (r.size_mb || 0), 0);
+      const isArchived = recs.some(r => r.archived);
+      const hasLive = recs.some(r => r.online);
+      const bodyStyle = hasLive ? 'block' : 'none';
+      const caretRot = hasLive ? '90deg' : '0deg';
+
+      // Innerhalb eines Raums ist die Session die primaere Einheit.
+      const bySession = new Map();
+      for (const r of recs) {
+        const group = bySession.get(r.session) || [];
+        group.push(r);
+        bySession.set(r.session, group);
       }
-      // nach Raum gruppieren
-      const byRoom = {};
-      let totalSize = 0;
-      for (const s of sessions) {
-        (byRoom[s.room] = byRoom[s.room] || []).push(s);
-        totalSize += s.size_mb || 0;
-      }
-      renderOverviewDashboard(sessions, byRoom, totalSize);
-      let html = '';
-      for (const room of Object.keys(byRoom).sort()) {
-        const recs = byRoom[room];
-        const roomSize = recs.reduce((a, r) => a + (r.size_mb || 0), 0);
+      const sessionGroups = [...bySession.entries()].sort((a, b) =>
+        Math.max(...b[1].map(x => Number(x.last_seen || 0))) -
+        Math.max(...a[1].map(x => Number(x.last_seen || 0))));
 
-        // Rooms accordion: default collapsed (like the logs UI).
-        // Auto-open if the room has a live recording flag.
-        const hasLive = recs.some(r => r.recording);
-        const bodyStyle = hasLive ? 'block' : 'none';
-        const caretRot = hasLive ? '90deg' : '0deg';
+      html += `<div class="room-group" data-room="${esc(room)}">
+        <button type="button" class="room-head" data-room-toggle aria-expanded="${hasLive ? 'true' : 'false'}">
+          <span class="caret" aria-hidden="true" style="transform:rotate(${caretRot})">▶</span>
+          <span class="name">${esc(room)}</span>
+          ${isArchived ? '<span class="pill st-archived">Archiviert</span>' : ''}
+          ${hasLive ? '<span class="pill st-live">Läuft gerade</span>' : ''}
+          <span class="count">${sessionGroups.length} Session(s) · ${recs.length} Gastspur(en)</span>
+          <span class="total">${roomSize.toFixed(1)} MB</span>
+        </button>
+        <div class="room-body" style="display:${bodyStyle}">`;
 
-        html += `<div class="room-group" data-room="${esc(room)}">
-          <button type="button" class="room-head" data-room-toggle aria-expanded="${hasLive ? 'true' : 'false'}">
-            <span class="caret" aria-hidden="true" style="transform:rotate(${caretRot})">▶</span>
-            <span class="name">${esc(room)}</span>
-            <span class="count">${recs.length} Aufnahme(n)</span>
-            <span class="total">${roomSize.toFixed(1)} MB</span>
-          </button>
-          <div class="room-body" style="display:${bodyStyle}">
-            <div class="head-row"><span>Gast</span><span>Session</span><span>Chunks</span><span>Größe</span><span>Download</span></div>`;
+      for (const [sessionId, tracks] of sessionGroups) {
+        const first = tracks[0];
+        const latest = Math.max(...tracks.map(x => Number(x.last_seen || 0)));
+        const hasMix = tracks.some(x => x.has_mixdown);
+        const mixUrl = tracks.find(x => x.mixdown_url)?.mixdown_url || '';
+        const zipUrl = `${SERVER}/admin/session-export/${encodeURIComponent(room)}/${encodeURIComponent(sessionId)}`;
+        const title = first.label || sessionId;
+        html += `<section class="session-card">
+          <div class="session-head">
+            <div><span class="session-title">${esc(title)}</span>
+              <span class="session-meta">ID ${esc(sessionId)} · ${esc(fmtTime(latest))} · ${tracks.length} Gastspur(en)</span></div>
+            <div class="session-player">${hasMix && mixUrl
+              ? `<audio controls preload="metadata" src="${esc(mixUrl)}"></audio>`
+              : '<span class="sub">Noch kein MP3-Mixdown verfügbar.</span>'}</div>
+            <div class="session-actions">${tracks.some(x => x.has_wav)
+              ? `<a class="btn btn-brand" href="${zipUrl}">⬇ Alle WAVs (ZIP)</a>` : ''}</div>
+          </div>
+          <div class="session-guests">
+            <div class="guest-head"><span>Gast</span><span>Zustand</span><span>Chunks</span><span>Größe</span><span>Aktionen</span></div>`;
 
-        for (const r of recs) {
-          const onlyChunks = !r.merged && (r.chunks || 0) > 0;
-          html += `<div class="rec-row">
-            <span class="g">${esc(r.guest)}</span>
-            <span class="s">${esc(r.session)}</span>
-            <span>${r.chunks}</span>
-            <span class="sz">${(r.size_mb||0).toFixed(2)} MB</span>
-            <span>${r.merged
-              ? `<a class="btn btn-brand" href="${SERVER}/download/${encodeURIComponent(room)}/${encodeURIComponent(r.guest)}/${encodeURIComponent(r.session)}">⬇ WAV</a>`
-              : (onlyChunks
-                  ? '<span class="pill expired" style="margin-left:0">nur Chunks</span>'
-                  : '<span class="pill expired" style="margin-left:0">leer</span>')}
-              <button class="btn btn-danger" data-rec-del data-room="${esc(room)}" data-guest="${esc(r.guest)}" data-session="${esc(r.session)}">Löschen</button>
+        for (const r of tracks.sort((a, b) => String(a.guest).localeCompare(String(b.guest)))) {
+          const st = r.state || 'prepared';
+          const meta = STATE_META[st] || STATE_META.prepared;
+          const dl = `${SERVER}/download/${encodeURIComponent(r.room)}/${encodeURIComponent(r.guest)}/${encodeURIComponent(r.session)}`;
+          html += `<div class="guest-track${r.archived ? ' is-archived' : ''}" data-state="${esc(st)}">
+            <span><b>${esc(r.guest)}</b></span>
+            <span><span class="pill st-${esc(st)}" title="${esc(meta.hint)}">${esc(meta.label)}</span></span>
+            <span>${Number(r.chunks_count || 0)}</span>
+            <span>${(r.size_mb || 0).toFixed(2)} MB</span>
+            <span class="session-actions">
+              ${r.has_wav ? `<a class="btn btn-brand" href="${dl}">⬇ WAV</a>` : ''}
+              <button class="btn btn-danger" data-rec-del data-room="${esc(r.room)}"
+                data-guest="${esc(r.guest)}" data-session="${esc(r.session)}"
+                data-label="${esc(r.guest + ' · ' + title)}">Löschen</button>
             </span>
           </div>`;
         }
-
-        html += `</div></div>`;
+        html += `</div></section>`;
       }
-      content.innerHTML = html;
+      html += `</div></div>`;
+    }
 
-      // After rendering: remove entries that have neither WAV nor chunks anymore.
-      try {
-        content.querySelectorAll('.rec-row').forEach(row => {
-          const chunksCell = row.querySelector('span:nth-child(3)');
-          const hasWav = !!row.querySelector('a[href*="/download/"]');
-          const chunks = chunksCell ? parseInt((chunksCell.textContent||'0'), 10) : 0;
-          if (!hasWav && (!chunks || chunks <= 0)) row.remove();
-        });
-        content.querySelectorAll('.room-group').forEach(group => {
-          const body = group.querySelector('.room-body');
-          if (!body) return;
-          const rows = body.querySelectorAll('.rec-row');
-          if (!rows.length) group.remove();
-        });
-      } catch {}
+    if (!shown) {
+      html += `<div class="empty">Keine Aufnahme in diesem Zustand. Filter „Alle“ zeigt wieder alles.</div>`;
+    }
+    content.innerHTML = html;
+  }
+
+  async function load() {
+    const content = $('sessionsBox') || $('content');
+    try {
+      const res = await apiFetch(`${SERVER}/sessions`, { cache: 'no-store' });
+      lastSessions = await res.json();
+      renderSessions();
     } catch (err) {
       if (err.message !== 'Nicht authentifiziert') showFetchError(content, err);
     }
   }
 
   $('content').addEventListener('click', async (e) => {
+    // Zustands-Filter
+    const fbtn = e.target.closest('button[data-state-filter]');
+    if (fbtn) {
+      stateFilter = fbtn.dataset.stateFilter;
+      renderSessions();
+      return;
+    }
+
     // Rooms accordion toggle
     const tog = e.target.closest('button[data-room-toggle]');
     if (tog) {
@@ -1094,13 +1223,18 @@
     const btn = e.target.closest('button[data-rec-del]');
     if (!btn) return;
     const { room, guest, session } = btn.dataset;
-    if (!confirm(`Aufnahme ${guest}/${session} löschen?`)) return;
+    const label = btn.dataset.label || session;
+    if (!confirm(`Aufnahme „${label}“ endgültig löschen? Chunks, WAV und Marker werden entfernt.`)) return;
     btn.disabled = true;
     try {
       const res = await apiFetch(
         `${SERVER}/admin/session/${encodeURIComponent(room)}/${encodeURIComponent(guest)}/${encodeURIComponent(session)}`,
         { method: 'DELETE' });
       if (!res.ok) throw new Error('HTTP ' + res.status);
+      // Zeile sofort entfernen, damit kein Zombie-Eintrag stehen bleibt.
+      lastSessions = lastSessions.filter(
+        s => !(s.room === room && s.guest === guest && s.session === session));
+      renderSessions();
       load();
     } catch (err) { alert('Fehler: ' + err.message); btn.disabled = false; }
   });

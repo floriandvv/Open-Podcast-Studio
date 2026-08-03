@@ -2,26 +2,31 @@
 
 Open Podcast Studio is a lightweight, self-hosted web application for **remote podcast recording with separate audio tracks for each guest**.
 
-The host opens a room, invites guests through secure token links, and controls start, stop, clear, and markers in real time. Guests record locally in their browsers and upload the data in chunks. The server combines the chunks for each guest and session into a WAV track; video sessions can additionally produce an MP4 file.
+The host opens a room, invites guests through secure token links, and controls start, stop, clear, and markers in real time. Guests record locally in their browsers and upload the data in chunks. The server combines the chunks for each guest and session into a WAV track, generates a combined MP3 mixdown for the session, and can additionally produce an MP4 file for video sessions.
 
 > **Project status:** Functional development build focused on audio recording, uploads, real-time control, and administration. Before exposing it to the public internet, review deployment, TLS, backups, monitoring, and access controls.
 
 ## Current status
 
-- **Localization:** The current release is available in German only. An English user interface is planned and will follow in an upcoming release. 
 - ✅ Host and guest control via WebSockets
 - ✅ Token-based guest invitations without exposing the room name in the token
 - ✅ Local browser recording with chunked uploads and server-side WAV merging
 - ✅ Host-to-guest microphone control v1: device inventory, change requests, pending state, and result reporting
+- ✅ Reliable repeated microphone switching with command IDs and active-track verification
 - ✅ Live level display with compact level frames, VU ballistics, peak hold, and clipping indication
 - ✅ Automatic recorder device updates via `devicechange`, with diff-based rendering and stable selections
 - ✅ Server-side branding injected into the `<head>` without visible FOUC; semantic colors remain independent
 - ✅ Emoji-free interface with consistent spacing and top-bar heights
 - ✅ Host guest states: `Connected`, `Connection problems`, and `Offline`
 - ✅ Admin dashboard with recording, room, and storage-usage metrics
-- ✅ Recording markers, individual WAV downloads, and ZIP export
+- ✅ Session lifecycle overview with authoritative `/sessions` state fields and cleanup handling
+- ✅ Admin recording history with live, complete, WAV-only, chunks-only, prepared, failed, and archived states
+- ✅ Session-based MP3 mixdowns with Host-panel audio previews
+- ✅ Role-separated audio access: Hosts receive MP3 only; Admins receive WAV and ZIP exports
+- ✅ Admin recording history grouped by session with nested guest tracks
+- ✅ Recording markers, individual WAV downloads, and per-session ZIP export
 
-See `Roadmap.md` for the longer-term plan and `documentation.md` for the technical documentation.
+See `Roadmap_Open_Podcast_Studio.md` for the longer-term plan and `Open_Podcast_Studio_Dokumentation.md` for the technical documentation.
 
 ## Features
 
@@ -29,7 +34,8 @@ See `Roadmap.md` for the longer-term plan and `documentation.md` for the technic
 - **Local recording and separate tracks:** Avoids relying on a mixed call recording
 - **Host-controlled synchronization:** Guests receive commands through WebSockets
 - **Chunked uploads:** Keeps uploads resilient during recording
-- **Exports:** Download individual tracks or a ZIP archive
+- **Session mixdowns:** Generate one MP3 mixdown per recording session for Host/Admin preview
+- **Role-separated exports:** Hosts can access the MP3 mixdown only; Admins can download individual WAV tracks and per-session or full-room ZIP archives
 - **Markers:** Add markers such as `ad`, `cut_in`, and `cut_out` during recording and write them into WAV files
 - **Roles:**
   - `admin`: Admin panel and host studio
@@ -40,8 +46,8 @@ See `Roadmap.md` for the longer-term plan and `documentation.md` for the technic
 - **Backend:** `server.py` (FastAPI/Uvicorn)
   - Authentication with signed session cookies
   - Room and session control via WebSockets
-  - Chunk upload and finish/merge pipeline
-  - Downloads and ZIP exports
+  - Chunk upload, WAV merge, and session MP3 mixdown pipeline
+  - Role-separated MP3 preview, WAV downloads, and ZIP exports
   - Admin functions
   - Persistence through `config.json`, `auth.json`, and SQLite (`tokens.db`)
 - **Frontend pages:**
@@ -59,7 +65,8 @@ See `Roadmap.md` for the longer-term plan and `documentation.md` for the technic
 - **Python 3.10 or newer**
 - A browser with `MediaRecorder`, `getUserMedia`, and WebSocket support
 - A Uvicorn WebSocket backend: `websockets` or `wsproto`
-- **FFmpeg** is optional and required for WebM processing or MP4 transcoding
+- **FFmpeg** is required for WebM processing, MP4 transcoding, and session MP3 mixdown generation
+- FFmpeg must provide the `libmp3lame` encoder (`ffmpeg -hide_banner -encoders | grep -i mp3`)
 
 The repository currently does not include a `requirements.txt`. Install the dependencies directly:
 
@@ -109,7 +116,7 @@ The server listens on `0.0.0.0:8000` by default. Open:
 
 5. Guests open the link, grant microphone/camera permissions, and select their devices.
 6. The host starts and stops the recording centrally.
-7. After finishing, WAV tracks are available per guest, along with a ZIP export.
+7. After finishing, the Host can preview the session MP3. Admins can download individual guest WAV tracks and a ZIP containing all WAVs of the session.
 
 ## Runtime data and storage
 
@@ -119,6 +126,7 @@ The application creates the following runtime files and directories:
 - `config.json`: runtime configuration, branding, and cleanup settings
 - `tokens.db`: guest tokens, room registry, and markers
 - `uploads/`: chunks, metadata, and finished recordings
+- `mixdowns/`: generated session MP3 mixdowns
 - `.env`: local secrets and initial-setup values; **do not commit it**
 
 Recordings are stored under:
@@ -307,6 +315,85 @@ The Docker example is a deployment pattern, not a complete container image. Add 
 - Persist `SESSION_SECRET` and all runtime data across restarts.
 - Restrict direct access to the application port `8000`.
 - Test both a guest WebSocket connection and an upload before going live.
+
+## Docker
+
+The repository includes a `Dockerfile`, `docker-compose.yml`, `.dockerignore`, and `.gitignore` for a reproducible container deployment. The image includes FFmpeg for WebM processing and optional MP4 transcoding. Mutable runtime data is stored under `/data` inside the container and should be persisted through a volume.
+
+### Build and run locally
+
+```bash
+docker compose build
+docker compose up -d
+```
+
+The example binds the application to `127.0.0.1:8000`, so it can be used behind Nginx or another reverse proxy. For a direct local test, open `http://localhost:8000/`.
+
+The Compose example expects a local `.env` file:
+
+```dotenv
+SESSION_SECRET=replace-with-a-long-random-value
+DEFAULT_ADMIN_PASSWORD=choose-a-strong-admin-password
+DEFAULT_HOST_PASSWORD=choose-a-strong-host-password
+```
+
+Persistent application data is stored in the local `./data` directory. Back it up and keep it out of version control.
+
+### Publishing to GitHub Container Registry
+
+A GitHub Actions workflow can build and publish the image as `ghcr.io/<owner>/<repository>:latest`. The usual repository layout is:
+
+```text
+Dockerfile
+docker-compose.yml
+.dockerignore
+.gitignore
+.github/workflows/publish-image.yml
+```
+
+Example workflow:
+
+```yaml
+name: Publish container image
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*.*.*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/open-podcast-studio:latest
+            ghcr.io/${{ github.repository_owner }}/open-podcast-studio:${{ github.sha }}
+```
+
+For a release tag such as `v0.1.0`, add a version tag in the workflow if desired. Do not place passwords, `SESSION_SECRET`, tokens, databases, or recordings in the image or GitHub repository.
 
 ## License
 
