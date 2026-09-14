@@ -8,6 +8,11 @@
   :root {
     --bg:    #0f1115; --panel: #181b22; --border: #2a2f3a;
     --text:  #e8eaed; --muted: #9aa3b2; --err: #e5484d;
+  
+    /* Abgeleitete Flaechen; der Server ueberschreibt sie themebasiert. */
+    --muted-2: #6b7280;
+    --border-strong: #3a4150;
+    --surface-hover: #1c2029;
   }
   * { box-sizing: border-box; }
   html, body {
@@ -42,18 +47,19 @@
 <!--BRANDING-->
 </head>
 <body>
-<div class="card">
+<main class="card" id="main-content" tabindex="-1">
   <img class="brand-logo" id="brandLogo" alt="" />
   <h1>Dieser Link ist nicht mehr gültig</h1>
   <p>Der Einladungslink ist entweder abgelaufen, wurde widerrufen oder existiert nicht.</p>
   <p class="hint">Bitte wende dich an den Host deiner Aufnahme und bitte um einen neuen Einladungslink.</p>
-</div>
+</main>
 <script>
 (() => {
   const b = window.__BRANDING__;
   const img = document.getElementById('brandLogo');
-  if (!img || !b || !b.ok || !b.favicon) return;
-  img.src = b.favicon;
+  const src = b && ((window.OpenPodcastBranding && window.OpenPodcastBranding.logoUrl()) || b.logo || b.favicon);
+  if (!img || !b || !b.ok || !src) return;
+  img.src = src;
   img.alt = b.name || '';
   img.classList.add('show');
   if (b.name) document.title = 'Link ungültig · ' + b.name;

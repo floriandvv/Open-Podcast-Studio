@@ -35,6 +35,11 @@
     --brand: var(--ok);
     --brand-hover: var(--ok-hover);
     --brand-on: #fff;
+  
+    /* Abgeleitete Flaechen; der Server ueberschreibt sie themebasiert. */
+    --muted-2: #6b7280;
+    --border-strong: #3a4150;
+    --surface-hover: #1c2029;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text);
@@ -56,13 +61,13 @@
     transition: border-color .15s, color .15s;
     text-decoration: none;
   }
-  .back-btn:hover { border-color: #3a4150; color: var(--text); }
+  .back-btn:hover { border-color: var(--border-strong); color: var(--text); }
   .logout-btn {
     background: none; color: var(--muted); border: 1px solid var(--border);
     border-radius: 8px; padding: 7px 14px; font: inherit; font-size: 14px;
     cursor: pointer; transition: border-color .15s, color .15s;
   }
-  .logout-btn:hover { border-color: #3a4150; color: var(--text); }
+  .logout-btn:hover { border-color: var(--border-strong); color: var(--text); }
   .wrap { max-width: 1080px; margin: 0 auto; padding: 24px;
     display: flex; flex-direction: column; gap: 16px; }
   header { display: flex; align-items: baseline; justify-content: space-between;
@@ -78,7 +83,7 @@
   select { min-width: 0; max-width: 100%; width: 100%; text-overflow: ellipsis; }
   button { cursor: pointer; font-weight: 600;
     transition: background .15s, border-color .15s, opacity .15s; }
-  button:hover:not(:disabled) { border-color: #3a4150; }
+  button:hover:not(:disabled) { border-color: var(--border-strong); }
   button:disabled { opacity: .4; cursor: not-allowed; }
   .btn-rec { color: #fff; background: var(--ok); border-color: var(--ok);
     font-size: 18px; padding: 14px 26px;
@@ -109,6 +114,12 @@
   .meta-pill { background: var(--panel2); border: 1px solid var(--border);
     border-radius: 999px; padding: 6px 12px; font-size: 15px; color: var(--muted); }
   .meta-pill b { color: var(--text); }
+  .room-heading { display:flex;align-items:center;gap:10px;flex-wrap:wrap; }
+  .room-heading h1 { margin:0; }
+  .room-brand-context { display:none;align-items:center;gap:8px;padding:4px 9px;border:1px solid var(--border);border-radius:8px;background:var(--panel2);font-size:12px;color:var(--muted); }
+  .room-brand-context.show { display:inline-flex; }
+  .room-brand-context img { width:22px;height:22px;object-fit:contain;border-radius:4px; }
+  .room-brand-context strong { color:var(--text);font-weight:700; }
 
   /* Unauffälliger Echtzeit-Verbindungshinweis (Link-Status zum Server) */
   .conn-indicator {
@@ -134,10 +145,25 @@
   }
   button.meta-pill { cursor: pointer; font: inherit;
     transition: border-color .15s, background .15s; }
-  button.meta-pill:hover { border-color: #3a4150; background: #1c2029; }
+  button.meta-pill:hover { border-color: var(--border-strong); background: var(--surface-hover); }
   button.meta-pill.active { border-color: var(--ok); color: var(--ok); }
   button.meta-pill.active b { color: var(--ok); }
   .guests { display: flex; flex-direction: column; gap: 10px; }
+  /* Lobby: bewusst ruhiger als die Gaestekarten -- diese Gaeste sind noch
+     nicht aufnahmebereit, sollen aber sofort sichtbar sein. */
+  .lobby { margin: 4px 0 14px; padding: 12px 14px; border: 1px dashed var(--border);
+           border-radius: 10px; background: var(--panel2); }
+  .lobby-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; }
+  .lobby-list { list-style: none; margin: 10px 0 0; padding: 0;
+                display: flex; flex-wrap: wrap; gap: 8px; }
+  .lobby-item { display: flex; align-items: center; gap: 8px; padding: 6px 12px;
+                border: 1px solid var(--border); border-radius: 999px;
+                background: var(--panel); font-size: 14px; }
+  .lobby-item .lobby-avatar { display: inline-flex; align-items: center; justify-content: center;
+                width: 26px; height: 26px; border-radius: 50%; font-weight: 700; font-size: 13px;
+                background: var(--brand); color: var(--brand-on, #fff); }
+  .lobby-item .lobby-stage { color: var(--muted); font-size: 13px; }
+  @media (max-width: 720px) { .lobby-list { flex-direction: column; } .lobby-item { width: 100%; } }
   .guest { display: grid; grid-template-columns: 18px 1.4fr 340px 90px 1.1fr;
     gap: 12px; align-items: center; background: var(--panel2); border: 1px solid var(--border);
     border-radius: 10px; padding: 12px 14px; }
@@ -145,13 +171,13 @@
   .guest .who .nm { font-weight: 600; }
   .guest .who .gid { color: var(--muted); font-size: 13px; }
   .dev { font-size: 14px; color: var(--muted); line-height: 1.35; }
-  .dev .lbl { color: #6b7280; }
+  .dev .lbl { color: var(--muted-2); }
   .dev b { color: var(--text); font-weight: 600; }
   /* Gerätezeilen: immer einzeilig, mit Ellipsis bei sehr langen Namen */
   .devline { display: flex; gap: 6px; align-items: baseline; white-space: nowrap; overflow: hidden; }
   .devline .lbl { flex: 0 0 auto; }
   .devline b { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
-  .vu { height: 10px; background: #0f1115; border: 1px solid var(--border);
+  .vu { height: 10px; background: var(--bg); border: 1px solid var(--border);
     border-radius: 5px; overflow: hidden; }
   /* Breite wird per requestAnimationFrame gesetzt (eigene VU-Ballistik),
      daher KEINE CSS-Transition auf width -- sonst laufen zwei Glaettungen
@@ -174,7 +200,7 @@
     font-size: 12px; font-weight: 700; cursor: pointer;
     transition: border-color .15s, background .15s, color .15s;
   }
-  .mic-ctl .mic-apply:hover:not(:disabled) { border-color: var(--brand-hover); color: var(--text); background: #1c2029; }
+  .mic-ctl .mic-apply:hover:not(:disabled) { border-color: var(--brand-hover); color: var(--text); background: var(--surface-hover); }
   .mic-ctl .mic-apply:disabled { opacity: .4; cursor: not-allowed; }
   .mic-hint { font-size: 12px; margin-top: 4px; min-height: 15px; color: var(--muted); }
   .mic-hint.pending { color: var(--warn); }
@@ -186,6 +212,41 @@
   .state-tag.recording { color: var(--accent); border-color: var(--accent); }
   .state-tag.uploading { color: var(--warn); border-color: var(--warn); }
   .state-tag.done { color: var(--ok); border-color: var(--ok); }
+  /* Bereitschaft + Clipping pro Gast */
+  .ready-tag { display: inline-block; font-size: 12px; padding: 1px 7px;
+               border: 1px solid var(--muted); border-radius: 999px;
+               color: var(--muted); margin-left: 6px; }
+  .ready-tag.ready { color: var(--ok); border-color: var(--ok); }
+  .ready-tag.waiting { color: var(--warn); border-color: var(--warn); }
+  .ready-tag.blocked { color: var(--accent); border-color: var(--accent); }
+  .clip-tag { display: none; font-size: 12px; font-weight: 600; margin-top: 4px;
+              color: var(--accent); }
+  .clip-tag.show { display: block; }
+  .guest.is-clipping { outline: 1px solid var(--accent);
+                       background: rgba(229,72,77,0.06); }
+  /* Startsperre: Begruendung unter dem Hauptknopf */
+  .gate-note { font-size: 13px; color: var(--warn); margin-top: 8px; }
+  .gate-note.blocked { color: var(--accent); }
+  .gate-note:empty { display: none; }
+
+  /* Roadmap 5: Nur-Lesen-Zustand fuer zusaetzliche Host-Instanzen */
+  .lock-bar {
+    display: none; align-items: center; gap: 12px; flex-wrap: wrap;
+    border: 1px solid #f5a524; border-radius: 10px;
+    background: rgba(245, 165, 36, .08);
+    padding: 12px 14px; margin-bottom: 14px;
+  }
+  .lock-bar.show { display: flex; }
+  .lock-bar .lb-title { font-weight: 700; font-size: 14px; color: #f5a524; }
+  .lock-bar .lb-text { font-size: 13px; color: var(--muted); flex: 1; min-width: 220px; }
+  .lock-bar button {
+    font: inherit; font-size: 13px; padding: 8px 12px; border-radius: 8px;
+    border: 1px solid var(--border); background: transparent; color: var(--text);
+    cursor: pointer;
+  }
+  .lock-bar button:hover { border-color: #f5a524; }
+  .lock-pill { border-color: #f5a524 !important; color: #f5a524 !important; }
+  body.readonly-mode [data-lock-control] { opacity: .5; }
 
   /* Branded outline button (matches Admin action buttons) */
   .btn-brand {
@@ -206,9 +267,9 @@
     transition: border-color .15s, background .15s, color .15s;
     white-space: nowrap;
   }
-  .btn-brand:hover { border-color: var(--brand-hover); color: var(--text); background: #1c2029; }
+  .btn-brand:hover { border-color: var(--brand-hover); color: var(--text); background: var(--surface-hover); }
   .empty { color: var(--muted); text-align: center; padding: 24px; font-size: 16px; }
-  .headcol { font-size: 13px; text-transform: uppercase; letter-spacing: .5px; color: #6b7280; }
+  .headcol { font-size: 13px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted-2); }
   .guest-head { display: grid; grid-template-columns: 18px 1.4fr 340px 90px 1.1fr;
     gap: 12px; padding: 0 14px; }
   .rec-bar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
@@ -227,6 +288,46 @@
   .hist-row { display: flex; justify-content: space-between; font-size: 14px;
     padding: 6px 0; border-bottom: 1px solid var(--border); }
   .hist-row:last-child { border-bottom: none; }
+
+  /* ---------- Responsive: Gast-Grid, Historie, Steuerleiste ----------
+     Bis 900 px reicht die Breite fuer die Geraetespalte nicht mehr; unter
+     720 px stapeln die Karten komplett und die Kopfzeile entfaellt, weil die
+     Labels dann direkt in der Karte stehen. */
+  @media (max-width: 900px) {
+    .guest, .guest-head { grid-template-columns: 18px 1.3fr 220px 80px 1fr; }
+    .devline b { max-width: 150px; }
+  }
+  @media (max-width: 720px) {
+    .guest-head { display: none !important; }
+    .guest {
+      grid-template-columns: 18px 1fr;
+      grid-template-areas:
+        "conn who"
+        "dev  dev"
+        "vu   vu"
+        "up   up";
+      row-gap: 10px;
+      align-items: start;
+    }
+    .guest > .conn { grid-area: conn; }
+    .guest > .who  { grid-area: who; min-width: 0; }
+    .guest > .dev  { grid-area: dev; }
+    .guest > .vu   { grid-area: vu; }
+    .guest > .up   { grid-area: up; }
+    .devline { white-space: normal; }
+    .devline b { max-width: none; }
+    .guest .mic-ctl { display: flex; flex-wrap: wrap; gap: 8px; }
+    .guest .mic-select { max-width: 100%; }
+    .hist-row { flex-direction: column; align-items: flex-start; gap: 4px; }
+    .rec-bar { gap: 10px; }
+    .dur { font-size: 24px; }
+    .countdown { font-size: 38px; }
+    .topbar { flex-wrap: wrap; gap: 8px; }
+    .conn-legend { font-size: 13px; }
+    .modal { padding: 16px; }
+    .link-box { flex-wrap: wrap; }
+    .link-box input { min-width: 0; }
+  }
   /* ---------- Marker ---------- */
   .mk {
     font-size: 15px;
@@ -244,7 +345,7 @@
   .mk-cutin:not(:disabled)  { border-color: #ef4444; color: #fca5a5; }
   .mk-cutout:not(:disabled) { border-color: #22c55e; color: #86efac; }
 
-  .mk:not(:disabled):hover  { background: #1c2029; }
+  .mk:not(:disabled):hover  { background: var(--surface-hover); }
   .marker-list { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; }
   /* Etwas mehr Luft zur eigentlichen Liste */
   #guestHead { margin-top: 8px; }
@@ -302,7 +403,7 @@
     text-align: center;
     white-space: nowrap;
   }
-  .mk-shift:hover { border-color: #3a4150; color: var(--text); }
+  .mk-shift:hover { border-color: var(--border-strong); color: var(--text); }
 
   /* Typ-Badge ist immer gleich breit; Text kann ellipsen */
   .mk-row .mk-tag {
@@ -339,7 +440,7 @@
     font-size: 13px;
     outline: none;
   }
-  .mk-note:focus { border-color: #3a4150; }
+  .mk-note:focus { border-color: var(--border-strong); }
 
   /* Status-Badge: immer gleiche Spalte */
   .mk-saved {
@@ -368,7 +469,7 @@
     text-align: center;
     justify-self: end;
   }
-  .mk-del:hover { border-color: #3a4150; color: var(--text); }
+  .mk-del:hover { border-color: var(--border-strong); color: var(--text); }
 
   /* Mobile: Aktionen runterbrechen, aber weiterhin Raster-stabil */
   @media (max-width: 720px) {
@@ -402,11 +503,11 @@
   <button class="logout-btn" id="logoutBtn">Abmelden</button>
 </div>
 
-<div class="wrap">
+<main class="wrap" id="main-content" tabindex="-1">
   <header>
     <div>
-      <h1>Host-Studio</h1>
-      <div class="sub" id="roomInfo">Raum wird geladen…</div>
+      <div class="room-heading"><h1>Host-Studio</h1></div>
+      <div class="room-heading"><div class="sub" id="roomInfo">Raum wird geladen…</div><span class="room-brand-context" id="roomBrandContext" title="Dieses Branding sehen nur Gäste."></span></div>
     </div>
   </header>
 
@@ -417,11 +518,20 @@
         <span class="meta-pill" id="clockPill">Server-Offset: <b>—</b></span>
       </div>
       <div class="row">
-        <button id="mainBtn" class="btn-rec">Aufnahme starten</button>
-        <button class="btn-ghost" id="inviteBtn">＋ Gast einladen</button>
-        <button class="meta-pill" id="modeBtn">Modus: <b id="modeVal">—</b></button>
+        <button id="mainBtn" class="btn-rec" data-lock-control>Aufnahme starten</button>
+        <button class="btn-ghost" id="inviteBtn" data-lock-control>＋ Gast einladen</button>
+        <button class="meta-pill" id="modeBtn" data-lock-control>Modus: <b id="modeVal">—</b></button>
       </div>
     </div>
+    <div class="gate-note" id="gateNote" role="status" aria-live="polite"></div>
+  </div>
+
+  <!-- Roadmap 5: Read-only-Banner fuer zusaetzliche Host-Instanzen -->
+  <div class="lock-bar" id="lockBar" role="status" aria-live="polite">
+    <span class="lb-title" id="lockTitle">Nur-Lesen-Modus</span>
+    <span class="lb-text" id="lockText">Dieser Raum wird von einer anderen Host-Instanz gesteuert.</span>
+    <button id="lockTakeBtn" type="button" style="display:none">Steuerung übernehmen</button>
+    <button id="lockRetryBtn" type="button">Steuerung anfordern</button>
   </div>
 
   <div class="panel rec-bar">
@@ -434,7 +544,7 @@
   <!-- Marker-Leiste -->
   <div class="panel">
     <div class="topbar" style="margin-bottom:10px">
-      <b>Marker</b>
+      <b data-i18n="host.markers">Marker</b>
       <span class="conn-legend">Schnellmarken während der Aufnahme — werden im Raum gespeichert.</span>
     </div>
     <div class="row" id="markerBar">
@@ -443,7 +553,7 @@
       <button class="mk mk-cutin"   data-kind="cut_in"  disabled>Schnitt in</button>
       <span class="sub" id="markerHint">Marker sind nur während einer laufenden Aufnahme aktiv.</span>
     </div>
-    <div id="markerList" class="marker-list">
+    <div id="markerList" role="list" aria-label="Marker dieser Aufnahme" class="marker-list">
       <div class="empty">Noch keine Marker gesetzt.</div>
     </div>
 
@@ -466,9 +576,17 @@
       <span class="headcol">Pegel</span>
       <span class="headcol">Upload</span>
     </div>
-    <div class="guests" id="guests">
+    <!-- Punkt 8: Lobby -- wartende Gaeste, die noch keinen Namen bestaetigt haben. -->
+    <div class="lobby" id="lobbyBox" hidden aria-live="polite">
+      <div class="lobby-head">
+        <b>Wartet in der Lobby</b>
+        <span class="conn-legend">Gäste erscheinen hier, sobald sie den Einladungslink öffnen — noch bevor sie einen Namen bestätigen.</span>
+      </div>
+      <ul class="lobby-list" id="lobbyList"></ul>
+    </div>
+    <div class="guests" id="guests" role="list" aria-label="Verbundene Gäste">
       <div id="guestList" style="display:flex;flex-direction:column;gap:10px"></div>
-      <div class="empty" id="emptyState">Noch keine Gäste verbunden. Teile den Einladungslink.</div>
+      <div class="empty" id="emptyState" role="status" aria-live="polite">Noch keine Gäste verbunden. Teile den Einladungslink.</div>
     </div>
   </div>
 
@@ -479,9 +597,9 @@
 </div>
 
 <!-- Modal: Gast einladen (Token-basiert) -->
-<div class="modal-bg" id="modalBg">
+<div class="modal-bg" id="modalBg" role="dialog" aria-modal="true" aria-labelledby="inviteModalTitle">
   <div class="modal">
-    <h3>🔗 Gastlink generieren</h3>
+    <h3 id="inviteModalTitle">🔗 Gastlink generieren</h3>
     <p style="color:var(--muted);font-size:14px;margin:0 0 14px">
       Der Link enthält einen sicheren Token — der Raumname ist darin verborgen.
       Mehrere Gäste können denselben Link nutzen.
@@ -525,6 +643,25 @@
   const room   = (params.get('room') || 'default').replace(/[^a-zA-Z0-9_-]/g, '');
   const SERVER = location.origin;
 
+  // ── Roadmap 5: Single-Host-Instance Lock ──────────────────────────────────
+  // Jede Host-Instanz (Tab) hat eine eigene Kennung. sessionStorage macht sie
+  // reload-stabil: nach F5 bekommt derselbe Tab die Steuerung zurueck, ein
+  // zweiter Tab bekommt eine neue Kennung und damit Nur-Lesen.
+  const CLIENT_ID = (() => {
+    const key = 'ops_host_client_' + room;
+    let id = '';
+    try { id = sessionStorage.getItem(key) || ''; } catch {}
+    if (!/^[A-Za-z0-9_-]{8,64}$/.test(id)) {
+      id = 'c' + Math.random().toString(36).slice(2, 12) + Date.now().toString(36);
+      try { sessionStorage.setItem(key, id); } catch {}
+    }
+    return id;
+  })();
+
+  let lockMode = 'unknown';   // 'unknown' | 'control' | 'readonly'
+  let lockInfo = null;        // letzter Lock-Zustand vom Server
+  let isAdmin = false;
+
   // ── WebSocket-Kanal (Echtzeit) ────────────────────────────────────────────
   // Steuerung (Start/Stopp/Settings/Marker) und der Raum-Status laufen
   // ausschliesslich ueber WebSocket. Es gibt keinen HTTP-Poll-Fallback mehr.
@@ -544,13 +681,24 @@
       wsConnected = true;
       wsReconnectDelay = 1000;   // nach erfolgreichem Connect zuruecksetzen
       if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
+      // Lock anfordern. Nach einem Reconnect innerhalb der Kulanzzeit bekommt
+      // dieselbe Kennung die Steuerung zurueck (Recovery).
+      wsSend({ type: 'hello', client_id: CLIENT_ID, label: 'Host-Panel' });
     };
     ws.onmessage = (ev) => {
       let msg; try { msg = JSON.parse(ev.data); } catch { return; }
+      if (msg.type === 'lock') { applyLockState(msg); return; }
       if (msg.type === 'status') renderStatus(msg);
       else if (msg.type === 'levels') applyLevelsMessage(msg);
+      else if (msg.type === 'trigger_result') handleTriggerResult(msg);
+      else if (msg.type === 'marker_result') handleMarkerResult(msg);
     };
-    ws.onclose = () => { wsConnected = false; ws = null; scheduleWsReconnect(); };
+    ws.onclose = () => {
+      wsConnected = false; ws = null;
+      // Verbindung weg -> Steuerung ist bis zum Reconnect nicht gesichert.
+      if (lockMode === 'control') showLockReconnecting();
+      scheduleWsReconnect();
+    };
     ws.onerror = () => { try { ws.close(); } catch {} };
   }
 
@@ -563,6 +711,39 @@
     const delay = Math.min(wsReconnectDelay, 10000) + jitter;
     wsReconnectTimer = setTimeout(() => { wsReconnectTimer = null; connectWs(); }, delay);
     wsReconnectDelay = Math.min(wsReconnectDelay * 2, 10000);
+  }
+
+  // Antwort des Servers auf einen Start-/Stopp-Befehl.
+  function handleTriggerResult(msg) {
+    if (!msg.ok) {
+      // Der Server hat den Start abgelehnt (Gaeste nicht bereit).
+      if (msg.action === 'start') {
+        phase = 'idle'; recording = false;
+        setMainButton('start');
+        applyGateToButton();
+      }
+      $('statusLine').textContent = msg.detail || 'Befehl abgelehnt.';
+      return;
+    }
+    if (msg.duplicate) {
+      // Idempotenz: derselbe Befehl kam mehrfach an, der Zustand bleibt gueltig.
+      if (msg.reason === 'already_recording') {
+        $('statusLine').textContent = 'Aufnahme läuft bereits.';
+      } else if (msg.reason === 'not_recording') {
+        $('statusLine').textContent = 'Es läuft keine Aufnahme.';
+        phase = 'idle'; recording = false; setMainButton('start');
+      }
+      return;
+    }
+    if (msg.action === 'start' && msg.command && msg.command.start_at) {
+      beginCountdownTo(msg.command.start_at - serverOffset);
+    }
+  }
+
+  function handleMarkerResult(msg) {
+    if (!msg.ok) {
+      $('statusLine').textContent = msg.detail || 'Marker konnte nicht gesetzt werden.';
+    }
   }
 
   function wsSend(obj) {
@@ -609,6 +790,7 @@
   }
 
   let serverOffset = 0;
+  let currentSessionId = '';   // session_id der laufenden Aufnahme (Marker-Bindung)
   let recording    = false;
   let phase        = 'idle';
   let recStartAt   = 0;
@@ -617,6 +799,17 @@
 
   $('roomInfo').textContent = `Raum: ${room}`;
   document.title = `Host · ${room}`;
+  (async () => {
+    try {
+      const data = await (await apiFetch(`${SERVER}/rooms/${encodeURIComponent(room)}/branding`, {cache:'no-store'})).json();
+      const preset = data.preset;
+      if (!preset) return;
+      const badge = $('roomBrandContext');
+      badge.innerHTML = `${preset.logo ? `<img src="${escapeHtml(preset.logo)}" alt="">` : ''}<span>Gast-Branding: <strong>${escapeHtml(preset.name)}</strong></span>`;
+      badge.classList.add('show');
+      document.title = `Host · ${room} · ${preset.name}`;
+    } catch {}
+  })();
 
   // ── Token / Invite ────────────────────────────────────────────────────────
   $('inviteBtn').addEventListener('click', () => {
@@ -665,7 +858,7 @@
         $('inviteLink').value = link;
         $('newLinkWrap').style.display = 'flex';
         $('genTokenBtn').style.display = 'none';
-        const exp = active.expires_at ? new Date(active.expires_at * 1000).toLocaleDateString('de-DE') : '—';
+        const exp = active.expires_at ? new Date(active.expires_at * 1000).toLocaleDateString((window.OpenPodcastI18n?.locale || document.documentElement.lang || 'de')) : '—';
         $('genMsg').textContent = `Aktiver Link (gültig bis ${exp})`;
       } else {
         $('genTokenBtn').style.display = 'inline-block';
@@ -696,7 +889,7 @@
       const link = `${SERVER}${data.link}`;
       $('inviteLink').value = link;
       $('newLinkWrap').style.display = 'flex';
-      const exp = new Date(data.expires_at * 1000).toLocaleDateString('de-DE');
+      const exp = new Date(data.expires_at * 1000).toLocaleDateString((window.OpenPodcastI18n?.locale || document.documentElement.lang || 'de'));
       $('genMsg').textContent = (data.existing
         ? `Aktiver Link (gültig bis ${exp})`
         : `✔ Neuer Link erstellt (gültig bis ${exp})`
@@ -757,9 +950,11 @@
     el.innerHTML = `
       <div class="conn"></div>
       <div class="who">
-        <div class="nm"></div>
-        <div class="gid"></div>
+        <div class="nm" translate="no"></div>
+        <div class="gid" translate="no"></div>
         <span class="state-tag"></span>
+        <span class="ready-tag"></span>
+        <div class="clip-tag"></div>
       </div>
       <div class="dev">
         <div class="devline"><span class="lbl">Mic:</span> <b class="mic-label"></b></div>
@@ -777,6 +972,8 @@
       nm:    el.querySelector('.nm'),
       gid:   el.querySelector('.gid'),
       tag:   el.querySelector('.state-tag'),
+      ready: el.querySelector('.ready-tag'),
+      clip:  el.querySelector('.clip-tag'),
       mic:   el.querySelector('.mic-label'),
       spk:   el.querySelector('.spk-label'),
       ctl:   el.querySelector('.mic-ctl'),
@@ -797,6 +994,99 @@
     const v = value == null ? '' : String(value);
     if (node.textContent !== v) node.textContent = v;
   }
+
+  // Uebersetzt die Blocker-Codes des Servers in Klartext fuer den Host.
+  const BLOCKER_TEXT = {
+    offline:         'Gast ist nicht online.',
+    mic_permission:  'Mikrofon im Browser blockiert.',
+    mic_signal:      'Kein aktives Mikrofon-Signal.',
+    camera:          'Kamera fehlt oder ist blockiert (Videomodus).',
+    device_mismatch: 'Aktives Gerät weicht von der Auswahl ab.'
+  };
+  function blockerText(list) {
+    return (list || []).map(b => BLOCKER_TEXT[b] || b).join(' ');
+  }
+
+  // Guardrails + letzter Gate-Zustand (fuer Knopf und Begruendung).
+  let requireGuestReady  = false;
+  let requireGuestOnline = true;
+  let lastGate = { ok: true, detail: '' };
+
+
+  // Punkt 8: Lobby-Praesenz. Der Server liefert pro wartendem Gast eine
+  // stabile client_id und ein kurzes Kuerzel (A, B, C ...). Damit bleiben
+  // mehrere namenlose Gaeste ueber Reloads hinweg unterscheidbar.
+  const LOBBY_STAGE = {
+    joining: 'Öffnet das Studio',
+    naming:  'Gibt den Namen ein',
+    named:   'Name bestätigt',
+  };
+
+  // Der Server liefert die Lobby-Wartezeit in Status-Snapshots. Zwischen zwei
+  // Snapshots tickt die Anzeige lokal weiter, damit der Host nicht auf den
+  // naechsten Gast-Heartbeat warten muss.
+  let lobbyEntries = [];
+  let lobbyReceivedAt = Date.now();
+
+  function updateLobbyWaiting() {
+    const list = $('lobbyList');
+    if (!list || !lobbyEntries.length) return;
+    const elapsed = (Date.now() - lobbyReceivedAt) / 1000;
+    const items = [...list.querySelectorAll('.lobby-item')];
+    for (const e of lobbyEntries) {
+      const li = items.find(item => item.dataset.lobbyClientId === String(e.client_id));
+      if (!li) continue;
+      const waited = Math.max(0, Math.round((Number(e.waiting_seconds) || 0) + elapsed));
+      const waiting = li.querySelector('.lobby-waiting');
+      if (waiting) setText(waiting, `wartet ${waited}s`);
+      li.setAttribute('aria-label',
+        `Gast ${e.label}: ${LOBBY_STAGE[e.stage] || LOBBY_STAGE.naming}, wartet seit ${waited} Sekunden`);
+    }
+  }
+
+  function renderLobby(rows) {
+    const box  = $('lobbyBox');
+    const list = $('lobbyList');
+    if (!box || !list) return;
+    const entries = Array.isArray(rows) ? rows : [];
+    lobbyEntries = entries.map(e => ({ ...e }));
+    lobbyReceivedAt = Date.now();
+    box.hidden = entries.length === 0;
+    if (!entries.length) {
+      list.innerHTML = '';
+      list.dataset.sig = '';
+      return;
+    }
+
+    // Signatur-Vergleich: kein Neurendern, solange sich nur die Wartezeit
+    // geaendert hat. Die lokale Uhr aktualisiert dann nur die Wartezeit.
+    const sig = entries.map(e => `${e.client_id}:${e.stage}`).join('|');
+    if (list.dataset.sig === sig) {
+      updateLobbyWaiting();
+      return;
+    }
+    list.dataset.sig = sig;
+
+    list.innerHTML = '';
+    for (const e of entries) {
+      const li = document.createElement('li');
+      li.className = 'lobby-item';
+      li.dataset.lobbyClientId = String(e.client_id);
+      const waited = Math.max(0, Math.round(e.waiting_seconds || 0));
+      li.innerHTML = `
+        <span class="lobby-avatar" aria-hidden="true">${escapeHtml(e.label)}</span>
+        <span>Gast ${escapeHtml(e.label)}</span>
+        <span class="lobby-stage">${escapeHtml(LOBBY_STAGE[e.stage] || LOBBY_STAGE.naming)} · <span class="lobby-waiting">wartet ${waited}s</span></span>`;
+      li.setAttribute('aria-label',
+        `Gast ${e.label}: ${LOBBY_STAGE[e.stage] || LOBBY_STAGE.naming}, wartet seit ${waited} Sekunden`);
+      list.appendChild(li);
+    }
+    updateLobbyWaiting();
+  }
+
+  // Einmal pro Sekunde reicht fuer die sekundenbasierte Anzeige und erzeugt
+  // keinen neuen Status-Request.
+  setInterval(updateLobbyWaiting, 1000);
 
   function renderGuests(guests) {
     const box = $('guestList');
@@ -829,6 +1119,42 @@
       setText(refs.gid, g.guest);
       setText(refs.tag, stateLabel(g.state));
       refs.tag.className = 'state-tag ' + (g.state || '');
+
+      // Bereitschaft: technische Pruefung + aktive Meldung des Gastes.
+      const rd = g.ready || {};
+      let rdCls = 'ready-tag', rdTxt = '', rdTitle = '';
+      if (!rd.tech_ready) {
+        rdCls += ' blocked';
+        rdTxt = 'nicht bereit';
+        rdTitle = blockerText(rd.blockers || []);
+      } else if (requireGuestReady && !rd.declared_ready) {
+        rdCls += ' waiting';
+        rdTxt = 'wartet auf Bestätigung';
+        rdTitle = 'Der Gast hat sich noch nicht bereit gemeldet.';
+      } else {
+        rdCls += ' ready';
+        rdTxt = rd.declared_ready ? 'bereit ✔' : 'bereit';
+        rdTitle = rd.declared_ready
+          ? 'Der Gast hat sich aktiv bereit gemeldet.'
+          : 'Technisch aufnahmebereit.';
+      }
+      if (refs.ready.className !== rdCls) refs.ready.className = rdCls;
+      setText(refs.ready, rdTxt);
+      refs.ready.title = rdTitle;
+
+      // Clipping: deutliche Warnung, solange der Gast uebersteuert.
+      const clipping = !!g.clipping;
+      el.classList.toggle('is-clipping', clipping);
+      refs.clip.classList.toggle('show', clipping || (g.clip_count || 0) > 0);
+      if (clipping) {
+        setText(refs.clip,
+          `⚠ Übersteuert — ${(g.clip_last_dbfs || 0).toFixed(1)} dBFS ` +
+          `(${g.clip_count || 0}× in dieser Aufnahme)`);
+      } else if ((g.clip_count || 0) > 0) {
+        setText(refs.clip, `${g.clip_count}× Clipping in dieser Aufnahme`);
+      } else {
+        setText(refs.clip, '');
+      }
       // Mikrofon: Was der Gast wirklich aufnimmt, nicht nur was gewählt ist.
       let micTxt = g.mic_label || 'unbekannt';
       if (g.mic_active === false) micTxt += ' — kein Signal';
@@ -1075,6 +1401,10 @@
 
       micInteractGuest = null;
       const hint = btn.closest('.dev').querySelector('.mic-hint');
+      if (lockMode === 'readonly') {
+        $('statusLine').textContent = 'Nur-Lesen-Modus — Mikrofonwahl ist gesperrt.';
+        return;
+      }
       const sent = wsSend({ type: 'set_mic', guest, deviceId, label });
       if (sent) {
         micChoice.set(guest, deviceId);
@@ -1091,6 +1421,20 @@
   // Erwartet das Status-Objekt (server_time, guests, markers, settings, command).
   async function renderStatus(data) {
     if (!data) return;
+    // Roadmap 5: Der Status-Push traegt den aktuellen Lock mit. Wenn ein anderer
+    // Client die Steuerung uebernommen hat, wechselt dieses Panel sofort in
+    // Nur-Lesen -- ohne auf den naechsten Lock-Frame zu warten.
+    try {
+      if (Object.prototype.hasOwnProperty.call(data, 'lock')) {
+        lockInfo = data.lock || null;
+        const mine = !!(lockInfo && lockInfo.client_id === CLIENT_ID);
+        if (lockMode === 'control' && !mine) {
+          applyLockState({ lock: lockInfo, mine: false, reason: 'lost' });
+        } else if (lockMode === 'readonly' && mine) {
+          applyLockState({ lock: lockInfo, mine: true, reason: 'regained' });
+        }
+      }
+    } catch {}
     try {
       // Fix (Review): Die Token-UI wurde frueher bei JEDEM Status-Push (alle 2 s)
       // neu geladen -- ein HTTP-Request pro Tick, obwohl sich Tokens praktisch
@@ -1102,6 +1446,8 @@
       $('clockPill').innerHTML = `Server-Offset: <b>${serverOffset >= 0 ? '+' : ''}${serverOffset} ms</b>`;
       $('connPill').innerHTML  = `🟢 verbunden: <b>${data.online_count || 0}</b>`;
       renderGuests(data.guests || []);
+      const joinedClients = new Set((data.guests || []).map(g => g.client_id).filter(Boolean));
+      renderLobby((data.lobby || []).filter(row => !joinedClients.has(row.client_id)));
 
       // Marker-UI. Fix (Review): Frueher liefen hier pro Status-Push bis zu ZWEI
       // zusaetzliche HTTP-Requests -- bei 2s-Takt und mehreren offenen Host-Tabs
@@ -1120,6 +1466,7 @@
       }
 
       // Marker der laufenden Session kommen ohne Extra-Request mit.
+      currentSessionId = String(data.session || '');
       if (data.session && Array.isArray(data.markers)) {
         markerStore.bySession.set(String(data.session), data.markers);
       }
@@ -1141,6 +1488,14 @@
 
       const gs           = data.guests || [];
       const anyRecording = gs.some(g => (g.state || '') === 'recording');
+
+      // Guardrails aus dem Status uebernehmen und das Start-Gate lokal spiegeln,
+      // damit der Knopf gesperrt ist, BEVOR der Server ablehnt.
+      if (data.guardrails) {
+        requireGuestReady  = !!data.guardrails.require_guest_ready;
+        requireGuestOnline = !!data.guardrails.require_guest_online;
+      }
+      lastGate = evaluateGate(gs);
       const anyPending = gs.some(g => ((g.seconds_since_seen||0) < 90) && ((['recording','uploading'].includes((g.state||''))) || (g.queue || 0) > 0));
 
       if (phase === 'armed' || phase === 'live') {
@@ -1159,6 +1514,9 @@
       // Marker-Buttons nur bei laufender Aufnahme aktiv.
       setMarkerButtonsEnabled(phase === 'armed' || phase === 'live');
 
+      // Startsperre anwenden, solange keine Aufnahme laeuft.
+      applyGateToButton();
+
       if (data.settings) {
         audioOnly  = !!data.settings.audio_only;
         debugLevel = +data.settings.debug_level || 0;
@@ -1170,6 +1528,172 @@
     } catch (err) {
       // Render-Fehler still loggen, Verbindungs-Pille bleibt gruen.
       console.error('Render-Fehler in renderStatus:', err);
+    }
+  }
+
+  // Spiegelt das serverseitige Start-Gate: mindestens ein Gast online und
+  // technisch bereit, optional mit aktiver Bereit-Meldung.
+  function evaluateGate(guests) {
+    const online = (guests || []).filter(g => g.connection === 'online');
+    const techReady = online.filter(g => (g.ready || {}).tech_ready);
+
+    if (requireGuestOnline && !online.length) {
+      return { ok: false, detail: 'Kein Gast ist online. Teile den Einladungslink.' };
+    }
+    if (requireGuestOnline && !techReady.length) {
+      const why = online
+        .map(g => `${g.display_name || g.guest}: ${blockerText((g.ready || {}).blockers)}`)
+        .join(' · ');
+      return { ok: false,
+               detail: `Kein Gast ist aufnahmebereit. ${why}` };
+    }
+    if (requireGuestReady) {
+      const missing = online.filter(g => !(g.ready || {}).declared_ready);
+      if (missing.length) {
+        const names = missing.map(g => g.display_name || g.guest).join(', ');
+        return { ok: false,
+                 detail: `Warte auf die Bereit-Meldung von: ${names}` };
+      }
+    }
+    return { ok: true, detail: '' };
+  }
+
+  // ── Roadmap 5: Nur-Lesen-Zustand anwenden ────────────────────────────────
+  function lockOwnerLabel(lock) {
+    if (!lock) return 'einer anderen Host-Instanz';
+    const who = lock.role === 'admin' ? 'Admin-Instanz' : 'Host-Instanz';
+    return lock.label ? `${who} „${lock.label}"` : `einer anderen ${who}`;
+  }
+
+  function applyLockState(msg) {
+    lockInfo = msg.lock || null;
+    const mine = !!msg.mine;
+    const prev = lockMode;
+    lockMode = mine ? 'control' : 'readonly';
+
+    const bar = $('lockBar');
+    const title = $('lockTitle');
+    const text = $('lockText');
+    const takeBtn = $('lockTakeBtn');
+    const retryBtn = $('lockRetryBtn');
+
+    document.body.classList.toggle('readonly-mode', lockMode === 'readonly');
+
+    if (lockMode === 'control') {
+      bar.classList.remove('show');
+      // Steuerung (zurueck)gewonnen -> Bedienelemente wieder freigeben.
+      setControlsEnabled(true);
+      if (prev === 'readonly') {
+        $('statusLine').textContent = msg.reason === 'takeover'
+          ? 'Steuerung übernommen. Dieses Panel steuert den Raum jetzt.'
+          : 'Steuerung aktiv. Dieses Panel steuert den Raum.';
+      }
+      applyGateToButton();
+      return;
+    }
+
+    // Read-only
+    bar.classList.add('show');
+    title.textContent = 'Nur-Lesen-Modus';
+    if (msg.reason === 'awaiting_hello') {
+      text.textContent = 'Steuerung wird angefordert…';
+    } else if (msg.reason === 'denied_readonly') {
+      text.textContent = `Befehl abgelehnt: Der Raum wird von ${lockOwnerLabel(lockInfo)} gesteuert.`;
+    } else if (lockInfo && !lockInfo.connected) {
+      text.textContent = `Die steuernde Instanz ist getrennt. Die Steuerung ist noch ${Math.ceil(lockInfo.expires_in)} s reserviert und wird danach frei.`;
+    } else {
+      text.textContent = `Dieser Raum wird von ${lockOwnerLabel(lockInfo)} gesteuert. Du siehst Status, Pegel und Marker live mit, kannst aber nicht steuern.`;
+    }
+    takeBtn.style.display = isAdmin ? 'inline-flex' : 'none';
+    retryBtn.style.display = 'inline-flex';
+    setControlsEnabled(false);
+  }
+
+  function showLockReconnecting() {
+    const bar = $('lockBar');
+    $('lockTitle').textContent = 'Verbindung unterbrochen';
+    $('lockText').textContent = 'Die Steuerung bleibt kurz reserviert. Sobald die Verbindung steht, kannst du weitersteuern.';
+    $('lockTakeBtn').style.display = 'none';
+    $('lockRetryBtn').style.display = 'none';
+    bar.classList.add('show');
+    setControlsEnabled(false);
+  }
+
+  // Alle steuernden Bedienelemente sperren bzw. freigeben. Stoppen bleibt nur
+  // fuer die steuernde Instanz moeglich -- ein Read-only-Panel darf eine
+  // laufende Aufnahme nicht beenden.
+  function setControlsEnabled(on) {
+    document.querySelectorAll('[data-lock-control]').forEach(el => {
+      el.disabled = !on;
+      if (!on) el.title = 'Nur-Lesen-Modus: eine andere Host-Instanz steuert diesen Raum.';
+      else el.removeAttribute('title');
+    });
+    document.querySelectorAll('[data-lock-control-dynamic]').forEach(el => {
+      el.disabled = !on;
+    });
+  }
+
+  function requestLock(force) {
+    if (!wsSend({ type: 'lock_acquire', client_id: CLIENT_ID,
+                  label: 'Host-Panel', force: !!force })) {
+      $('lockText').textContent = 'Keine Echtzeit-Verbindung — Steuerung kann gerade nicht angefordert werden.';
+    }
+  }
+
+  $('lockRetryBtn').addEventListener('click', () => requestLock(false));
+  $('lockTakeBtn').addEventListener('click', () => {
+    if (confirm('Steuerung übernehmen? Die andere Host-Instanz wechselt dadurch in den Nur-Lesen-Modus.')) {
+      requestLock(true);
+    }
+  });
+
+  // Explizite Freigabe beim Verlassen der Seite: der naechste Host bekommt die
+  // Steuerung sofort und muss nicht auf den Ablauf der Kulanzzeit warten.
+  window.addEventListener('pagehide', () => {
+    if (lockMode !== 'control') return;
+    try {
+      const body = JSON.stringify({ client_id: CLIENT_ID });
+      if (navigator.sendBeacon) {
+        navigator.sendBeacon(`${SERVER}/host/lock/${room}/release`,
+                             new Blob([body], { type: 'application/json' }));
+      } else {
+        fetch(`${SERVER}/host/lock/${room}/release`,
+              { method: 'POST', body, keepalive: true,
+                headers: { 'Content-Type': 'application/json' } });
+      }
+    } catch {}
+  });
+
+  function applyGateToButton() {
+    const note = $('gateNote');
+    // Nur der Startvorgang ist gesperrt -- Stoppen muss immer moeglich bleiben.
+    if (recording || phase !== 'idle') {
+      if (note) { note.textContent = ''; note.className = 'gate-note'; }
+      return;
+    }
+    if (lockMode === 'readonly') {
+      // Nur-Lesen hat Vorrang vor dem Start-Gate.
+      mainBtn.disabled = true;
+      return;
+    }
+    if (lastGate.ok) {
+      mainBtn.disabled = false;
+      mainBtn.removeAttribute('title');
+      if (note) { note.textContent = ''; note.className = 'gate-note'; }
+    } else {
+      mainBtn.disabled = true;
+      mainBtn.title = lastGate.detail;
+      if (note) {
+        note.className = 'gate-note blocked';
+        note.textContent = lastGate.detail;
+      }
+    }
+  }
+
+  // Nach jedem Re-Render dynamischer Listen den Lock-Zustand erneut anwenden.
+  function reapplyLockToDynamic() {
+    if (lockMode === 'readonly') {
+      document.querySelectorAll('[data-lock-control-dynamic]').forEach(el => { el.disabled = true; });
     }
   }
 
@@ -1186,7 +1710,12 @@
 
   async function trigger(action) {
     // Steuerung laeuft ausschliesslich ueber WebSocket (kein HTTP-Fallback mehr).
-    if (!wsSend({ type: 'trigger', action })) {
+    // issued_at macht den Befehl serverseitig eindeutig: eine erneute
+    // Zustellung desselben Tripels (action, session, issued_at) bleibt folgenlos.
+    if (lockMode === 'readonly') {
+      throw new Error('Nur-Lesen-Modus — eine andere Host-Instanz steuert diesen Raum.');
+    }
+    if (!wsSend({ type: 'trigger', action, issued_at: Date.now() + serverOffset })) {
       throw new Error('Keine Echtzeit-Verbindung — bitte warten, bis der Link wieder steht.');
     }
     try {
@@ -1200,6 +1729,9 @@
   }
 
   async function setSettings(patch) {
+    if (lockMode === 'readonly') {
+      throw new Error('Nur-Lesen-Modus — Einstellungen sind gesperrt.');
+    }
     if (!wsSend({ type: 'settings', ...patch })) {
       throw new Error('Keine Echtzeit-Verbindung — Einstellung nicht gesendet.');
     }
@@ -1216,6 +1748,11 @@
         $('statusLine').textContent = 'Fehler beim Stoppen: ' + err.message;
         setMainButton('stop');
       }
+      return;
+    }
+    if (!lastGate.ok) {
+      $('statusLine').textContent = lastGate.detail;
+      applyGateToButton();
       return;
     }
     setMainButton('sync');
@@ -1456,22 +1993,24 @@
       row.innerHTML = `
         <span class="mk-time">${mkFmt(m.offset_ms || 0)}</span>
         <div class="mk-shifts ${canEditTime ? '' : 'is-hidden'}" aria-hidden="${canEditTime ? 'false' : 'true'}">
-          <button class="mk-shift" data-id="${m.id}" data-delta="-5000" title="-5s">−5s</button>
-          <button class="mk-shift" data-id="${m.id}" data-delta="-1000" title="-1s">−1s</button>
-          <button class="mk-shift" data-id="${m.id}" data-delta="1000"  title="+1s">+1s</button>
-          <button class="mk-shift" data-id="${m.id}" data-delta="5000"  title="+5s">+5s</button>
+          <button class="mk-shift" data-id="${m.id}" data-delta="-5000" title="-5s" data-lock-control-dynamic>−5s</button>
+          <button class="mk-shift" data-id="${m.id}" data-delta="-1000" title="-1s" data-lock-control-dynamic>−1s</button>
+          <button class="mk-shift" data-id="${m.id}" data-delta="1000"  title="+1s" data-lock-control-dynamic>+1s</button>
+          <button class="mk-shift" data-id="${m.id}" data-delta="5000"  title="+5s" data-lock-control-dynamic>+5s</button>
         </div>
         <span class="mk-tag ${m.kind}">${escapeHtml(MK_LABEL[m.kind] || m.kind)}</span>
-        <input class="mk-note" data-id="${m.id}" type="text"
+        <input class="mk-note" data-id="${m.id}" type="text" data-lock-control-dynamic
                value="${escapeHtml(noteVal)}"
                placeholder="Notiz…"
                title="${escapeHtml(noteVal)}"
                aria-label="Notiz für Marker ${escapeHtml(MK_LABEL[m.kind] || m.kind)}" />
         <span class="mk-saved" data-id="${m.id}" style="display:${hasNote ? 'inline' : 'none'}">notiert</span>
-        <button class="mk-del" data-id="${m.id}" title="Marker löschen">Löschen</button>`;
+        <button class="mk-del" data-id="${m.id}" title="Marker löschen" data-lock-control-dynamic>Löschen</button>`;
 
       box.appendChild(row);
     }
+
+    reapplyLockToDynamic();
 
     // Notizen speichern bei blur (mit kleinem, sichtbaren Feedback)
     box.querySelectorAll('.mk-note').forEach(inp => {
@@ -1541,6 +2080,7 @@
       btn.addEventListener('click', async () => {
         try {
           // Marker-Loeschen laeuft ueber WebSocket; der Status-Push aktualisiert die Liste.
+          if (lockMode === 'readonly') return;
           if (!wsSend({ type: 'marker_delete', id: btn.dataset.id })) {
             console.error('Marker konnte nicht geloescht werden: keine Echtzeit-Verbindung.');
           }
@@ -1555,7 +2095,18 @@
       btn.disabled = true;
       try {
         // Marker setzen laeuft ueber WebSocket; der Status-Push aktualisiert die Liste.
-        if (!wsSend({ type: 'marker', kind })) {
+        // Marker strikt an die laufende Aufnahme-Session binden -- nie nur an
+        // den aktuellen Raumzustand.
+        if (!currentSessionId) {
+          $('statusLine').textContent =
+            'Marker brauchen eine laufende Aufnahme-Session.';
+          return;
+        }
+        if (lockMode === 'readonly') {
+          $('statusLine').textContent = 'Nur-Lesen-Modus — Marker können nicht gesetzt werden.';
+          return;
+        }
+        if (!wsSend({ type: 'marker', kind, session: currentSessionId })) {
           console.error('Marker fehlgeschlagen: keine Echtzeit-Verbindung.');
         }
       } catch (err) {
@@ -1567,16 +2118,84 @@
     });
   });
 
+  // Historienkarten und Audio-Elemente bleiben ueber Auto-Refreshs hinweg
+  // erhalten. Ein erneutes Setzen von innerHTML wuerde einen laufenden Player
+  // ersetzen und damit die Wiedergabe stoppen.
+  const historyCards = new Map();
+  let historyLoadInFlight = false;
+
+  function createHistoryCard() {
+    const row = document.createElement('div');
+    row.className = 'hist-row';
+    row.style.cssText = 'align-items:center;gap:16px;flex-wrap:wrap';
+
+    const info = document.createElement('span');
+    info.style.minWidth = '210px';
+    const label = document.createElement('b');
+    const meta = document.createElement('span');
+    meta.className = 'sub';
+    meta.style.display = 'block';
+    info.append(label, meta);
+
+    const player = document.createElement('span');
+    player.style.cssText = 'flex:1;min-width:260px';
+    row.append(info, player);
+
+    return { row, label, meta, player, audio: null, pending: null };
+  }
+
+  function updateHistoryCard(card, session) {
+    const when = session.last_seen
+      ? new Date(session.last_seen * 1000).toLocaleString((window.OpenPodcastI18n?.locale || document.documentElement.lang || 'de'))
+      : '';
+    setText(card.label, session.label || session.session);
+    setText(card.meta, `${when} · ${session.guests} Gastspur(en)`);
+
+    const src = session.has_mixdown && session.mixdown_url
+      ? String(session.mixdown_url) : '';
+
+    if (src) {
+      // Bestehendes Audio nie neu erzeugen oder die Quelle erneut setzen: So
+      // bleiben currentTime, paused/playing und die Browser-Puffer erhalten.
+      if (card.audio && card.audio.dataset.src === src) return;
+      if (!card.audio) {
+        card.player.replaceChildren();
+        const audio = document.createElement('audio');
+        audio.controls = true;
+        audio.preload = 'metadata';
+        audio.style.width = 'min(100%,560px)';
+        audio.dataset.src = src;
+        audio.src = src;
+        card.player.appendChild(audio);
+        card.audio = audio;
+      } else if (card.audio.dataset.src !== src) {
+        // Nur bei einer tatsaechlich neuen Mixdown-URL wechseln.
+        card.audio.dataset.src = src;
+        card.audio.src = src;
+      }
+      return;
+    }
+
+    // Solange noch kein Player existiert, darf der Hinweis aktualisiert werden.
+    // Ein vorhandener Player bleibt sichtbar, falls der Server waehrend des
+    // Refreshs kurzzeitig noch keinen Mixdown meldet.
+    if (!card.audio && !card.pending) {
+      const pending = document.createElement('span');
+      pending.className = 'sub';
+      pending.textContent = 'MP3-Mixdown wird erstellt, sobald eine Spur fertig ist.';
+      card.player.replaceChildren(pending);
+      card.pending = pending;
+    }
+  }
+
   async function loadHistory() {
+    if (historyLoadInFlight) return;
+    historyLoadInFlight = true;
     try {
       const res = await apiFetch(`${SERVER}/sessions`, { cache: 'no-store' });
       const all = await res.json();
       const mine = all.filter(s => s.room === room && !s.deleted);
       const box = $('history');
-      if (!mine.length) {
-        box.innerHTML = '<div class="empty">Noch keine abgeschlossenen Aufnahmen.</div>';
-        return;
-      }
 
       // Host-Historie ist bewusst sessionzentriert und MP3-only. Gastspuren,
       // WAV-Downloads und ZIP-Exporte werden hier weder verlinkt noch angezeigt.
@@ -1593,19 +2212,50 @@
         bySession.set(s.session, cur);
       }
       const sessions = [...bySession.values()].sort((a, b) => b.last_seen - a.last_seen);
-      box.innerHTML = sessions.map(s => {
-        const when = s.last_seen ? new Date(s.last_seen * 1000).toLocaleString('de-DE') : '';
-        const player = s.has_mixdown && s.mixdown_url
-          ? `<audio controls preload="metadata" style="width:min(100%,560px)" src="${escapeHtml(s.mixdown_url)}"></audio>`
-          : '<span class="sub">MP3-Mixdown wird erstellt, sobald eine Spur fertig ist.</span>';
-        return `<div class="hist-row" style="align-items:center;gap:16px;flex-wrap:wrap">
-          <span style="min-width:210px"><b>${escapeHtml(s.label)}</b>
-            <span class="sub" style="display:block">${escapeHtml(when)} · ${s.guests} Gastspur(en)</span></span>
-          <span style="flex:1;min-width:260px">${player}</span>
-        </div>`;
-      }).join('');
+      const live = new Set(sessions.map(s => s.session));
+
+      for (const [sid, card] of historyCards) {
+        if (!live.has(sid)) {
+          card.row.remove();
+          historyCards.delete(sid);
+        }
+      }
+
+      if (!sessions.length) {
+        if (!historyCards.size) {
+          box.replaceChildren();
+          const empty = document.createElement('div');
+          empty.className = 'empty';
+          empty.textContent = 'Noch keine abgeschlossenen Aufnahmen.';
+          box.appendChild(empty);
+        }
+        return;
+      }
+
+      // Vorhandene Karten werden nur verschoben, nicht ersetzt. Das bewahrt
+      // auch bei einer Sortierung den Zustand des jeweiligen Audio-Players.
+      box.querySelector('.empty')?.remove();
+      for (const session of sessions) {
+        let card = historyCards.get(session.session);
+        if (!card) {
+          card = createHistoryCard();
+          historyCards.set(session.session, card);
+        }
+        updateHistoryCard(card, session);
+        box.appendChild(card.row);
+      }
     } catch {
-      $('history').innerHTML = '<div class="empty">Historie konnte nicht geladen werden.</div>';
+      // Einen laufenden Player nicht durch eine Fehlernachricht ersetzen.
+      if (!historyCards.size) {
+        const box = $('history');
+        box.replaceChildren();
+        const error = document.createElement('div');
+        error.className = 'empty';
+        error.textContent = 'Historie konnte nicht geladen werden.';
+        box.appendChild(error);
+      }
+    } finally {
+      historyLoadInFlight = false;
     }
   }
 
@@ -1663,6 +2313,19 @@
 
   // Heartbeat-Ping, damit tote Verbindungen erkannt werden.
   setInterval(() => { wsSend({ type: 'ping' }); }, 25000);
+
+  // Roadmap 5: Lock-Erneuerung deutlich unter der TTL (30 s), damit der Lock
+  // bei stehender Verbindung nie ablaeuft.
+  setInterval(() => { wsSend({ type: 'lock_renew', client_id: CLIENT_ID }); }, 10000);
+
+  // Rolle laden: nur Admins duerfen eine Steuerung uebernehmen.
+  (async () => {
+    try {
+      const me = await (await apiFetch('/me', { cache: 'no-store' })).json();
+      isAdmin = (me.role === 'admin');
+      if (isAdmin && lockMode === 'readonly') $('lockTakeBtn').style.display = 'inline-flex';
+    } catch {}
+  })();
 
   loadHistory();
   setInterval(loadHistory, 15000);

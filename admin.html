@@ -33,6 +33,11 @@
     --brand-on: #fff;
 
     --warn: #f59e0b;
+  
+    /* Abgeleitete Flaechen; der Server ueberschreibt sie themebasiert. */
+    --muted-2: #6b7280;
+    --border-strong: #3a4150;
+    --surface-hover: #1c2029;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text);
@@ -54,13 +59,13 @@
     transition: border-color .15s, color .15s;
     text-decoration: none;
   }
-  .back-btn:hover { border-color: #3a4150; color: var(--text); }
+  .back-btn:hover { border-color: var(--border-strong); color: var(--text); }
   .logout-btn {
     background: none; color: var(--muted); border: 1px solid var(--border);
     border-radius: 8px; padding: 7px 14px; font: inherit; font-size: 14px;
     cursor: pointer; transition: border-color .15s, color .15s;
   }
-  .logout-btn:hover { border-color: #3a4150; color: var(--text); }
+  .logout-btn:hover { border-color: var(--border-strong); color: var(--text); }
   .wrap { max-width: 1080px; margin: 0 auto; padding: 24px;
     display: flex; flex-direction: column; gap: 16px; }
   header { display: flex; align-items: baseline; justify-content: space-between;
@@ -71,7 +76,7 @@
   a.back { color: var(--muted); text-decoration: none; font-size: 15px;
     border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px;
     background: var(--panel2); }
-  a.back:hover { border-color: #3a4150; color: var(--text); }
+  a.back:hover { border-color: var(--border-strong); color: var(--text); }
   .panel { background: var(--panel); border: 1px solid var(--border);
     border-radius: 12px; padding: 16px; }
   /* Aufnahmen-Accordion: einheitlich mit dem Logs-Accordion (.log-guest-*) */
@@ -85,7 +90,7 @@
     padding: 12px 14px; font: inherit;
     transition: background .15s;
   }
-  .room-head:hover { background: #1c2029; }
+  .room-head:hover { background: var(--surface-hover); }
   .room-head:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
   /* Caret: feste Breite, damit die Zeile beim Auf-/Zuklappen nicht springt */
   .room-head .caret { flex: 0 0 auto; width: 14px; color: var(--muted);
@@ -149,9 +154,80 @@
     .overview-card { min-height: 0; }
   }
 
+  /* Roadmap 6: Health & Diagnostics */
+  .diag-state {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 13px; font-weight: 700;
+    border: 1px solid var(--border); border-radius: 999px; padding: 4px 12px;
+  }
+  .diag-state.ok   { border-color: var(--ok); color: var(--ok); }
+  .diag-state.warn { border-color: #f5a524; color: #f5a524; }
+  .diag-state.err  { border-color: #e5484d; color: #e5484d; }
+  .diag-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 10px; margin-top: 14px;
+  }
+  .diag-card {
+    background: var(--panel2); border: 1px solid var(--border);
+    border-radius: 10px; padding: 13px 14px;
+  }
+  .diag-card .k {
+    color: var(--muted); font-size: 11px; letter-spacing: .05em;
+    text-transform: uppercase;
+  }
+  .diag-card .v {
+    color: var(--text); font-size: 21px; font-weight: 700; margin-top: 6px;
+    font-variant-numeric: tabular-nums;
+  }
+  .diag-card .d { color: var(--muted); font-size: 12px; margin-top: 5px; }
+  .diag-card.attention { border-color: #f5a524; }
+  .diag-card.attention .v { color: #f5a524; }
+  .diag-problems {
+    margin-top: 12px; border: 1px solid #f5a524; border-radius: 10px;
+    background: rgba(245,165,36,.07); padding: 11px 14px;
+    font-size: 13px; color: var(--text);
+  }
+  .diag-problems ul { margin: 6px 0 0; padding-left: 20px; color: var(--muted); }
+  .diag-sub { margin-top: 18px; }
+  .diag-sub > .t {
+    font-size: 14px; font-weight: 700; color: var(--text);
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  }
+  .diag-sub > .t .hint { font-weight: 400; font-size: 12px; color: var(--muted); }
+  .diag-table { width: 100%; border-collapse: collapse; margin-top: 9px; font-size: 13px; }
+  .diag-table th {
+    text-align: left; color: var(--muted); font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .05em;
+    padding: 6px 8px; border-bottom: 1px solid var(--border);
+  }
+  .diag-table td {
+    padding: 7px 8px; border-bottom: 1px solid var(--border);
+    color: var(--text); vertical-align: middle;
+  }
+  .diag-table tr:last-child td { border-bottom: none; }
+  .diag-table td.num { font-variant-numeric: tabular-nums; }
+  .diag-log {
+    margin-top: 9px; max-height: 300px; overflow: auto;
+    border: 1px solid var(--border); border-radius: 10px;
+    font-family: JetBrains Mono, ui-monospace, monospace; font-size: 12px;
+  }
+  .diag-log .ln {
+    display: grid; grid-template-columns: 78px 68px 1fr;
+    gap: 10px; padding: 6px 11px; border-top: 1px solid var(--border);
+  }
+  .diag-log .ln:first-child { border-top: none; }
+  .diag-log .ln .t { color: var(--muted); }
+  .diag-log .ln .s { color: var(--muted); }
+  .diag-log .ln.err .s { color: #e5484d; }
+  .diag-log .ln.ok .s  { color: var(--ok); }
+  .diag-log .ln .m { color: var(--text); word-break: break-word; }
+  @media (max-width: 640px) {
+    .diag-log .ln { grid-template-columns: 1fr; gap: 2px; }
+  }
+
   .head-row { display: grid; grid-template-columns: 1.1fr 1.5fr 150px 80px 110px 1fr;
     gap: 12px; padding: 0 6px 6px; font-size: 12px; text-transform: uppercase;
-    letter-spacing: .5px; color: #6b7280; }
+    letter-spacing: .5px; color: var(--muted-2); }
   .head-row > span:last-child { text-align: right; }
   /* --- Settings rows: DEFAULT stays FLEX (avoid global unit spacing regressions) --- */
   .cfg-row {
@@ -163,6 +239,19 @@
     border-bottom: 1px solid var(--border);
   }
   .cfg-row:last-child { border-bottom: none; }
+  /* Schalter fuer die Aufnahme-Schutzmechanismen */
+  .cfg-toggle { display: flex; align-items: center; gap: 10px; }
+  .cfg-toggle input[type="checkbox"] { width: 18px; height: 18px; cursor: pointer; }
+  .cfg-toggle label { cursor: pointer; }
+  /* Clipping-Uebersicht */
+  .clip-guest { border-bottom: 1px solid var(--border); padding: 10px 4px; }
+  .clip-guest:last-child { border-bottom: none; }
+  .clip-guest .head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+  .clip-guest .head b { color: var(--text); font-size: 15px; }
+  .clip-guest .count { color: var(--accent); font-weight: 600; font-size: 13px; }
+  .clip-events { margin-top: 6px; font-size: 13px; color: var(--muted);
+                 display: flex; flex-direction: column; gap: 3px; }
+  .clip-events code { color: var(--text); }
 
   /* Left text block */
   .cfg-row > div:first-child { flex: 1; min-width: 220px; }
@@ -253,7 +342,7 @@
     cursor: pointer;
     transition: border-color .15s, background .15s, opacity .15s;
   }
-  .btn:hover { border-color: #3a4150; background: #1c2029; }
+  .btn:hover { border-color: var(--border-strong); background: var(--surface-hover); }
   .btn:disabled { opacity: .45; cursor: not-allowed; }
   .btn-primary { background: var(--brand); border-color: var(--brand); color: var(--brand-on); }
   .btn-primary:hover { background: var(--brand-hover); border-color: var(--brand-hover); }
@@ -263,7 +352,7 @@
   /* Hover soll sich wie bei .btn (nur eben in Brandfarbe) anfühlen */
   .btn-brand:hover {
     border-color: var(--brand-hover);
-    background: #1c2029;
+    background: var(--surface-hover);
     color: var(--text);
   }
   .btn-ghost { background: transparent; color: var(--muted); }
@@ -312,7 +401,7 @@
   .btn-wide { min-width: 110px; text-align: center; }
   /* NOTE: Aktivieren soll NICHT vom Branding abhängen -> feste Success-Farbe */
   .btn-ok { color: #30a46c; border-color: #30a46c; background: transparent; }
-  .btn-ok:hover { border-color: #3cbf7e; background: #1c2029; }
+  .btn-ok:hover { border-color: #3cbf7e; background: var(--surface-hover); }
 
   /* --- Token-Tabelle (Feature 2) --- */
   .tok-head, .tok-row {
@@ -322,7 +411,7 @@
   }
   .tok-head {
     font-size: 12px; text-transform: uppercase; letter-spacing: .5px;
-    color: #6b7280; padding: 0 4px 8px;
+    color: var(--muted-2); padding: 0 4px 8px;
   }
   .tok-row {
     padding: 10px 4px; font-size: 14px;
@@ -398,6 +487,79 @@
     .tok-row { grid-template-columns: 1fr; gap: 4px; }
     .tok-actions { justify-content: flex-start; }
   }
+
+  /* Aktives Branding-Asset: Vorschau, Dateiname und Groesse auf einen Blick. */
+  .asset-state { display:flex; align-items:center; gap:10px; margin-top:8px; font-size:13px; color:var(--muted); }
+  .asset-state img { width:32px; height:32px; object-fit:contain; background:var(--panel2);
+                     border:1px solid var(--border); border-radius:6px; padding:3px; }
+  .asset-state .asset-name { color:var(--text); font-weight:600; word-break:break-all; }
+  .asset-state .asset-none { font-style:italic; }
+  /* Live-Vorschau des Themes: nutzt eigene Variablen, damit sie das echte
+     Panel nicht beeinflusst, solange nichts gespeichert ist. */
+  .brand-preview {
+    --bp-bg:#0f1115; --bp-panel:#181b22; --bp-border:#2a2f3a;
+    --bp-text:#e8eaed; --bp-muted:#9aa3b2; --bp-brand:#30a46c; --bp-on:#fff;
+    min-width:260px; padding:14px; border-radius:10px;
+    background:var(--bp-bg); border:1px solid var(--bp-border); color:var(--bp-text);
+  }
+  .brand-preview .bp-title { font-weight:700; font-size:15px; }
+  .brand-preview .bp-sub { color:var(--bp-muted); font-size:13px; margin-top:2px; }
+  .brand-preview .bp-row { display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; }
+  .brand-preview .bp-btn {
+    background:var(--bp-brand); color:var(--bp-on); border-radius:8px;
+    padding:7px 12px; font-size:13px; font-weight:600;
+  }
+  .brand-preview .bp-ghost {
+    background:var(--bp-panel); color:var(--bp-text); border:1px solid var(--bp-border);
+    border-radius:8px; padding:7px 12px; font-size:13px;
+  }
+  .contrast-warn{color:var(--warn)}
+  /* Globales Preset: dieselbe Kartenlogik wie bei den Raum-Presets,
+     aber als kompakte Auswahl statt als native Select-Box. */
+  .global-preset-picker { width:100%; min-width:0; }
+  .global-preset-grid { margin-top:0; }
+  .global-preset-card {
+    position:relative;
+    text-align:left;
+    cursor:pointer;
+    color:var(--text);
+    font:inherit;
+    transition:border-color .15s, background .15s, box-shadow .15s, transform .15s;
+  }
+  .global-preset-card:hover { border-color:var(--border-strong); background:var(--surface-hover); }
+  .global-preset-card:focus-visible { outline:2px solid var(--brand); outline-offset:2px; }
+  .global-preset-card[aria-checked="true"] {
+    border-color:var(--brand);
+    box-shadow:0 0 0 2px color-mix(in srgb,var(--brand) 22%,transparent);
+  }
+  .global-preset-card[aria-checked="true"]::after {
+    content:"✓ Aktiv";
+    position:absolute;
+    top:12px;
+    right:12px;
+    color:var(--brand);
+    font-size:12px;
+    font-weight:700;
+  }
+  .global-preset-card .preset-card-actions { align-items:center; }
+  .global-preset-card .preset-card-actions .btn { pointer-events:auto; cursor:pointer; }
+  .preset-select-hidden { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+
+  .preset-library{margin-top:18px;padding-top:18px;border-top:1px solid var(--border)}
+  .preset-library:first-of-type{margin-top:14px}
+  .preset-library-note{max-width:680px}
+  .preset-library-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap}
+  .preset-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(285px,1fr));gap:12px;margin-top:14px}
+  .preset-card{background:var(--panel2);border:1px solid var(--border);border-radius:12px;padding:14px;display:grid;gap:12px}
+  .preset-card-head{display:flex;gap:10px;align-items:center}.preset-logo{width:44px;height:44px;border:1px solid var(--border);border-radius:9px;background:var(--bg);display:grid;place-items:center;overflow:hidden;flex:0 0 auto}.preset-logo img{width:100%;height:100%;object-fit:contain;padding:5px}.preset-logo span{font-weight:800;color:var(--brand)}
+  .preset-card-name{font-weight:700}.preset-card-meta{font-size:12px;color:var(--muted);margin-top:2px}
+  .preset-swatches{display:flex;gap:6px}.preset-swatch{width:24px;height:24px;border-radius:6px;border:1px solid var(--border-strong)}
+  .preset-card-actions{display:flex;gap:8px;flex-wrap:wrap}
+  .preset-editor{display:none;margin-top:14px;padding:16px;border:1px solid var(--border);border-radius:12px;background:var(--panel2)}
+  .preset-editor.open{display:block}.preset-editor-grid{display:grid;grid-template-columns:1.2fr .8fr repeat(4,70px);gap:12px;align-items:end}.preset-editor .field-stack{display:flex;flex-direction:column;gap:6px;color:var(--muted);font-size:12px}.preset-editor input[type="color"]{width:52px;height:42px;padding:3px;border:1px solid var(--border);border-radius:8px;background:var(--panel)}
+  .preset-editor-actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-top:14px}.preset-logo-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:14px;padding-top:14px;border-top:1px solid var(--border)}
+  @media(max-width:900px){.preset-editor-grid{grid-template-columns:1fr 1fr}.preset-grid{grid-template-columns:1fr}}
+  @media (max-width: 720px) { .brand-preview { min-width:0; width:100%; } #brandPreset{width:100%} .preset-editor-grid{grid-template-columns:1fr 1fr} }
 </style>
 <!-- Branding zuletzt: ueberschreibt die :root-Defaults oben. -->
 <!--BRANDING-->
@@ -409,7 +571,7 @@
   <button class="logout-btn" id="logoutBtn">Abmelden</button>
 </div>
 
-<div class="wrap">
+<main class="wrap" id="main-content" tabindex="-1">
   <header>
     <div>
       <h1>Admin</h1>
@@ -465,6 +627,59 @@
           <span class="unit">Tage</span>
         </div>
       </div>
+      <div class="cfg-row">
+        <div>
+          <label for="cfgLocale">Sprache der Oberfläche</label>
+          <div class="desc">Gilt für Host-Studio, Recorder und dieses Panel. Fehlende Texte fallen auf Deutsch zurück.</div>
+        </div>
+        <select id="cfgLocale" style="min-width:180px;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font:inherit">
+          <option value="de">Deutsch</option>
+        </select>
+      </div>
+      <div class="cfg-row">
+        <div>
+          <label>Start nur mit bereitem Gast</label>
+          <div class="desc">Der Host kann erst starten, wenn mindestens ein Gast online ist,
+            das Mikrofon freigegeben hat und Signal liefert.</div>
+        </div>
+        <div class="cfg-toggle">
+          <input type="checkbox" id="cfgRequireOnline" checked>
+          <label for="cfgRequireOnline">Aktiv</label>
+        </div>
+      </div>
+      <div class="cfg-row">
+        <div>
+          <label>Gäste müssen sich aktiv bereit melden</label>
+          <div class="desc">Zusätzlich zur technischen Prüfung bestätigt jeder Gast im Recorder
+            per Klick, dass er bereit ist.</div>
+        </div>
+        <div class="cfg-toggle">
+          <input type="checkbox" id="cfgRequireReady">
+          <label for="cfgRequireReady">Aktiv</label>
+        </div>
+      </div>
+      <div class="cfg-row cfg-row-num">
+        <div>
+          <label>Clipping-Schwelle</label>
+          <div class="desc">Ab diesem Spitzenpegel gilt ein Sample als übersteuert. Niedrigere
+            Werte warnen früher.</div>
+        </div>
+        <div class="num-wrap">
+          <input type="number" id="cfgClipDbfs" min="-12" max="0" step="0.5" value="-1">
+          <span class="unit">dBFS</span>
+        </div>
+      </div>
+      <div class="cfg-row cfg-row-num">
+        <div>
+          <label>Samples bis zur Clipping-Warnung</label>
+          <div class="desc">So viele aufeinanderfolgende Samples müssen über der Schwelle liegen.
+            Höhere Werte unterdrücken Fehlalarme durch einzelne Spitzen.</div>
+        </div>
+        <div class="num-wrap">
+          <input type="number" id="cfgClipSamples" min="1" max="100" value="3">
+          <span class="unit">Samples</span>
+        </div>
+      </div>
       <div style="display:flex;align-items:center;gap:14px;margin-top:14px">
         <button class="btn btn-primary" id="saveCfgBtn">Einstellungen speichern</button>
         <span class="cfg-status" id="cfgStatus"></span>
@@ -485,24 +700,78 @@
                style="width:220px;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font:inherit">
       </div>
       <div class="cfg-row">
-        <div>
-          <label>Primärfarbe</label>
-          <div class="desc">Akzentfarbe für Buttons und Hervorhebungen.</div>
-        </div>
-        <input type="color" id="brandColor" value="#30a46c" class="color-swatch">
+        <div><label id="brandFaviconLabel" data-i18n="admin.favicon">Favicon</label><div class="desc" data-i18n="admin.favicon_help">Gilt für die gesamte Anwendung. Unterstützt werden PNG, SVG, ICO und WebP bis 2 MB.</div><div class="asset-state" id="brandFaviconState" role="status" aria-live="polite"><span class="asset-none">Nichts hochgeladen</span></div></div>
+        <label class="btn file-btn" for="brandFaviconFile"><span data-i18n="admin.choose_file">Datei auswählen</span><input type="file" id="brandFaviconFile" accept="image/png,image/svg+xml,image/x-icon,image/webp" aria-describedby="brandFaviconState"></label>
+        <button class="btn btn-ghost" id="brandFaviconClear" type="button" aria-describedby="brandFaviconLabel" data-i18n="common.remove">Entfernen</button>
       </div>
-      <div class="cfg-row">
-        <div>
-          <label>Favicon</label>
-          <div class="desc">PNG/SVG-Datei (klein). Wird als Data-URL gespeichert.</div>
+      <section class="preset-library" aria-labelledby="globalPresetHeading">
+        <div class="preset-library-head">
+          <div class="preset-library-note">
+            <label id="globalPresetHeading" data-i18n="admin.global_presets">Globale Presets</label>
+            <div class="desc" data-i18n="admin.global_presets_help">Steuern das Erscheinungsbild der Admin- und Host-Oberfläche. Jedes Preset enthält eigene Farben und ein eigenes Logo.</div>
+          </div>
+          <button class="btn btn-brand" id="newGlobalPreset" type="button">＋ Neues Preset</button>
         </div>
-        <span class="btn file-btn" role="button" tabindex="0">Datei auswählen
-          <input type="file" id="brandFaviconFile" accept="image/*">
-        </span>
-        <button class="btn btn-ghost" id="brandFaviconClear">Entfernen</button>
-      </div>
+        <select id="brandPreset" class="preset-select-hidden" aria-labelledby="globalPresetHeading"></select>
+        <div class="preset-grid global-preset-grid" id="globalPresetList" role="radiogroup" aria-labelledby="globalPresetHeading" aria-live="polite">
+          <div class="empty" style="grid-column:1/-1;padding:18px">Lade Presets…</div>
+        </div>
+        <div class="preset-editor" id="globalPresetEditor">
+          <div class="preset-editor-grid">
+            <label class="field-stack"><span>Anzeigename</span><input type="text" id="globalPresetName" maxlength="60" placeholder="z. B. Rheinische Post"></label>
+            <label class="field-stack"><span>Hintergrund</span><select id="globalPresetAppearance"><option value="dark">Dunkel</option><option value="light">Hell</option></select></label>
+            <label class="field-stack"><span>Akzent</span><input type="color" id="brandColor" value="#30a46c"></label>
+            <label class="field-stack"><span>Fläche</span><input type="color" id="brandBg" value="#0f1115"></label>
+            <label class="field-stack"><span>Text</span><input type="color" id="brandText" value="#e8eaed"></label>
+            <label class="field-stack"><span>Buttontext</span><input type="color" id="brandOnBrand" value="#ffffff"></label>
+          </div>
+          <div class="preset-logo-tools">
+            <div style="flex:1;min-width:220px">
+              <label id="brandLogoLabel">Logo dieses Presets</label>
+              <div class="desc">Eine Logo-Variante, passend zu den Farben dieses Presets. PNG, SVG oder WebP, bis 2 MB.</div>
+              <div class="asset-state" id="brandLogoState" role="status" aria-live="polite"><span class="asset-none">Nichts hochgeladen</span></div>
+            </div>
+            <label class="btn file-btn" for="brandLogoFile">Logo auswählen<input type="file" id="brandLogoFile" accept="image/png,image/jpeg,image/svg+xml,image/webp" aria-describedby="brandLogoState"></label>
+            <button class="btn btn-ghost" id="brandLogoClear" type="button" aria-describedby="brandLogoLabel">Entfernen</button>
+          </div>
+          <div class="cfg-row" style="margin-top:14px">
+            <div><label>Vorschau</label><div class="desc">Zeigt Farben und Kontrast vor dem Speichern.</div><div class="asset-state" id="brandContrast" role="status" aria-live="polite"></div></div>
+            <div class="brand-preview" id="brandPreview"><div class="bp-title">Podcast Studio</div><div class="bp-sub">Verbundene Gäste</div><div class="bp-row"><span class="bp-btn">Aufnahme starten</span><span class="bp-ghost">Abbrechen</span></div></div>
+          </div>
+          <div class="preset-editor-actions">
+            <button class="btn btn-primary" id="saveBrandBtn" type="button">Preset speichern</button>
+            <button class="btn btn-ghost" id="cancelGlobalPreset" type="button">Abbrechen</button>
+            <button class="btn btn-danger" id="deleteGlobalPreset" type="button">Preset löschen</button>
+          </div>
+        </div>
+      </section>
+      <section class="preset-library" aria-labelledby="roomPresetHeading">
+        <div class="preset-library-head">
+          <div>
+            <label id="roomPresetHeading" data-i18n="admin.room_branding_presets">Branding-Presets für Räume</label>
+            <div class="desc" data-i18n="admin.room_branding_presets_help">Hier bereitest du wiederverwendbare Markenauftritte vor. Der Host weist sie beim Erstellen eines Raums zu.</div>
+          </div>
+          <button class="btn btn-brand" id="newRoomPreset" type="button">＋ Neues Preset</button>
+        </div>
+        <div class="preset-grid" id="roomPresetList" aria-live="polite"></div>
+        <div class="preset-editor" id="roomPresetEditor">
+          <div class="preset-editor-grid">
+            <label class="field-stack"><span>Anzeigename</span><input type="text" id="presetName" maxlength="60" placeholder="z. B. Rheinische Post"></label>
+            <label class="field-stack"><span>Hintergrund</span><select id="presetAppearance"><option value="dark">Dunkel</option><option value="light">Hell</option></select></label>
+            <label class="field-stack"><span>Akzent</span><input type="color" id="presetColor" value="#30a46c"></label>
+            <label class="field-stack"><span>Fläche</span><input type="color" id="presetBg" value="#0f1115"></label>
+            <label class="field-stack"><span>Text</span><input type="color" id="presetText" value="#e8eaed"></label>
+            <label class="field-stack"><span>Buttontext</span><input type="color" id="presetOn" value="#ffffff"></label>
+          </div>
+          <div class="preset-logo-tools">
+            <div style="flex:1;min-width:220px"><label>Logo dieses Presets</label><div class="desc">Genau eine Variante, passend zum gewählten hellen oder dunklen Hintergrund.</div><div class="asset-state" id="presetLogoState"><span class="asset-none">Nichts hochgeladen</span></div></div>
+            <label class="btn file-btn" for="presetLogoFile">Logo auswählen<input type="file" id="presetLogoFile" accept="image/png,image/jpeg,image/svg+xml,image/webp"></label>
+            <button class="btn btn-ghost" id="presetLogoClear" type="button">Entfernen</button>
+          </div>
+          <div class="preset-editor-actions"><button class="btn btn-primary" id="saveRoomPreset" type="button">Preset speichern</button><button class="btn btn-ghost" id="cancelRoomPreset" type="button">Abbrechen</button><button class="btn btn-danger" id="deleteRoomPreset" type="button">Preset löschen</button></div>
+        </div>
+      </section>
       <div style="display:flex;align-items:center;gap:14px;margin-top:14px">
-        <button class="btn btn-primary" id="saveBrandBtn">Branding speichern</button>
         <span class="cfg-status" id="brandStatus"></span>
       </div>
     </div>
@@ -535,13 +804,31 @@
     </div>
   </div>
 
+  <!-- Health & Diagnostics (Roadmap 6) -->
+  <div class="panel" id="diagPanel">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
+      <div>
+        <b style="font-size:16px">Zustand &amp; Diagnose</b>
+        <p class="sub" style="margin:4px 0 0">Echtzeitbild der Instanz: Verbindungen, Laufzeit, Rückstand und Fehler.</p>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <span class="diag-state" id="diagState">Wird geladen</span>
+        <label class="check" style="font-size:13px">
+          <input type="checkbox" id="diagAuto" checked> <span>Automatisch aktualisieren</span>
+        </label>
+        <button class="btn btn-ghost" id="refreshDiagBtn">↻ Aktualisieren</button>
+      </div>
+    </div>
+    <div id="diagBox" style="margin-top:12px;font-size:14px;color:var(--muted)">Lade Diagnose…</div>
+  </div>
+
   <!-- Raum-Management (Feature 6) -->
   <div class="panel">
     <div style="display:flex;justify-content:space-between;align-items:center">
       <b style="font-size:16px">Raum-Management</b>
       <button class="btn btn-ghost" id="refreshRoomsBtn">↻ Aktualisieren</button>
     </div>
-    <div id="roomsBox" style="margin-top:12px;font-size:14px;color:var(--muted)">Lade…</div>
+    <div id="roomsBox" role="region" aria-label="Räume" aria-live="polite" style="margin-top:12px;font-size:14px;color:var(--muted)">Lade…</div>
   </div>
 
   <!-- Gast-Link-Token-Übersicht (Feature 2) -->
@@ -567,16 +854,31 @@
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
       <div>
         <b style="font-size:16px">Aufnahmen</b>
-        <p class="sub" style="margin:4px 0 0">Nach Sessions gruppiert: MP3-Mixdown, Session-ZIP und einzelne Gast-WAVs.</p>
+        <p class="sub" style="margin:4px 0 0" data-i18n="admin.recording_help">Nach Sessions gruppiert: MP3-Mixdown, Session-ZIP und einzelne Gastspuren als WAV.</p>
       </div>
       <button class="btn btn-ghost" id="refreshSessionsBtn">↻ Aktualisieren</button>
     </div>
-    <div id="sessionsBox" style="margin-top:12px;font-size:14px;color:var(--muted)">Lade Aufnahmen…</div>
+    <div id="sessionsBox" role="region" aria-label="Aufnahmen" aria-live="polite" style="margin-top:12px;font-size:14px;color:var(--muted)">Lade Aufnahmen…</div>
+  </div>
+</div>
+
+<!-- Modal: Clipping-Ereignisse eines Raums -->
+<div id="clipModalBg" role="dialog" aria-modal="true" aria-labelledby="clipModalTitle" style="position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;padding:20px;z-index:100">
+  <div style="background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:22px;max-width:760px;width:100%;max-height:80vh;overflow:auto">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <b id="clipModalTitle" style="font-size:16px">Clipping</b>
+      <button id="clipModalClose" style="background:none;border:1px solid var(--border);color:var(--muted);border-radius:8px;padding:6px 12px;cursor:pointer">Schließen</button>
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:10px">
+      Übersteuerte Passagen je Gast, gebunden an die jeweilige Aufnahme-Session.
+      Aufbewahrung wie bei den Gast-Logs.
+    </div>
+    <div id="clipModalBody" style="font-size:14px;color:var(--muted);max-height:62vh;overflow:auto"></div>
   </div>
 </div>
 
 <!-- Modal: Gast-Logs eines Raums (Feature 6) -->
-<div id="logModalBg" style="position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;padding:20px;z-index:100">
+<div id="logModalBg" role="dialog" aria-modal="true" aria-labelledby="logModalTitle" style="position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;padding:20px;z-index:100">
   <div style="background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:22px;max-width:760px;width:100%;max-height:80vh;overflow:auto">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
       <b id="logModalTitle" style="font-size:16px">Gast-Logs</b>
@@ -595,7 +897,7 @@
   const $ = id => document.getElementById(id);
   const esc = s => String(s).replace(/[&<>"']/g, c =>
     ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  const fmtDate = ts => new Date((ts||0)*1000).toLocaleDateString('de-DE',
+  const fmtDate = ts => new Date((ts||0)*1000).toLocaleDateString((window.OpenPodcastI18n?.locale || document.documentElement.lang || 'de'),
     { year:'numeric', month:'2-digit', day:'2-digit' });
 
   async function apiFetch(url, opts = {}) {
@@ -631,6 +933,24 @@
   }
 
   // ── Globale Einstellungen ────────────────────────────────────────────────
+  // Die Sprachliste kommt vom Server: jede Datei in locale/ ist waehlbar.
+  let initialLocale = 'de';
+
+  async function loadLocales() {
+    try {
+      const data = await (await fetch('/locales', { cache: 'no-store' })).json();
+      const sel = $('cfgLocale');
+      if (!data.ok || !sel) return;
+      sel.innerHTML = '';
+      for (const l of data.locales) {
+        const opt = document.createElement('option');
+        opt.value = l.code;
+        opt.textContent = l.native_name || l.name || l.code;
+        sel.appendChild(opt);
+      }
+    } catch {}
+  }
+
   async function loadConfig() {
     try {
       const res  = await apiFetch(`${SERVER}/admin/config`, { cache: 'no-store' });
@@ -640,9 +960,13 @@
       $('cfgRecDays').value    = cfg.recording_days ?? 30;
       $('cfgChunkHours').value = cfg.chunk_hours ?? 72;
       $('cfgLogDays').value    = cfg.log_days ?? 14;
+      $('cfgRequireOnline').checked = cfg.require_guest_online !== false;
+      $('cfgRequireReady').checked  = !!cfg.require_guest_ready;
+      $('cfgClipDbfs').value    = cfg.clip_threshold_dbfs ?? -1;
+      $('cfgClipSamples').value = cfg.clip_min_samples ?? 3;
       $('brandName').value     = cfg.brand_name || '';
+      if (cfg.locale) { initialLocale = cfg.locale; $('cfgLocale').value = cfg.locale; }
       if (cfg.brand_color) $('brandColor').value = cfg.brand_color;
-      brandFaviconData = cfg.brand_favicon || '';
     } catch (err) {
       if (err.message !== 'Nicht authentifiziert') flash($('cfgStatus'), 'Fehler: ' + err.message, false);
     }
@@ -656,44 +980,382 @@
         recording_days: +$('cfgRecDays').value,
         chunk_hours:    +$('cfgChunkHours').value,
         log_days:       +$('cfgLogDays').value,
+        require_guest_online: $('cfgRequireOnline').checked,
+        require_guest_ready:  $('cfgRequireReady').checked,
+        clip_threshold_dbfs:  +$('cfgClipDbfs').value,
+        clip_min_samples:     +$('cfgClipSamples').value,
+        locale:               $('cfgLocale').value,
       };
       const res = await apiFetch(`${SERVER}/admin/config`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error('HTTP ' + res.status);
-      flash($('cfgStatus'), '✔ Gespeichert.');
+      // Die Sprache wirkt erst nach einem Neuaufbau der Seite vollstaendig:
+      // serverseitig gerenderte Titel und der Bootstrap haengen daran.
+      const localeChanged = body.locale !== initialLocale;
+      flash($('cfgStatus'), localeChanged ? '✔ Gespeichert. Seite wird neu geladen…' : '✔ Gespeichert.');
+      if (localeChanged) setTimeout(() => location.reload(), 700);
     } catch (err) { flash($('cfgStatus'), 'Fehler: ' + err.message, false); }
   });
 
   // ── Branding ─────────────────────────────────────────────────────────────
-  let brandFaviconData = '';
-  $('brandFaviconFile').addEventListener('change', (e) => {
-    const file = e.target.files && e.target.files[0];
-    if (!file) return;
-    const r = new FileReader();
-    r.onload = () => { brandFaviconData = r.result; flash($('brandStatus'), 'Favicon geladen — jetzt speichern.'); };
-    r.readAsDataURL(file);
-  });
-  $('brandFaviconClear').addEventListener('click', () => {
-    brandFaviconData = ''; $('brandFaviconFile').value = '';
-    flash($('brandStatus'), 'Favicon entfernt — jetzt speichern.');
-  });
-  $('saveBrandBtn').addEventListener('click', async () => {
-    flash($('brandStatus'), 'Speichere…');
+  // Punkt 7: Logo und Favicon sind verwaltete Dateien. Sie werden sofort
+  // hochgeladen (nicht erst beim Speichern des Brandings), damit der Admin
+  // direkt sieht, was aktiv ist -- Data-URLs in config.json entfallen.
+  const ASSET_LABELS = { logo: 'Preset-Logo', favicon: 'Favicon' };
+  const ASSET_BOXES = { logo: 'brandLogoState', favicon: 'brandFaviconState' };
+  const ASSET_INPUTS = { logo: 'brandLogoFile', favicon: 'brandFaviconFile' };
+  const ASSET_CLEARS = { logo: 'brandLogoClear', favicon: 'brandFaviconClear' };
+
+  function renderAssetState(kind, asset) {
+    const box = $(ASSET_BOXES[kind]);
+    if (!box) return;
+    if (!asset) {
+      box.innerHTML = '<span class="asset-none">Nichts hochgeladen</span>';
+      return;
+    }
+    const kb = Math.max(1, Math.round((asset.size || 0) / 1024));
+    const when = asset.updated_at ? new Date(asset.updated_at * 1000).toLocaleString() : '';
+    box.innerHTML = `<img src="${esc(asset.url)}" alt="Vorschau: aktives ${esc(ASSET_LABELS[kind])}">
+      <span><span class="asset-name">${esc(asset.name || asset.file)}</span>
+      · ${kb} KB · ${esc(asset.mime || '')}${when ? ' · ' + esc(when) : ''}</span>`;
+  }
+
+  async function refreshBrandingAssets() {
     try {
-      const body = {
-        brand_name:    $('brandName').value,
-        brand_color:   $('brandColor').value,
-        brand_favicon: brandFaviconData,
-      };
-      const res = await apiFetch(`${SERVER}/admin/config`, {
+      const b = await (await fetch('/branding', { cache: 'no-store' })).json();
+      const assets = b.assets || {};
+      const editing = globalPresets.find(p => p.key === editingGlobalPresetKey);
+      renderAssetState('logo', editing && editing.logo
+        ? {url:editing.logo,name:'Preset-Logo',size:0,mime:''} : null);
+      renderAssetState('favicon', assets.favicon);
+      if (b.name) document.title = 'Admin · ' + b.name;
+      applyFavicon(b.favicon);
+    } catch {}
+  }
+
+  function applyFavicon(href) {
+    if (!href) return;
+    let link = document.querySelector('link[rel="icon"]');
+    if (!link) { link = document.createElement('link'); link.rel = 'icon'; document.head.appendChild(link); }
+    link.href = href;
+  }
+
+  async function uploadAsset(kind, file) {
+    const body = new FormData();
+    body.append('file', file);
+    if (kind === 'logo' && !editingGlobalPresetKey) throw new Error('Preset zuerst speichern');
+    const endpoint = kind === 'logo'
+      ? `${SERVER}/admin/branding/global-preset/${encodeURIComponent(editingGlobalPresetKey)}/logo`
+      : `${SERVER}/admin/branding/${kind}`;
+    const res = await apiFetch(endpoint, { method: 'POST', body });
+    if (!res.ok) {
+      let detail = 'HTTP ' + res.status;
+      try { detail = (await res.json()).detail || detail; } catch {}
+      throw new Error(detail);
+    }
+    return (await res.json()).asset;
+  }
+
+  for (const kind of ['logo', 'favicon']) {
+    const inputId = ASSET_INPUTS[kind];
+    const clearId = ASSET_CLEARS[kind];
+    $(inputId).addEventListener('change', async (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      flash($('brandStatus'), `${ASSET_LABELS[kind]} wird hochgeladen…`);
+      try {
+        const asset = await uploadAsset(kind, file);
+        renderAssetState(kind, asset);
+        if (kind === 'logo') await loadPresets();
+        if (kind === 'favicon') applyFavicon(asset.url);
+        flash($('brandStatus'), `${ASSET_LABELS[kind]} gespeichert.`);
+      } catch (err) {
+        flash($('brandStatus'), `${ASSET_LABELS[kind]}-Upload fehlgeschlagen: ${err.message}`);
+      } finally {
+        e.target.value = '';
+      }
+    });
+    $(clearId).addEventListener('click', async () => {
+      try {
+        if (kind === 'logo' && !editingGlobalPresetKey) throw new Error('Kein Preset ausgewählt');
+        const endpoint = kind === 'logo'
+          ? `${SERVER}/admin/branding/global-preset/${encodeURIComponent(editingGlobalPresetKey)}/logo`
+          : `${SERVER}/admin/branding/${kind}`;
+        const res = await apiFetch(endpoint, { method: 'DELETE' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        renderAssetState(kind, null);
+        flash($('brandStatus'), `${ASSET_LABELS[kind]} entfernt.`);
+      } catch (err) {
+        flash($('brandStatus'), `Fehler: ${err.message}`);
+      }
+    });
+  }
+
+  // ── Theme-Presets, Overrides und Live-Vorschau ───────────────────────────
+  // Die Vorschau rechnet nicht selbst: sie fragt denselben Server-Endpunkt,
+  // der spaeter auch die echten Seiten faerbt. So kann Vorschau und Ergebnis
+  // nicht auseinanderlaufen.
+  const overrides = { bg: '', text: '', onBrand: '' };
+  let presetDefaults = {};
+  let previewTimer = null;
+
+  function setPreview(theme) {
+    const box = $('brandPreview');
+    if (!box || !theme) return;
+    box.style.setProperty('--bp-bg', theme.bg);
+    box.style.setProperty('--bp-panel', theme.panel);
+    box.style.setProperty('--bp-border', theme.border);
+    box.style.setProperty('--bp-text', theme.text);
+    box.style.setProperty('--bp-muted', theme.muted);
+    box.style.setProperty('--bp-brand', theme.brand);
+    box.style.setProperty('--bp-on', theme.brand_on);
+
+    // Berechnete Werte duerfen manuelle Auswahl nicht ueberschreiben.
+    if (!overrides.bg) $('brandBg').value = theme.bg;
+    if (!overrides.text) $('brandText').value = theme.text;
+    if (!overrides.onBrand) $('brandOnBrand').value = theme.brand_on;
+
+    const info = $('brandContrast');
+    if (!info) return;
+    const warn = theme.contrast_text_bg < 4.5 || theme.contrast_on_brand < 4.5;
+    const parts = [
+      `Text auf Hintergrund ${theme.contrast_text_bg}:1`,
+      `Buttontext ${theme.contrast_on_brand}:1`,
+    ];
+    if (theme.brand_on_warning) parts.push('Warnung: manuelle Buttontextfarbe hat zu wenig Kontrast');
+    info.textContent = parts.join(' · ');
+    info.classList.toggle('contrast-warn', warn);
+  }
+
+  async function refreshPreview() {
+    try {
+      const res = await apiFetch(`${SERVER}/admin/branding/theme/preview`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        body: JSON.stringify({
+          brand_preset:   $('brandPreset').value,
+          brand_color:    $('brandColor').value,
+          brand_bg:       overrides.bg,
+          brand_text:     overrides.text,
+          brand_on_brand: overrides.onBrand,
+        }),
+      });
+      if (!res.ok) return;
+      setPreview((await res.json()).theme);
+    } catch {}
+  }
+
+  function queuePreview() {
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(refreshPreview, 120);
+  }
+
+  function globalPresetAppearance(p) {
+    const hex = String(p && p.bg || '').replace('#', '');
+    if (hex.length !== 6) return 'Dunkles';
+    const rgb = [0, 2, 4].map(i => parseInt(hex.slice(i, i + 2), 16) / 255);
+    const lum = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+    return lum > 0.55 ? 'Helles' : 'Dunkles';
+  }
+
+  let globalPresets = [];
+  let editingGlobalPresetKey = '';
+
+  function renderGlobalPresets(presets, selectedKey) {
+    const box = $('globalPresetList');
+    if (!box) return;
+    if (!presets.length) {
+      box.innerHTML = '<div class="empty" style="grid-column:1/-1;padding:18px">Noch keine globalen Presets.</div>';
+      return;
+    }
+    box.innerHTML = presets.map(p => {
+      const selected = p.key === selectedKey;
+      const appearance = globalPresetAppearance(p);
+      const logo = p.logo
+        ? `<img src="${esc(p.logo)}" alt="Logo ${esc(p.label)}">`
+        : `<span>${esc(presetInitials(p.label))}</span>`;
+      return `<article class="preset-card global-preset-card" role="radio" tabindex="${selected ? 0 : -1}"
+        aria-checked="${selected ? 'true' : 'false'}" data-global-preset="${esc(p.key)}">
+        <div class="preset-card-head"><div class="preset-logo">${logo}</div>
+          <div><div class="preset-card-name">${esc(p.label)}</div>
+            <div class="preset-card-meta">${appearance} globales Theme${p.builtin ? ' · Standard' : ''}</div></div>
+        </div>
+        <div class="preset-swatches" aria-label="Farben">
+          <span class="preset-swatch" style="background:${esc(p.bg)}"></span>
+          <span class="preset-swatch" style="background:${esc(p.text)}"></span>
+          <span class="preset-swatch" style="background:${esc(p.brand)}"></span>
+        </div>
+        <div class="preset-card-actions">
+          <button class="btn ${selected ? 'btn-primary' : ''}" type="button" data-select-global="${esc(p.key)}">${selected ? 'Aktiv' : 'Auswählen'}</button>
+          ${p.builtin
+            ? `<button class="btn" type="button" data-duplicate-global="${esc(p.key)}">Duplizieren</button>`
+            : `<button class="btn" type="button" data-edit-global="${esc(p.key)}">Bearbeiten</button>`}
+        </div>
+      </article>`;
+    }).join('');
+  }
+
+  function updateGlobalPresetSelection(key) {
+    const box = $('globalPresetList');
+    if (!box) return;
+    box.querySelectorAll('[data-global-preset]').forEach(card => {
+      const selected = card.dataset.globalPreset === key;
+      card.setAttribute('aria-checked', selected ? 'true' : 'false');
+      card.setAttribute('tabindex', selected ? '0' : '-1');
+      const action = card.querySelector('.preset-card-actions .btn');
+      if (action) {
+        action.textContent = selected ? 'Aktiv' : 'Auswählen';
+        action.classList.toggle('btn-primary', selected);
+      }
+    });
+  }
+
+  async function loadPresets() {
+    try {
+      const b = await (await fetch('/branding', { cache: 'no-store' })).json();
+      const presets = b.presets || [];
+      globalPresets = presets;
+      const sel = $('brandPreset');
+      sel.innerHTML = '';
+      for (const p of presets) {
+        presetDefaults[p.key] = p;
+        const opt = document.createElement('option');
+        opt.value = p.key;
+        opt.textContent = `${p.label} (v${p.version})`;
+        sel.appendChild(opt);
+      }
+      const theme = b.theme || {};
+      $('brandName').value = b.name || 'Podcast Studio';
+      sel.value = theme.preset_key || 'default';
+      renderGlobalPresets(presets, sel.value);
+      overrides.bg = theme.bg_manual ? (theme.bg || '') : '';
+      overrides.text = theme.text_manual ? (theme.text || '') : '';
+      overrides.onBrand = theme.brand_on_manual ? (theme.brand_on_requested || '') : '';
+      roomPresets = Array.isArray(b.room_presets) ? b.room_presets : [];
+      renderRoomPresets();
+      setPreview(theme);
+    } catch {}
+  }
+
+  function applyThemeToPage(theme) {
+    if (!theme) return;
+    const root = document.documentElement;
+    const vars = {
+      '--bg': theme.bg, '--panel': theme.panel, '--panel2': theme.panel2,
+      '--border': theme.border, '--text': theme.text, '--muted': theme.muted,
+      '--muted-2': theme.muted_2, '--border-strong': theme.border_strong,
+      '--surface-hover': theme.surface_hover, '--brand': theme.brand,
+      '--brand-hover': theme.brand_hover, '--brand-on': theme.brand_on,
+    };
+    for (const [name, value] of Object.entries(vars)) {
+      if (value) root.style.setProperty(name, value);
+    }
+    setPreview(theme);
+  }
+
+  async function applyGlobalPresetChange() {
+    // Auswahl speichern und das bereits gerenderte Admin-Panel sofort mit den
+    // vom Server berechneten Tokens aktualisieren; ein Reload ist nicht nötig.
+    const key = $('brandPreset').value;
+    updateGlobalPresetSelection(key);
+    overrides.bg = ''; overrides.text = ''; overrides.onBrand = '';
+    try {
+      const res = await apiFetch(`${SERVER}/admin/config`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({brand_preset:key,reset_brand_overrides:true}),
       });
       if (!res.ok) throw new Error('HTTP ' + res.status);
-      flash($('brandStatus'), '✔ Branding gespeichert.');
-    } catch (err) { flash($('brandStatus'), 'Fehler: ' + err.message, false); }
+      const saved = await res.json();
+      applyThemeToPage(saved.theme);
+      await loadPresets();
+      await refreshBrandingAssets();
+      return saved;
+    } catch (err) {
+      flash($('brandStatus'), 'Preset konnte nicht gewechselt werden: '+err.message, false);
+      return null;
+    }
+  }
+
+  function editableGlobalPresets(){return globalPresets.filter(p=>!p.builtin).map(p=>({key:p.key,label:p.label,version:p.version||1,appearance:globalPresetAppearance(p)==='Helles'?'light':'dark',brand:p.brand,bg:p.bg,text:p.text,on_brand:p.on_brand||'#ffffff'}));}
+  function openGlobalPresetEditor(p){
+    editingGlobalPresetKey=p&&p.key||'';
+    $('globalPresetName').value=p&&p.label||'';
+    $('globalPresetAppearance').value=p&&globalPresetAppearance(p)==='Helles'?'light':'dark';
+    $('brandColor').value=p&&p.brand||'#30a46c';$('brandBg').value=p&&p.bg||'#0f1115';$('brandText').value=p&&p.text||'#e8eaed';$('brandOnBrand').value=p&&p.on_brand||'#ffffff';
+    $('deleteGlobalPreset').style.display=p&&!p.builtin?'inline-flex':'none';
+    $('brandLogoFile').disabled=!editingGlobalPresetKey;
+    $('brandLogoClear').disabled=!editingGlobalPresetKey;
+    $('globalPresetEditor').classList.add('open');
+    renderAssetState('logo',p&&p.logo?{url:p.logo,name:'Preset-Logo',size:0,mime:''}:null);
+    overrides.bg=$('brandBg').value;overrides.text=$('brandText').value;overrides.onBrand=$('brandOnBrand').value;queuePreview();$('globalPresetName').focus();
+  }
+  function closeGlobalPresetEditor(){$('globalPresetEditor').classList.remove('open');editingGlobalPresetKey='';}
+  async function persistGlobalPresets(list,message){const res=await apiFetch(`${SERVER}/admin/config`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({global_presets:list,brand_name:$('brandName').value.trim()||'Podcast Studio'})});if(!res.ok)throw new Error('HTTP '+res.status);await loadPresets();flash($('brandStatus'),message);}
+  $('newGlobalPreset').addEventListener('click',()=>openGlobalPresetEditor(null));
+  $('cancelGlobalPreset').addEventListener('click',closeGlobalPresetEditor);
+  $('globalPresetAppearance').addEventListener('change',e=>{if(e.target.value==='light'){$('brandBg').value='#f6f7f9';$('brandText').value='#15171b';}else{$('brandBg').value='#0f1115';$('brandText').value='#e8eaed';}overrides.bg=$('brandBg').value;overrides.text=$('brandText').value;queuePreview();});
+  $('brandPreset').addEventListener('change', applyGlobalPresetChange);
+  $('globalPresetList').addEventListener('click', e => {
+    const select=e.target.closest('[data-select-global]');
+    const edit=e.target.closest('[data-edit-global]');
+    const duplicate=e.target.closest('[data-duplicate-global]');
+    if(select){$('brandPreset').value=select.dataset.selectGlobal;applyGlobalPresetChange();return;}
+    if(edit){openGlobalPresetEditor(globalPresets.find(p=>p.key===edit.dataset.editGlobal));return;}
+    if(duplicate){
+      const source=globalPresets.find(p=>p.key===duplicate.dataset.duplicateGlobal);
+      openGlobalPresetEditor(source?{...source,key:'',label:source.label+' Kopie'}:null);
+    }
+  });
+  $('globalPresetList').addEventListener('keydown', e => {const card=e.target.closest('[data-global-preset]');if(!card||!['Enter',' '].includes(e.key)||e.target.closest('button'))return;e.preventDefault();$('brandPreset').value=card.dataset.globalPreset;applyGlobalPresetChange();});
+  $('brandColor').addEventListener('input', queuePreview);
+  $('brandBg').addEventListener('input', e=>{overrides.bg=e.target.value;queuePreview();});
+  $('brandText').addEventListener('input', e=>{overrides.text=e.target.value;queuePreview();});
+  $('brandOnBrand').addEventListener('input', e=>{overrides.onBrand=e.target.value;queuePreview();});
+  $('deleteGlobalPreset').addEventListener('click',async()=>{if(!editingGlobalPresetKey||!confirm('Dieses globale Preset löschen?'))return;try{await persistGlobalPresets(editableGlobalPresets().filter(p=>p.key!==editingGlobalPresetKey),'✔ Globales Preset gelöscht.');closeGlobalPresetEditor();}catch(err){flash($('brandStatus'),'Fehler: '+err.message,false);}});
+
+  // ── Wiederverwendbare Raum-Presets ───────────────────────────────────────
+  let roomPresets = [];
+  let editingPresetId = '';
+  function presetInitials(name){return String(name||'P').trim().split(/\s+/).slice(0,2).map(x=>x[0]).join('').toUpperCase();}
+  function renderRoomPresets(){
+    const box=$('roomPresetList');
+    if(!roomPresets.length){box.innerHTML='<div class="empty" style="grid-column:1/-1;padding:24px">Noch keine Raum-Presets. Lege eine Marke an, die Hosts beim Erstellen auswählen können.</div>';return;}
+    box.innerHTML=roomPresets.map(p=>`<article class="preset-card"><div class="preset-card-head"><div class="preset-logo">${p.logo?`<img src="${esc(p.logo)}" alt="Logo ${esc(p.name)}">`:`<span>${esc(presetInitials(p.name))}</span>`}</div><div><div class="preset-card-name">${esc(p.name)}</div><div class="preset-card-meta">${p.appearance==='light'?'Helles':'Dunkles'} Gast-Theme</div></div></div><div class="preset-swatches" aria-label="Farben"><span class="preset-swatch" style="background:${esc(p.bg)}"></span><span class="preset-swatch" style="background:${esc(p.text)}"></span><span class="preset-swatch" style="background:${esc(p.brand_color)}"></span></div><div class="preset-card-actions"><button class="btn" type="button" data-edit-preset="${esc(p.id)}">Bearbeiten</button></div></article>`).join('');
+  }
+  function openPresetEditor(p){
+    editingPresetId=p&&p.id||'';
+    $('presetName').value=p&&p.name||'';$('presetAppearance').value=p&&p.appearance||'dark';$('presetColor').value=p&&p.brand_color||'#30a46c';$('presetBg').value=p&&p.bg||'#0f1115';$('presetText').value=p&&p.text||'#e8eaed';$('presetOn').value=p&&p.on_brand||'#ffffff';
+    $('deleteRoomPreset').style.display=editingPresetId?'inline-flex':'none';$('presetLogoFile').disabled=!editingPresetId;$('presetLogoClear').disabled=!editingPresetId;
+    renderPresetLogo(p);$('roomPresetEditor').classList.add('open');$('presetName').focus();
+  }
+  function closePresetEditor(){$('roomPresetEditor').classList.remove('open');editingPresetId='';}
+  function renderPresetLogo(p){const box=$('presetLogoState');box.innerHTML=p&&p.logo?`<img src="${esc(p.logo)}" alt="Aktives Preset-Logo"><span><span class="asset-name">Logo aktiv</span></span>`:'<span class="asset-none">Nichts hochgeladen</span>';}
+  async function persistPresets(message){const res=await apiFetch(`${SERVER}/admin/config`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({branding_presets:roomPresets})});if(!res.ok)throw new Error('HTTP '+res.status);const data=await res.json();roomPresets=(data.config&&data.config.branding_presets)||[];await loadPresets();renderRoomPresets();flash($('brandStatus'),message);}
+  $('newRoomPreset').addEventListener('click',()=>openPresetEditor(null));$('cancelRoomPreset').addEventListener('click',closePresetEditor);
+  $('roomPresetList').addEventListener('click',e=>{const b=e.target.closest('[data-edit-preset]');if(b)openPresetEditor(roomPresets.find(p=>p.id===b.dataset.editPreset));});
+  $('presetAppearance').addEventListener('change',e=>{if(e.target.value==='light'){$('presetBg').value='#f6f7f9';$('presetText').value='#15171b';}else{$('presetBg').value='#0f1115';$('presetText').value='#e8eaed';}});
+  $('saveRoomPreset').addEventListener('click',async()=>{const name=$('presetName').value.trim();if(!name){flash($('brandStatus'),'Bitte einen Anzeigenamen für das Preset eingeben.',false);return;}const wasNew=!editingPresetId;const id=editingPresetId||('preset-'+Date.now().toString(36));const previous=roomPresets.find(p=>p.id===id)||{};const next={...previous,id,name,appearance:$('presetAppearance').value,brand_color:$('presetColor').value,bg:$('presetBg').value,text:$('presetText').value,on_brand:$('presetOn').value};roomPresets=roomPresets.filter(p=>p.id!==id).concat(next);editingPresetId=id;try{await persistPresets('✔ Raum-Preset gespeichert.');if(wasNew){const saved=roomPresets.find(p=>p.id===id)||next;openPresetEditor(saved);flash($('brandStatus'),'✔ Preset angelegt. Du kannst jetzt das Logo hochladen.');}else closePresetEditor();}catch(err){flash($('brandStatus'),'Fehler: '+err.message,false);}});
+  $('deleteRoomPreset').addEventListener('click',async()=>{if(!editingPresetId||!confirm('Dieses Preset löschen? Bestehende Zuordnungen fallen auf das globale Branding zurück.'))return;roomPresets=roomPresets.filter(p=>p.id!==editingPresetId);try{await persistPresets('✔ Raum-Preset gelöscht.');closePresetEditor();}catch(err){flash($('brandStatus'),'Fehler: '+err.message,false);}});
+  $('presetLogoFile').addEventListener('change',async e=>{const file=e.target.files&&e.target.files[0];if(!file||!editingPresetId)return;const body=new FormData();body.append('file',file);try{const res=await apiFetch(`${SERVER}/admin/branding/preset/${editingPresetId}/logo`,{method:'POST',body});if(!res.ok)throw new Error('HTTP '+res.status);await loadPresets();const p=roomPresets.find(x=>x.id===editingPresetId);renderPresetLogo(p);renderRoomPresets();flash($('brandStatus'),'✔ Preset-Logo gespeichert.');}catch(err){flash($('brandStatus'),'Logo-Upload fehlgeschlagen: '+err.message,false);}finally{e.target.value='';}});
+  $('presetLogoClear').addEventListener('click',async()=>{if(!editingPresetId)return;try{await apiFetch(`${SERVER}/admin/branding/preset/${editingPresetId}/logo`,{method:'DELETE'});await loadPresets();renderPresetLogo(roomPresets.find(x=>x.id===editingPresetId));renderRoomPresets();flash($('brandStatus'),'✔ Preset-Logo entfernt.');}catch(err){flash($('brandStatus'),'Fehler: '+err.message,false);}});
+
+  $('saveBrandBtn').addEventListener('click', async () => {
+    const label=$('globalPresetName').value.trim();
+    if(!label){flash($('brandStatus'),'Bitte einen Anzeigenamen für das Preset eingeben.',false);return;}
+    const existing=globalPresets.find(p=>p.key===editingGlobalPresetKey);
+    const key=editingGlobalPresetKey||('global-'+Date.now().toString(36));
+    const item={key,label,version:(existing&&existing.version)||1,appearance:$('globalPresetAppearance').value,brand:$('brandColor').value,bg:$('brandBg').value,text:$('brandText').value,on_brand:$('brandOnBrand').value};
+    const list=editableGlobalPresets().filter(p=>p.key!==key).concat(item);
+    try{
+      await persistGlobalPresets(list,'✔ Globales Preset gespeichert.');
+      $('brandPreset').value=key;
+      const applied = await applyGlobalPresetChange();
+      if (applied) {
+        closeGlobalPresetEditor();
+        flash($('brandStatus'),'✔ Globales Preset gespeichert und angewendet.');
+      }
+    }catch(err){flash($('brandStatus'),'Fehler: '+err.message,false);}
   });
 
   // ── Passwörter ───────────────────────────────────────────────────────────
@@ -785,6 +1447,285 @@
   $('refreshTokensBtn').addEventListener('click', loadTokens);
   $('tokShowAll').addEventListener('change', loadTokens);
 
+  // ── Health & Diagnostics (Roadmap 6) ─────────────────────────────────────
+  // Eine Ansicht, die auf einen Blick beantwortet: Läuft die Instanz, hängt
+  // etwas, und wenn ja was. Alle Zahlen kommen aus /admin/diagnostics.
+  let diagTimer = null;
+  let diagLogsSince = 0;
+  let diagLogLines = [];
+  const diagOpen = new Set(['rooms', 'errors']);   // aufgeklappte Unterbereiche
+
+  function fmtTs(ts) {
+    if (!ts) return '—';
+    return new Date(ts * 1000).toLocaleTimeString((window.OpenPodcastI18n?.locale || document.documentElement.lang || 'de'));
+  }
+
+  function diagSection(key, title, hint, body) {
+    // Eigener Aufklapp-Zustand, der Auto-Refresh übersteht (siehe openRooms).
+    const open = diagOpen.has(key);
+    return `<div class="diag-sub">
+      <div class="t">
+        <button type="button" data-diag-toggle="${key}" aria-expanded="${open}"
+          style="background:none;border:none;color:inherit;font:inherit;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:8px;padding:0">
+          <span style="color:var(--muted);transform:rotate(${open ? 90 : 0}deg);transition:transform .15s">▶</span>
+          ${esc(title)}
+        </button>
+        ${hint ? `<span class="hint">${esc(hint)}</span>` : ''}
+      </div>
+      <div data-diag-body="${key}" style="display:${open ? 'block' : 'none'}">${body}</div>
+    </div>`;
+  }
+
+  function renderDiagnostics(d) {
+    const box = $('diagBox');
+    const pill = $('diagState');
+
+    pill.className = 'diag-state ' + (d.state === 'ok' ? 'ok' : 'warn');
+    pill.textContent = d.state === 'ok' ? '● Betrieb normal' : '▲ Aufmerksamkeit nötig';
+
+    const ws = d.websocket || {};
+    const ping = d.ping || {};
+    const backlog = d.upload_backlog || {};
+    const rl = d.room_list || {};
+    const st = d.storage || {};
+    const disk = st.disk || {};
+    const locks = d.locks || {};
+
+    let html = '';
+
+    if ((d.problems || []).length) {
+      html += `<div class="diag-problems"><b>Diese Punkte brauchen Aufmerksamkeit</b>
+        <ul>${d.problems.map(p => `<li>${esc(p)}</li>`).join('')}</ul></div>`;
+    }
+
+    // Kennzahlen
+    html += '<div class="diag-grid">';
+    html += `<div class="diag-card">
+      <div class="k">Laufzeit</div>
+      <div class="v">${esc((d.uptime || {}).human || '—')}</div>
+      <div class="d">Start ${esc(fmtTs((d.uptime || {}).started_at))}</div></div>`;
+    html += `<div class="diag-card">
+      <div class="k">WebSocket-Verbindungen</div>
+      <div class="v">${Number(ws.host_sockets || 0)} / ${Number(ws.guest_sockets || 0)}</div>
+      <div class="d">Host / Gast · ${esc(ws.transport || '')}</div></div>`;
+    html += `<div class="diag-card">
+      <div class="k">Aktive Räume</div>
+      <div class="v">${Number(d.active_rooms_count || 0)}</div>
+      <div class="d">${Number(d.registered_rooms || 0)} registriert insgesamt</div></div>`;
+    html += `<div class="diag-card${ping.stale_guests ? ' attention' : ''}">
+      <div class="k">Heartbeat der Gäste</div>
+      <div class="v">${Number(ping.avg_age_s || 0).toFixed(1)} s</div>
+      <div class="d">${Number(ping.guests_measured || 0)} Gast/Gäste · ${Number(ping.stale_guests || 0)} überfällig</div></div>`;
+    html += `<div class="diag-card${backlog.count ? ' attention' : ''}">
+      <div class="k">Upload-Rückstand</div>
+      <div class="v">${Number(backlog.count || 0)}</div>
+      <div class="d">${Number(backlog.chunks || 0)} Chunks · ${Number(backlog.size_mb || 0)} MB ohne WAV</div></div>`;
+    html += `<div class="diag-card${(rl.denied || rl.errors) ? ' attention' : ''}">
+      <div class="k">Raumlisten-Zugriffe</div>
+      <div class="v">${Number(rl.ok || 0)}</div>
+      <div class="d">${Number(rl.denied || 0)} abgelehnt · ${Number(rl.unauthenticated || 0)} nicht angemeldet · ${Number(rl.errors || 0)} Fehler</div></div>`;
+    html += `<div class="diag-card">
+      <div class="k">Speicher</div>
+      <div class="v">${Number(st.uploads_mb || 0).toFixed(0)} MB</div>
+      <div class="d">${disk.free_gb != null ? `${disk.free_gb} GB frei (${disk.free_pct}%)` : esc(disk.error || '—')}</div></div>`;
+    html += `<div class="diag-card">
+      <div class="k">Aktive Raum-Locks</div>
+      <div class="v">${Number(locks.held || 0)}</div>
+      <div class="d">TTL ${Number(locks.ttl_s || 0)} s · Kulanz ${Number(locks.grace_s || 0)} s</div></div>`;
+    html += '</div>';
+
+    // WebSocket-Backend
+    const wsBody = `<table class="diag-table">
+      <tr><th>Backend</th><td>${esc(ws.backend || '—')}</td></tr>
+      <tr><th>Transport</th><td>${esc(ws.transport || '—')}</td></tr>
+      <tr><th>Host-Sockets</th><td class="num">${Number(ws.host_sockets || 0)} in ${Number(ws.rooms_with_hosts || 0)} Raum/Räumen</td></tr>
+      <tr><th>Gast-Sockets</th><td class="num">${Number(ws.guest_sockets || 0)} in ${Number(ws.rooms_with_guests || 0)} Raum/Räumen</td></tr>
+      <tr><th>Server-Zeit</th><td>${esc(new Date(d.server_time || Date.now()).toLocaleString((window.OpenPodcastI18n?.locale || document.documentElement.lang || 'de')))}</td></tr>
+    </table>`;
+    html += diagSection('ws', 'WebSocket-Backend und Verbindungen',
+      'Steuerung und Status laufen ausschließlich über WebSocket.', wsBody);
+
+    // Aktive Räume
+    const rooms = d.active_rooms || [];
+    const roomsBody = rooms.length ? `<table class="diag-table">
+      <thead><tr><th>Raum</th><th>Host</th><th>Gäste</th><th>Aufnahme</th><th>Offene Chunks</th><th>Steuerung</th></tr></thead>
+      <tbody>${rooms.map(r => `<tr>
+        <td><b>${esc(r.room)}</b>${r.session ? `<div style="font-size:11px;color:var(--muted)">Session ${esc(r.session)}</div>` : ''}</td>
+        <td class="num">${Number(r.host_sockets || 0)}</td>
+        <td class="num">${Number(r.guests_online || 0)} / ${Number(r.guests_known || 0)}</td>
+        <td>${r.recording ? '<span class="pill rec">🔴 läuft</span>' : '<span style="color:var(--muted)">—</span>'}</td>
+        <td class="num">${Number(r.pending_chunks || 0)}</td>
+        <td>${r.locked
+              ? (r.lock_connected
+                  ? `<span class="pill active">${esc(r.lock_role || 'host')}</span>`
+                  : '<span class="pill">verbindet neu</span>')
+              : '<span style="color:var(--muted)">frei</span>'}</td>
+      </tr>`).join('')}</tbody></table>`
+      : '<div class="empty" style="padding:18px">Gerade ist kein Raum aktiv.</div>';
+    html += diagSection('rooms', `Aktive Räume (${rooms.length})`,
+      'Räume mit verbundenem Host, Gästen oder laufender Aufnahme.', roomsBody);
+
+    // Upload-Rückstand + WAV-Rebuild
+    const pend = backlog.sessions || [];
+    const backlogBody = pend.length ? `<table class="diag-table">
+      <thead><tr><th>Raum</th><th>Gast</th><th>Session</th><th>Chunks</th><th>Größe</th><th>Letzter Chunk</th><th>Aktion</th></tr></thead>
+      <tbody>${pend.map(s => `<tr>
+        <td>${esc(s.room)}</td>
+        <td><b>${esc(s.guest)}</b></td>
+        <td style="font-size:12px;color:var(--muted)">${esc(s.session)}</td>
+        <td class="num">${Number(s.chunks)} <span style="color:var(--muted)">${esc(s.kind)}</span></td>
+        <td class="num">${Number(s.size_mb).toFixed(2)} MB</td>
+        <td class="num">vor ${Number(s.age_minutes).toFixed(0)} min</td>
+        <td><button class="btn btn-brand" data-rebuild-wav
+              data-room="${esc(s.room)}" data-guest="${esc(s.guest)}"
+              data-session="${esc(s.session)}">WAV erzeugen</button></td>
+      </tr>`).join('')}</tbody></table>`
+      : '<div class="empty" style="padding:18px">Kein Rückstand. Alle Chunks sind zu WAVs zusammengeführt.</div>';
+    html += diagSection('backlog', `Upload-Rückstand (${pend.length})`,
+      'Sessions mit Chunks, aber ohne fertige WAV — hier lässt sich die Datei neu erzeugen.',
+      backlogBody);
+
+    // Zähler
+    const c = d.counters || {};
+    const countersBody = `<table class="diag-table">
+      <tr><th>Hochgeladene Chunks</th><td class="num">${Number(c.upload_chunks || 0)} (${(Number(c.upload_bytes || 0) / 1024 / 1024).toFixed(1)} MB)</td></tr>
+      <tr><th>Upload-Fehler</th><td class="num">${Number(c.upload_errors || 0)}</td></tr>
+      <tr><th>Abgeschlossene Zusammenführungen</th><td class="num">${Number(c.finish_ok || 0)}</td></tr>
+      <tr><th>Fehlgeschlagene Zusammenführungen</th><td class="num">${Number(c.finish_errors || 0)}</td></tr>
+      <tr><th>Manuelle WAV-Neuaufbauten</th><td class="num">${Number(c.wav_rebuilds || 0)}</td></tr>
+      <tr><th>Fehlgeschlagene Anmeldungen / Sitzungen</th><td class="num">${Number(c.auth_failures || 0)}</td></tr>
+      <tr><th>Letzter Raumlisten-Zugriff</th><td>${(rl.last && rl.last.ts)
+        ? `${esc(fmtTs(rl.last.ts))} · ${esc(rl.last.route || '')} · Rolle ${esc(rl.last.role || '—')} · ${Number(rl.last.count || 0)} Raum/Räume`
+        : 'Noch kein Zugriff seit dem Start'}</td></tr>
+    </table>`;
+    html += diagSection('counters', 'Zähler seit dem Serverstart',
+      'Flüchtig — ein Neustart setzt die Werte zurück.', countersBody);
+
+    // Serverfehler
+    const errs = d.recent_errors || [];
+    const errBody = errs.length
+      ? `<div class="diag-log">${errs.map(e => `<div class="ln err">
+          <span class="t">${esc(fmtTs(e.ts))}</span>
+          <span class="s">${esc(e.source)}</span>
+          <span class="m">${esc(e.message)}${e.room ? ` <span style="color:var(--muted)">· Raum ${esc(e.room)}</span>` : ''}${e.detail ? `<div style="color:var(--muted)">${esc(e.detail)}</div>` : ''}</span>
+        </div>`).join('')}</div>`
+      : '<div class="empty" style="padding:18px">Keine Serverfehler seit dem Start.</div>';
+    html += diagSection('errors', `Letzte Serverfehler (${errs.length})`,
+      'Ringpuffer der jüngsten Fehler, neueste zuerst.', errBody);
+
+    // Client-Logs
+    const logBody = diagLogLines.length
+      ? `<div class="diag-log" id="diagLogBox">${diagLogLines.slice(0, 200).map(l => `<div class="ln ${esc(l.level || 'info')}">
+          <span class="t">${esc(fmtTs(l.ts))}</span>
+          <span class="s">${esc(l.level || 'info')}</span>
+          <span class="m">${esc(l.msg || '')}<span style="color:var(--muted)"> · ${esc(l.room || '')}/${esc(l.guest || '')}</span></span>
+        </div>`).join('')}</div>`
+      : '<div class="empty" style="padding:18px">Noch keine Client-Logs. Gäste senden Diagnosemeldungen während einer Aufnahme.</div>';
+    html += diagSection('logs', `Client-Logs (${diagLogLines.length})`,
+      'Meldungen aus den Gast-Browsern, instanzweit und neueste zuerst.', logBody);
+
+    box.innerHTML = html;
+  }
+
+  async function loadDiagnostics() {
+    const box = $('diagBox');
+    try {
+      const res = await apiFetch(`${SERVER}/admin/diagnostics`, { cache: 'no-store' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      // Client-Logs separat, damit der Diagnose-Aufruf schlank bleibt.
+      try {
+        const lr = await apiFetch(
+          `${SERVER}/admin/diagnostics/logs?limit=200`, { cache: 'no-store' });
+        if (lr.ok) {
+          const ld = await lr.json();
+          diagLogLines = ld.lines || [];
+          diagLogsSince = ld.newest_ts || diagLogsSince;
+        }
+      } catch {}
+      renderDiagnostics(data);
+    } catch (err) {
+      if (err.message === 'Nicht authentifiziert') return;
+      $('diagState').className = 'diag-state err';
+      $('diagState').textContent = '● Diagnose nicht erreichbar';
+      box.innerHTML = `<div class="diag-problems">Die Diagnose konnte nicht geladen werden: ${esc(err.message)}. ` +
+        `Erneut versuchen oder die Serverprotokolle prüfen.</div>`;
+    }
+  }
+
+  // Aufklappen der Unterbereiche + WAV-Neuaufbau
+  $('diagBox').addEventListener('click', async (e) => {
+    const tog = e.target.closest('button[data-diag-toggle]');
+    if (tog) {
+      const key = tog.dataset.diagToggle;
+      const body = $('diagBox').querySelector(`[data-diag-body="${key}"]`);
+      const willOpen = !diagOpen.has(key);
+      if (willOpen) diagOpen.add(key); else diagOpen.delete(key);
+      if (body) body.style.display = willOpen ? 'block' : 'none';
+      const caret = tog.querySelector('span');
+      if (caret) caret.style.transform = `rotate(${willOpen ? 90 : 0}deg)`;
+      tog.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+      return;
+    }
+
+    const btn = e.target.closest('button[data-rebuild-wav]');
+    if (!btn) return;
+    const { room, guest, session } = btn.dataset;
+    if (!confirm(`WAV für „${guest}" in Raum „${room}" aus den vorhandenen Chunks erzeugen?`)) return;
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Erzeuge…';
+    try {
+      const res = await apiFetch(
+        `${SERVER}/admin/rebuild-wav/${encodeURIComponent(room)}/${encodeURIComponent(guest)}/${encodeURIComponent(session)}`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ force: false }) });
+      if (res.status === 409) {
+        // Es gibt schon eine WAV -- Überschreiben nur nach ausdrücklicher Zusage.
+        if (!confirm('Es existiert bereits eine WAV. Vorhandene Datei ersetzen?')) {
+          btn.disabled = false; btn.textContent = original; return;
+        }
+        const res2 = await apiFetch(
+          `${SERVER}/admin/rebuild-wav/${encodeURIComponent(room)}/${encodeURIComponent(guest)}/${encodeURIComponent(session)}`,
+          { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ force: true }) });
+        if (!res2.ok) throw new Error(await errText(res2));
+        const d2 = await res2.json();
+        btn.textContent = `✔ ${d2.size_mb} MB`;
+      } else if (!res.ok) {
+        throw new Error(await errText(res));
+      } else {
+        const d = await res.json();
+        btn.textContent = `✔ ${d.size_mb} MB`;
+      }
+      // Aufnahmenliste und Diagnose neu laden -- die Session ist jetzt fertig.
+      load();
+      setTimeout(loadDiagnostics, 600);
+    } catch (err) {
+      alert('WAV-Neuaufbau fehlgeschlagen: ' + err.message);
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+  });
+
+  async function errText(res) {
+    try {
+      const j = await res.json();
+      return j.detail || ('HTTP ' + res.status);
+    } catch { return 'HTTP ' + res.status; }
+  }
+
+  $('refreshDiagBtn').addEventListener('click', loadDiagnostics);
+  $('diagAuto').addEventListener('change', (e) => {
+    if (e.target.checked) {
+      diagTimer = setInterval(loadDiagnostics, 10000);
+      loadDiagnostics();
+    } else if (diagTimer) {
+      clearInterval(diagTimer);
+      diagTimer = null;
+    }
+  });
+
   // ── Raum-Management ──────────────────────────────────────────────────────
   async function loadRooms() {
     const box = $('roomsBox');
@@ -804,6 +1745,7 @@
           </div>
           <a class="btn" href="${SERVER}/export/${encodeURIComponent(r.room)}">⬇ ZIP</a>
           <button class="btn" data-room-act="logs" data-room="${esc(r.room)}">Logs</button>
+          <button class="btn" data-room-act="clips" data-room="${esc(r.room)}">Clipping</button>
           <button class="btn ${r.archived ? 'btn-ok' : 'btn-warn'} btn-wide" data-room-act="archive" data-room="${esc(r.room)}" data-archived="${r.archived}">${r.archived ? 'Aktivieren' : 'Archivieren'}</button>
           <button class="btn btn-danger" data-room-act="delete" data-room="${esc(r.room)}">Löschen</button>
         </div>`;
@@ -820,6 +1762,7 @@
     const room = btn.dataset.room;
     const act  = btn.dataset.roomAct;
     if (act === 'logs') { openLogs(room); return; }
+    if (act === 'clips') { openClips(room); return; }
     if (act === 'archive') {
       const want = btn.dataset.archived !== 'true';
       try {
@@ -842,6 +1785,74 @@
   $('refreshRoomsBtn').addEventListener('click', loadRooms);
   const refreshSessionsBtn = $('refreshSessionsBtn');
   if (refreshSessionsBtn) refreshSessionsBtn.addEventListener('click', load);
+
+  // ── Clipping-Modal (persistierte Übersteuerungen je Raum) ────────────────
+  let clipRoom = null;
+  let clipTimer = null;
+
+  function fmtOffset(ms) {
+    const s = Math.max(0, Math.floor((ms || 0) / 1000));
+    return String(Math.floor(s / 60)).padStart(2, '0') + ':' +
+           String(s % 60).padStart(2, '0');
+  }
+
+  function openClips(room) {
+    clipRoom = room;
+    $('clipModalTitle').textContent = `Clipping · ${room}`;
+    $('clipModalBg').style.display = 'flex';
+    $('clipModalBody').innerHTML = '<div class="empty" style="padding:20px">Lade…</div>';
+    loadClips(room);
+    if (clipTimer) clearInterval(clipTimer);
+    clipTimer = setInterval(() => { if (clipRoom) loadClips(clipRoom); }, 3000);
+  }
+
+  async function loadClips(room) {
+    const box = $('clipModalBody');
+    try {
+      const res = await apiFetch(
+        `${SERVER}/admin/room/${encodeURIComponent(room)}/clips`, { cache: 'no-store' });
+      const data = await res.json();
+      const guests = data.guests || [];
+      if (!guests.length) {
+        box.innerHTML = '<div class="empty" style="padding:20px">' +
+          'Keine Clipping-Ereignisse für diesen Raum. Die Pegel waren sauber.</div>';
+        return;
+      }
+      let html = `<div style="margin-bottom:10px;color:var(--muted)">` +
+                 `${data.total} Ereignis(se) insgesamt</div>`;
+      for (const g of guests) {
+        const when = g.last_ts
+          ? new Date(g.last_ts * 1000).toLocaleString((window.OpenPodcastI18n?.locale || document.documentElement.lang || 'de')) : '—';
+        html += `<div class="clip-guest">
+          <div class="head">
+            <b>${esc(g.guest)}</b>
+            <span class="count">${g.count}× übersteuert</span>
+            <span>Spitze ${Number(g.worst_dbfs).toFixed(1)} dBFS · zuletzt ${esc(when)}</span>
+          </div>
+          <div class="clip-events">`;
+        for (const ev of g.events.slice(-25).reverse()) {
+          html += `<div><code>${fmtOffset(ev.offset_ms)}</code> · ` +
+                  `${Number(ev.peak_dbfs).toFixed(1)} dBFS · ` +
+                  `${ev.duration_ms} ms · Session <code>${esc(ev.session || '—')}</code></div>`;
+        }
+        html += `</div></div>`;
+      }
+      box.innerHTML = html;
+    } catch (err) {
+      if (err.message !== 'Nicht authentifiziert') showFetchError(box, err);
+    }
+  }
+
+  function closeClips() {
+    $('clipModalBg').style.display = 'none';
+    clipRoom = null;
+    if (clipTimer) { clearInterval(clipTimer); clipTimer = null; }
+  }
+
+  $('clipModalClose').addEventListener('click', closeClips);
+  $('clipModalBg').addEventListener('click', (e) => {
+    if (e.target === $('clipModalBg')) closeClips();
+  });
 
   // ── Gast-Logs-Modal (inline, pro Gast, aufklappbar) ───────────────────────
   // Ein Eintrag pro Gast. Der Server liefert Logs gruppiert (/logs). Wir
@@ -872,7 +1883,7 @@
 
   function guestCardHtml(g) {
     const open = logsExpanded.has(g.guest);
-    const t = g.lastTs ? new Date(g.lastTs*1000).toLocaleTimeString('de-DE') : '–';
+    const t = g.lastTs ? new Date(g.lastTs*1000).toLocaleTimeString((window.OpenPodcastI18n?.locale || document.documentElement.lang || 'de')) : '–';
     const c = g.counts || { info:0, ok:0, err:0 };
     const preview = g.lastLine
       ? `<span style="color:${LVL_COL(g.lastLine.level)}">${esc(g.lastLine.msg||'')}</span>`
@@ -892,7 +1903,7 @@
   }
 
   function lineHtml(ln) {
-    const t = new Date((ln.ts||0)*1000).toLocaleTimeString('de-DE');
+    const t = new Date((ln.ts||0)*1000).toLocaleTimeString((window.OpenPodcastI18n?.locale || document.documentElement.lang || 'de'));
     return `<div style="display:flex;gap:10px;align-items:baseline;padding:5px 12px;border-top:1px solid var(--border)">
       <span style="font-size:12px;color:var(--muted);min-width:84px">${t}</span>
       <span style="font-size:12px;color:${LVL_COL(ln.level)};min-width:34px">${esc(ln.level||'info')}</span>
@@ -1030,10 +2041,41 @@
   let stateFilter = 'all';
   let lastSessions = [];
 
+  // Roadmap 6: Aufklapp-Zustand ueberlebt das periodische Neuladen.
+  // Ursache des unerwarteten Zuklappens: renderSessions() schrieb alle 15 s
+  // content.innerHTML komplett neu, wodurch der DOM-Zustand verloren ging.
+  // Wir halten den Zustand jetzt ausserhalb des DOM und stellen ihn nach jedem
+  // Render wieder her. Zusaetzlich rendern wir nur noch, wenn sich die Daten
+  // wirklich geaendert haben.
+  const openRooms = new Set();          // aufgeklappte Raum-Gruppen
+  let roomsDefaultApplied = false;      // Erst-Render: laufende Raeume oeffnen
+  let lastSessionsFingerprint = '';
+
+  function sessionsFingerprint(sessions) {
+    // Nur die Felder, die die Darstellung beeinflussen.
+    return JSON.stringify(sessions.map(s => [
+      s.room, s.guest, s.session, s.state, s.chunks_count,
+      s.size_mb, s.has_wav, s.has_mixdown, s.archived, s.online, s.label,
+    ]));
+  }
+
+  function restoreRoomAccordions() {
+    document.querySelectorAll('.room-group').forEach(group => {
+      const room = group.dataset.room;
+      const body = group.querySelector('.room-body');
+      const tog = group.querySelector('[data-room-toggle]');
+      const caret = tog && tog.querySelector('.caret');
+      const open = openRooms.has(room);
+      if (body) body.style.display = open ? 'block' : 'none';
+      if (caret) caret.style.transform = `rotate(${open ? 90 : 0}deg)`;
+      if (tog) tog.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+  }
+
   const fmtTime = ts => {
     const n = Number(ts || 0);
     if (!n) return '—';
-    return new Date(n * 1000).toLocaleString('de-DE',
+    return new Date(n * 1000).toLocaleString((window.OpenPodcastI18n?.locale || document.documentElement.lang || 'de'),
       { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
   };
 
@@ -1057,9 +2099,9 @@
     const recordingLabel = recordings === 1 ? 'Aufnahme' : 'Aufnahmen';
     const roomLabel = rooms === 1 ? 'Raum' : 'Räume';
 
-    $('overviewRecordings').textContent = recordings.toLocaleString('de-DE');
+    $('overviewRecordings').textContent = recordings.toLocaleString((window.OpenPodcastI18n?.locale || document.documentElement.lang || 'de'));
     $('overviewRecordingsDetail').textContent = `${recordingLabel} über alle Räume`;
-    $('overviewRooms').textContent = rooms.toLocaleString('de-DE');
+    $('overviewRooms').textContent = rooms.toLocaleString((window.OpenPodcastI18n?.locale || document.documentElement.lang || 'de'));
     $('overviewRoomsDetail').textContent = `${roomLabel} mit gespeicherten Sessions`;
     $('overviewStorage').textContent = `${size.toFixed(1)} MB`;
     $('overviewStorageDetail').textContent = 'WAVs und vorhandene Chunks';
@@ -1080,10 +2122,16 @@
     return html + '</div>';
   }
 
-  function renderSessions() {
+  function renderSessions(opts = {}) {
     const content = $('sessionsBox') || $('content');
     // Gelöschte Einträge fliegen sofort raus – keine Zombie-Zeilen.
     const sessions = lastSessions.filter(s => !s.deleted);
+
+    // Unveraenderte Daten nicht neu rendern: das haelt offene Panels, laufende
+    // Audio-Wiedergabe und die Textauswahl stabil.
+    const fp = sessionsFingerprint(sessions) + '|' + stateFilter;
+    if (!opts.force && fp === lastSessionsFingerprint) return;
+    lastSessionsFingerprint = fp;
 
     if (!sessions.length) {
       content.innerHTML = '<div class="empty">Noch keine Aufnahmen vorhanden.</div>';
@@ -1112,8 +2160,13 @@
       const roomSize = recs.reduce((a, r) => a + (r.size_mb || 0), 0);
       const isArchived = recs.some(r => r.archived);
       const hasLive = recs.some(r => r.online);
-      const bodyStyle = hasLive ? 'block' : 'none';
-      const caretRot = hasLive ? '90deg' : '0deg';
+      // Beim ersten Render laufende Raeume aufklappen. Danach entscheidet
+      // ausschliesslich der Nutzer -- ein Live-Wechsel reisst nichts mehr auf
+      // und klappt nichts mehr zu.
+      if (!roomsDefaultApplied && hasLive) openRooms.add(room);
+      const isOpen = openRooms.has(room);
+      const bodyStyle = isOpen ? 'block' : 'none';
+      const caretRot = isOpen ? '90deg' : '0deg';
 
       // Innerhalb eines Raums ist die Session die primaere Einheit.
       const bySession = new Map();
@@ -1127,7 +2180,7 @@
         Math.max(...a[1].map(x => Number(x.last_seen || 0))));
 
       html += `<div class="room-group" data-room="${esc(room)}">
-        <button type="button" class="room-head" data-room-toggle aria-expanded="${hasLive ? 'true' : 'false'}">
+        <button type="button" class="room-head" data-room-toggle aria-expanded="${isOpen ? 'true' : 'false'}">
           <span class="caret" aria-hidden="true" style="transform:rotate(${caretRot})">▶</span>
           <span class="name">${esc(room)}</span>
           ${isArchived ? '<span class="pill st-archived">Archiviert</span>' : ''}
@@ -1183,6 +2236,8 @@
       html += `<div class="empty">Keine Aufnahme in diesem Zustand. Filter „Alle“ zeigt wieder alles.</div>`;
     }
     content.innerHTML = html;
+    roomsDefaultApplied = true;
+    restoreRoomAccordions();
   }
 
   async function load() {
@@ -1201,7 +2256,7 @@
     const fbtn = e.target.closest('button[data-state-filter]');
     if (fbtn) {
       stateFilter = fbtn.dataset.stateFilter;
-      renderSessions();
+      renderSessions({ force: true });
       return;
     }
 
@@ -1209,10 +2264,13 @@
     const tog = e.target.closest('button[data-room-toggle]');
     if (tog) {
       const group = tog.closest('.room-group');
+      const room = group && group.dataset.room;
       const body = group && group.querySelector('.room-body');
       const caret = tog.querySelector('.caret');
-      const isOpen = body && body.style.display !== 'none';
-      const willOpen = !isOpen;
+      const willOpen = !(body && body.style.display !== 'none');
+      // Zustand zuerst merken, dann anwenden -- das naechste Auto-Refresh
+      // stellt genau diesen Zustand wieder her.
+      if (room) { if (willOpen) openRooms.add(room); else openRooms.delete(room); }
       if (body) body.style.display = willOpen ? 'block' : 'none';
       if (caret) caret.style.transform = `rotate(${willOpen ? 90 : 0}deg)`;
       tog.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
@@ -1234,7 +2292,7 @@
       // Zeile sofort entfernen, damit kein Zombie-Eintrag stehen bleibt.
       lastSessions = lastSessions.filter(
         s => !(s.room === room && s.guest === guest && s.session === session));
-      renderSessions();
+      renderSessions({ force: true });
       load();
     } catch (err) { alert('Fehler: ' + err.message); btn.disabled = false; }
   });
@@ -1249,23 +2307,16 @@
   // WICHTIG: Farben werden ausschließlich vom Branding-Block im <head> gesetzt,
   // und zwar NUR über --brand / --brand-hover. Semantische Farben (--ok = Erfolg/
   // "connected"/online) dürfen NIE vom Branding überschrieben werden.
-  (async () => {
-    try {
-      const b = await (await fetch('/branding', { cache: 'no-store' })).json();
-      if (!b.ok) return;
-      if (b.name) document.title = 'Admin · ' + b.name;
-      if (b.favicon) {
-        let link = document.querySelector('link[rel="icon"]');
-        if (!link) { link = document.createElement('link'); link.rel = 'icon'; document.head.appendChild(link); }
-        link.href = b.favicon;
-      }
-    } catch {}
-  })();
+  refreshBrandingAssets();
+  loadPresets();
+
 
   // ── Init ─────────────────────────────────────────────────────────────────
-  loadConfig();
+  loadLocales().then(loadConfig);
   loadTokens();
   loadRooms();
+  loadDiagnostics();
+  diagTimer = setInterval(loadDiagnostics, 10000);
   load();
   setInterval(loadTokens, 30000);
   setInterval(loadRooms, 15000);

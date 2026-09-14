@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Login · Podcast Studio</title>
+<title data-i18n="login.title">Login · Podcast Studio</title>
 <script>
 // Sprint 3: Branding kommt serverseitig im <head> (siehe BRANDING-Block oben).
 // Beim ersten Paint stimmen --brand/--brand-hover/--brand-on bereits -> kein
@@ -35,6 +35,11 @@
     --brand-on: #fff;
 
     --err:    #e5484d;
+  
+    /* Abgeleitete Flaechen; der Server ueberschreibt sie themebasiert. */
+    --muted-2: #6b7280;
+    --border-strong: #3a4150;
+    --surface-hover: #1c2029;
   }
 
   * { box-sizing: border-box; }
@@ -98,22 +103,22 @@
 <!--BRANDING-->
 </head>
 <body>
-<div class="card">
+<main class="card" id="main-content" tabindex="-1">
   <h1 class="logo">DVZ Podcast Studio</h1>
   <p class="sub">Bitte melde dich an, um fortzufahren.</p>
 
-  <div id="msg" class="msg" role="alert"></div>
+  <div id="msg" class="msg" role="alert" aria-live="assertive"></div>
 
   <form id="loginForm" autocomplete="on" novalidate>
     <div style="display:flex;flex-direction:column;gap:16px">
       <div>
-        <label for="pw"></label>
+        <label for="pw" class="visually-hidden">Passwort</label>
         <div class="input-wrap">
           <input type="password" id="pw" name="password"
                  autocomplete="current-password"
                  placeholder="Passwort" required autofocus>
           <button type="button" class="toggle-pw" id="togglePw"
-                  aria-label="Passwort anzeigen/verbergen">👁</button>
+                  aria-label="Passwort anzeigen/verbergen" aria-pressed="false">👁</button>
         </div>
       </div>
       <button type="submit" id="submitBtn">
@@ -121,7 +126,7 @@
       </button>
     </div>
   </form>
-</div>
+</main>
 
 <script>
 (() => {
@@ -141,6 +146,20 @@
   })();
 
   const form      = document.getElementById('loginForm');
+  const t = (key, fallback) => window.OpenPodcastI18n?.t(key, fallback) || fallback;
+  window.OpenPodcastI18n?.load(window.OpenPodcastI18n.locale || 'en').then(() => {
+    document.documentElement.lang = window.OpenPodcastI18n.locale || 'en';
+    const title = document.querySelector('[data-i18n="login.title"]');
+    if (title) document.title = title.textContent;
+    document.querySelector('.logo').textContent = t('login.heading', 'Podcast Studio');
+    document.querySelector('.sub').textContent = t('login.intro', 'Sign in to continue.');
+    document.querySelector('label[for="pw"]').textContent = t('login.password', 'Password');
+    pwInput.placeholder = t('login.password', 'Password');
+    btnLabel.textContent = t('login.submit', 'Sign in');
+  });
+
+  async function applyLocale(locale) { await window.OpenPodcastI18n?.load(locale); }
+  applyLocale('en').catch(() => {});
   const pwInput   = document.getElementById('pw');
   const submitBtn = document.getElementById('submitBtn');
   const btnLabel  = document.getElementById('btnLabel');

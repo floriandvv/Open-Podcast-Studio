@@ -52,7 +52,6 @@ from fastapi import (Cookie, Depends, FastAPI, HTTPException, Request, Response,
                      WebSocket, WebSocketDisconnect)
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
                                StreamingResponse)
-from fastapi.staticfiles import StaticFiles
 
 # ---------------------------------------------------------------------------
 # Optionale Abhaengigkeiten
@@ -188,12 +187,18 @@ DEFAULT_CHANNELS    = 1
 SAMPLE_WIDTH        = 2
 
 BASE       = Path(__file__).parent
+LOCALE_DIR = BASE / "locale"
+DEFAULT_LOCALE = "de"   # Quellsprache der Oberflaeche
+
 # Keep mutable runtime data separate from the application code. This allows
 # Docker deployments to mount one persistent volume at DATA_DIR.
 DATA_DIR   = Path(os.environ.get("DATA_DIR", str(BASE))).resolve()
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 UPLOADS    = DATA_DIR / "uploads"
 UPLOADS.mkdir(parents=True, exist_ok=True)
+# Verwaltete Branding-Dateien (Logo/Favicon) statt Data-URLs in config.json.
+BRANDING_DIR = DATA_DIR / "branding"
+BRANDING_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG_PATH = DATA_DIR / "config.json"
 AUTH_PATH   = DATA_DIR / "auth.json"
 
@@ -208,10 +213,38 @@ _CFG_DEFAULTS = {
     "log_days":         14,     # Gast-Console-Logs aelter als N Tage loeschen (0=deaktiviert)
     # Custom Branding (Feature 8)
     "brand_name":       "Podcast Studio",
-    "brand_color":      "#30a46c",
-    "brand_favicon":    "",     # Data-URL oder Pfad; leer = Standard
-    # Archivierte Raeume (Feature 6) -- Liste von Raumnamen
+    "brand_color":      "",       # Leer = Akzentfarbe des aktiven Presets
+    "brand_favicon":    "",     # Legacy Data-URL (nur noch Fallback beim Lesen)
+    # Erweitertes Theming: Hintergrund, Buttontext und allgemeine Textfarbe
+    # sind jetzt eigene Tokens. Leer = Wert aus dem gewaehlten Preset.
+    "brand_preset":     "default",  # default | dark | contrast
+    "brand_bg":         "",         # Seitenhintergrund
+    "brand_text":       "",         # Allgemeine UI-Textfarbe
+    "brand_on_brand":   "",         # Textfarbe auf Brand-Flaechen (Buttons)
+    # Verwaltete Branding-Dateien unter DATA_DIR/branding/ (Punkt 7).
+    # Gespeichert wird nur Metadata; die Bytes liegen als Datei auf der Platte.
+    "brand_logo_asset":        None,   # {"file","name","size","mime","updated_at"}
+    "brand_favicon_asset":     None,
+    # Logo/Favicon gehoeren zum jeweils gewaehlten globalen Theme-Preset.
+    "global_preset_assets":    {},
+    # Eigene globale Preset-Definitionen. Die Keys der eingebauten Presets
+    # sind reserviert; Varianten davon werden als neue Presets angelegt.
+    "global_presets":     [],
+    # Wiederverwendbare Branding-Presets fuer Gaeste. Der Admin pflegt die
+    # Bibliothek; Hosts weisen beim Erstellen eines Raums genau ein Preset zu.
+    "branding_presets":  [],
+    "room_preset_assignments": {},
+    # Legacy-Mapping wird nur noch fuer bestehende Installationen gelesen.
+    "room_branding":    {},
+    "locale":            "de",   # Sprache der Oberflaeche (de = Quelltext)
+    "room_locales":      {},      # Optional recorder locale per room
+    # Archived rooms -- list of room names
     "archived_rooms":   [],
+    # Aufnahme-Schutzmechanismen (Recording guardrails)
+    "require_guest_online": True,   # Start nur, wenn mindestens ein Gast online ist
+    "require_guest_ready":  False,  # Gaeste muessen sich aktiv bereit melden
+    "clip_threshold_dbfs":  -1.0,   # ab diesem Spitzenpegel gilt ein Sample als Clipping
+    "clip_min_samples":     3,      # so viele aufeinanderfolgende Samples = echtes Clipping
 }
 
 def _cfg_load() -> dict:
@@ -244,7 +277,48 @@ def _cfg_save(cfg: dict):
 def _cfg_get(key: str):
     return _cfg_load().get(key, _CFG_DEFAULTS.get(key))
 
+
+def _normalise_locale(value: str) -> str:
+    value = str(value or DEFAULT_LOCALE).lower().replace('_', '-')
+    code = value.split('-', 1)[0]
+    if not re.fullmatch(r"[a-z]{2,3}", code):
+        return DEFAULT_LOCALE
+    candidate = LOCALE_DIR / f"{code}.json"
+    return code if candidate.is_file() else DEFAULT_LOCALE
+
+
+def _available_locales() -> list[dict]:
+    result = []
+    for path in sorted(LOCALE_DIR.glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            meta = data.get("meta", {})
+            result.append({"code": path.stem, "name": meta.get("name", path.stem),
+                           "native_name": meta.get("native_name", path.stem)})
+        except Exception:
+            continue
+    return result
+
+
+def _load_locale(locale: str) -> dict:
+    code = _normalise_locale(locale)
+    try:
+        return json.loads((LOCALE_DIR / f"{code}.json").read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _global_locale() -> str:
+    return _normalise_locale(_cfg_get("locale"))
+
+
+def _room_locale(room: str) -> str:
+    overrides = _cfg_get("room_locales") or {}
+    return _normalise_locale(overrides.get(room) or _global_locale())
+
 SAFE = re.compile(r"^[a-zA-Z0-9_-]+$")
+# Dateinamen verwalteter Branding-Assets (kein Pfad, keine Traversal-Zeichen).
+SAFE_FILE = re.compile(r"^[a-zA-Z0-9._-]+$")
 
 # Presence-Schwellen (Heartbeat alle 2 s, Pegel alle 200 ms).
 #   <= GUEST_STALE_AFTER      -> 🟢 online
@@ -331,6 +405,23 @@ def _init_db():
         """)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_guest_logs_room_ts ON guest_logs (room, ts)")
+        # Clipping-Ereignisse: uebersteuerte Passagen eines Gastes. Immer an eine
+        # session_id gebunden, damit sie einer konkreten Aufnahme zuordenbar sind.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS clip_events (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                room        TEXT NOT NULL,
+                guest       TEXT NOT NULL DEFAULT '',
+                session     TEXT NOT NULL DEFAULT '',
+                ts          REAL NOT NULL,
+                offset_ms   INTEGER NOT NULL DEFAULT 0,
+                peak_dbfs   REAL NOT NULL DEFAULT 0,
+                samples     INTEGER NOT NULL DEFAULT 0,
+                duration_ms INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_clip_events_room_ts ON clip_events (room, ts)")
         conn.commit()
 
 _init_db()
@@ -414,6 +505,42 @@ def _guest_logs_store(room: str, guest: str, session: str, lines: list) -> None:
             conn.commit()
     except Exception as e:
         print("[guest_logs] store failed:", e)
+
+
+def _clip_event_store(room: str, guest: str, session: str, ts: float,
+                      offset_ms: int, peak_dbfs: float, samples: int,
+                      duration_ms: int) -> None:
+    """Persistiert ein Clipping-Ereignis (Admin-Logs + spaetere Analyse)."""
+    try:
+        with _DB_LOCK, _db_conn() as conn:
+            conn.execute(
+                "INSERT INTO clip_events (room, guest, session, ts, offset_ms, "
+                "peak_dbfs, samples, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (room, str(guest or "")[:80], str(session or "")[:40], float(ts),
+                 int(offset_ms), float(peak_dbfs), int(samples), int(duration_ms)))
+            conn.commit()
+    except Exception as e:
+        print("[clip_events] store failed:", e)
+
+
+def _clip_events_query(room: str, session: str | None = None,
+                       since: float = 0.0, limit: int = 2000) -> list[dict]:
+    try:
+        with _DB_LOCK, _db_conn() as conn:
+            if session:
+                rows = conn.execute(
+                    "SELECT * FROM clip_events WHERE room=? AND session=? AND ts>? "
+                    "ORDER BY ts ASC LIMIT ?",
+                    (room, session, float(since), int(limit))).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM clip_events WHERE room=? AND ts>? "
+                    "ORDER BY ts ASC LIMIT ?",
+                    (room, float(since), int(limit))).fetchall()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        print("[clip_events] query failed:", e)
+        return []
 
 
 def _guest_logs_query(room: str, since: float = 0.0, limit: int = 4000) -> list[dict]:
@@ -843,6 +970,10 @@ def _check_rate_limit(ip: str) -> bool:
 def require_auth(ps_session: str | None = Cookie(default=None)):
     """Beliebig eingeloggt (admin ODER host)."""
     if not ps_session or _session_role(ps_session) is None:
+        # Roadmap 6: abgelehnte Zugriffe zaehlen, damit die Diagnose-Ansicht
+        # zwischen "leer" und "nicht angemeldet" unterscheiden kann.
+        _diag_bump("auth_failures")
+        _diag_bump("room_list_unauthenticated")
         raise HTTPException(
             status_code=303,
             headers={"Location": "/login"},
@@ -855,11 +986,103 @@ def require_admin(ps_session: str | None = Cookie(default=None)):
     """Nur die Admin-Rolle (Feature 13)."""
     role = _session_role(ps_session) if ps_session else None
     if role is None:
+        _diag_bump("auth_failures")
+        _diag_bump("room_list_unauthenticated")
         raise HTTPException(status_code=303, headers={"Location": "/login"},
                             detail="Nicht authentifiziert")
     if role != "admin":
+        _diag_bump("room_list_denied")
+        _error_record("auth", "Admin-Route ohne Admin-Rolle aufgerufen",
+                      detail=f"Rolle: {role}")
         raise HTTPException(status_code=403, detail="Nur fuer Admins")
     return role
+
+
+# ---------------------------------------------------------------------------
+# Roadmap 6: Betriebs-Telemetrie fuer Health & Diagnostics
+# ---------------------------------------------------------------------------
+# Der Server sammelt einige leichte Kennzahlen im Speicher, damit das
+# Admin-Panel einen echten Zustandsbericht zeigen kann statt nur "laeuft".
+# Alles ist bewusst fluechtig: nach einem Neustart beginnt die Messung neu.
+SERVER_START_TS = time.time()
+
+# Ringpuffer fuer die letzten Serverfehler. Kein Log-Ersatz, sondern das, was
+# ein Admin im Panel sofort sehen muss.
+ERROR_LOG_MAX = 100
+_ERROR_LOG: list[dict] = []
+_ERROR_LOG_LOCK = threading.Lock()
+
+# Zaehler fuer Zugriffe auf die Raumliste (Roadmap 6: room-list request status
+# und Berechtigungsfehler sichtbar machen).
+_DIAG_COUNTERS = {
+    "room_list_ok": 0,
+    "room_list_denied": 0,
+    "room_list_unauthenticated": 0,
+    "room_list_error": 0,
+    "auth_failures": 0,
+    "upload_chunks": 0,
+    "upload_bytes": 0,
+    "upload_errors": 0,
+    "finish_ok": 0,
+    "finish_errors": 0,
+    "wav_rebuilds": 0,
+}
+_DIAG_LOCK = threading.Lock()
+
+# Letzter Raumlisten-Zugriff, damit im Panel sichtbar ist, wann und mit welchem
+# Ergebnis zuletzt gelesen wurde.
+_ROOM_LIST_LAST: dict = {}
+
+
+def _diag_bump(key: str, amount: int = 1) -> None:
+    with _DIAG_LOCK:
+        if key in _DIAG_COUNTERS:
+            _DIAG_COUNTERS[key] += amount
+
+
+def _diag_snapshot() -> dict:
+    with _DIAG_LOCK:
+        return dict(_DIAG_COUNTERS)
+
+
+def _error_record(source: str, message: str, room: str = "", detail: str = "") -> None:
+    """Legt einen Fehler in den Ringpuffer und schreibt ihn auf stdout.
+
+    `source` ist die Herkunft (z. B. "ws-host", "upload", "merge"), damit ein
+    Admin die Meldung ohne Code-Kenntnis zuordnen kann.
+    """
+    entry = {
+        "ts": time.time(),
+        "source": str(source)[:40],
+        "room": str(room)[:80],
+        "message": str(message)[:500],
+        "detail": str(detail)[:1000],
+    }
+    with _ERROR_LOG_LOCK:
+        _ERROR_LOG.append(entry)
+        if len(_ERROR_LOG) > ERROR_LOG_MAX:
+            del _ERROR_LOG[:len(_ERROR_LOG) - ERROR_LOG_MAX]
+    print(f"[{entry['source']}] {entry['message']}" + (f" :: {entry['detail']}" if detail else ""))
+
+
+def _errors_recent(limit: int = 50, since: float = 0.0) -> list[dict]:
+    with _ERROR_LOG_LOCK:
+        rows = [e for e in _ERROR_LOG if e["ts"] > since]
+    return rows[-limit:][::-1]
+
+
+def _fmt_uptime(seconds: float) -> str:
+    s = int(max(0, seconds))
+    d, s = divmod(s, 86400)
+    h, s = divmod(s, 3600)
+    m, s = divmod(s, 60)
+    if d:
+        return f"{d}d {h}h {m}m"
+    if h:
+        return f"{h}h {m}m"
+    if m:
+        return f"{m}m {s}s"
+    return f"{s}s"
 
 
 # ---------------------------------------------------------------------------
@@ -877,7 +1100,10 @@ def _room(room):
     if r is None:
         r = {"command":  {"action": None, "start_at": None, "session": None, "issued_at": 0},
              "settings": {"audio_only": True, "debug_level": 0},
-             "guests":   {}}
+             "guests":   {},
+             # Idempotenz-Buch: verarbeitete Trigger (action|session|issued_at).
+             "cmd_seen": {},
+             "rec_state": "idle"}
         ROOMS[room] = r
     return r
 
@@ -902,6 +1128,176 @@ def _prune_level_throttle(max_age: float = 300.0) -> None:
     stale = [rm for rm, ts in _LEVEL_LAST_SENT.items() if now - ts > max_age]
     for rm in stale:
         _LEVEL_LAST_SENT.pop(rm, None)
+
+
+# ---------------------------------------------------------------------------
+# Roadmap 5: Single-Host-Instance Lock (Session Locking)
+# ---------------------------------------------------------------------------
+# Pro Raum darf genau EINE Host-Instanz steuern (Start/Stopp/Settings/Marker/
+# Mikrofonwahl). Weitere Host-Clients erhalten einen Read-only-Zustand.
+#
+# Modell:
+#   _HOST_LOCKS[room] = {
+#       "room": str, "client_id": str, "role": "host"|"admin",
+#       "label": str,               # Anzeigename fuer die UI
+#       "acquired_at": float,       # Unix-Sekunden
+#       "last_renew": float,
+#       "expires_at": float,        # Ablauf; wird bei jedem Renew verlaengert
+#       "connected": bool,          # WebSocket der steuernden Instanz offen?
+#   }
+#
+# Lebenszyklus:
+#   acquire  -> erster Client bekommt den Lock (mode="control")
+#   renew    -> Heartbeat (WS-Ping oder HTTP) verlaengert expires_at
+#   release  -> expliziter Verzicht (Tab schliessen, "Steuerung abgeben")
+#   recovery -> nach Disconnect laeuft eine kurze Kulanzzeit (GRACE); danach
+#               ist der Lock "stale" und wird beim naechsten Zugriff automatisch
+#               freigegeben. Ein Serverneustart leert die Locks vollstaendig,
+#               weil der Zustand absichtlich nur In-Memory gehalten wird.
+HOST_LOCK_TTL = 30.0      # Gueltigkeit ab dem letzten Renew (verbundener Host)
+HOST_LOCK_GRACE = 20.0    # Kulanzzeit nach einem Disconnect (Reload/Netzwerk)
+
+_HOST_LOCKS: dict[str, dict] = {}
+_HOST_LOCK_MUTEX = threading.Lock()
+
+# Steuerbefehle, die den Lock zwingend brauchen.
+LOCK_GUARDED_ACTIONS = ("trigger", "settings", "marker", "marker_delete", "set_mic")
+
+
+def _lock_public(lock: dict | None, now: float | None = None) -> dict | None:
+    """Serialisierbare Sicht auf einen Lock (ohne interne Felder)."""
+    if not lock:
+        return None
+    now = now if now is not None else time.time()
+    return {
+        "room":        lock["room"],
+        "client_id":   lock["client_id"],
+        "role":        lock["role"],
+        "label":       lock.get("label", ""),
+        "acquired_at": round(lock["acquired_at"], 3),
+        "last_renew":  round(lock["last_renew"], 3),
+        "expires_at":  round(lock["expires_at"], 3),
+        "expires_in":  round(max(0.0, lock["expires_at"] - now), 1),
+        "connected":   bool(lock.get("connected")),
+        "ttl":         HOST_LOCK_TTL,
+        "grace":       HOST_LOCK_GRACE,
+    }
+
+
+def _lock_is_stale(lock: dict, now: float) -> bool:
+    return now >= lock["expires_at"]
+
+
+def _lock_prune_locked(room: str, now: float) -> dict | None:
+    """Entfernt einen abgelaufenen Lock. Erwartet _HOST_LOCK_MUTEX."""
+    lock = _HOST_LOCKS.get(room)
+    if lock is None:
+        return None
+    if _lock_is_stale(lock, now):
+        _HOST_LOCKS.pop(room, None)
+        return None
+    return lock
+
+
+def _lock_get(room: str) -> dict | None:
+    now = time.time()
+    with _HOST_LOCK_MUTEX:
+        lock = _lock_prune_locked(room, now)
+        return dict(lock) if lock else None
+
+
+def _lock_acquire(room: str, client_id: str, role: str = "host",
+                  label: str = "", force: bool = False) -> dict:
+    """Versucht den Lock zu bekommen.
+
+    Rueckgabe: {"mode": "control"|"readonly", "lock": <public>,
+                "acquired": bool, "takeover": bool, "reason": str}
+    """
+    now = time.time()
+    with _HOST_LOCK_MUTEX:
+        cur = _lock_prune_locked(room, now)
+        takeover = False
+        reason = ""
+        if cur and cur["client_id"] != client_id and not force:
+            # Fremder, gueltiger Lock -> Read-only.
+            return {"mode": "readonly", "acquired": False, "takeover": False,
+                    "reason": "locked_by_other", "lock": _lock_public(cur, now)}
+        if cur and cur["client_id"] != client_id and force:
+            takeover = True
+            reason = "takeover"
+        elif cur and cur["client_id"] == client_id:
+            reason = "renewed"
+        else:
+            reason = "acquired"
+        lock = {
+            "room": room,
+            "client_id": client_id,
+            "role": role,
+            "label": label or (cur or {}).get("label", ""),
+            "acquired_at": (cur or {}).get("acquired_at", now) if reason == "renewed" else now,
+            "last_renew": now,
+            "expires_at": now + HOST_LOCK_TTL,
+            "connected": True,
+        }
+        _HOST_LOCKS[room] = lock
+        return {"mode": "control", "acquired": True, "takeover": takeover,
+                "reason": reason, "lock": _lock_public(lock, now)}
+
+
+def _lock_renew(room: str, client_id: str) -> dict:
+    now = time.time()
+    with _HOST_LOCK_MUTEX:
+        cur = _lock_prune_locked(room, now)
+        if cur is None:
+            return {"mode": "none", "renewed": False, "reason": "no_lock", "lock": None}
+        if cur["client_id"] != client_id:
+            return {"mode": "readonly", "renewed": False, "reason": "locked_by_other",
+                    "lock": _lock_public(cur, now)}
+        cur["last_renew"] = now
+        cur["expires_at"] = now + HOST_LOCK_TTL
+        cur["connected"] = True
+        return {"mode": "control", "renewed": True, "reason": "renewed",
+                "lock": _lock_public(cur, now)}
+
+
+def _lock_release(room: str, client_id: str) -> dict:
+    now = time.time()
+    with _HOST_LOCK_MUTEX:
+        cur = _lock_prune_locked(room, now)
+        if cur is None:
+            return {"released": False, "reason": "no_lock", "lock": None}
+        if cur["client_id"] != client_id:
+            return {"released": False, "reason": "not_owner",
+                    "lock": _lock_public(cur, now)}
+        _HOST_LOCKS.pop(room, None)
+        return {"released": True, "reason": "released", "lock": None}
+
+
+def _lock_mark_disconnected(room: str, client_id: str) -> dict | None:
+    """Disconnect der steuernden Instanz: Lock bleibt fuer HOST_LOCK_GRACE
+    reserviert, damit ein Reload oder kurzer Netzausfall die Steuerung
+    zurueckbekommt. Danach ist er stale und faellt an den naechsten Host."""
+    now = time.time()
+    with _HOST_LOCK_MUTEX:
+        cur = _lock_prune_locked(room, now)
+        if cur is None or cur["client_id"] != client_id:
+            return None
+        cur["connected"] = False
+        cur["expires_at"] = min(cur["expires_at"], now + HOST_LOCK_GRACE)
+        return _lock_public(cur, now)
+
+
+def _lock_holds(room: str, client_id: str) -> bool:
+    """True, wenn client_id aktuell steuern darf.
+
+    Ist kein Lock vorhanden (z. B. direkt nach einem Serverneustart), darf ein
+    identifizierter Client steuern und bekommt den Lock implizit.
+    """
+    if not client_id:
+        # Ohne Client-Kennung nur erlauben, wenn niemand den Raum haelt.
+        return _lock_get(room) is None
+    res = _lock_acquire(room, client_id)
+    return res["mode"] == "control"
 
 
 # ---------------------------------------------------------------------------
@@ -958,6 +1354,13 @@ async def _broadcast_guests(room: str) -> None:
             "type":        "command",
             "command":     dict(r["command"]),
             "settings":    dict(r["settings"]),
+            # Guardrails muessen auch beim Gast bekannt sein: nur so kann der
+            # Recorder die Bereit-Meldung anfordern und Clipping korrekt melden.
+            "guardrails":  {
+                "require_guest_ready": bool(_cfg_get("require_guest_ready")),
+                "clip_threshold_dbfs": float(_cfg_get("clip_threshold_dbfs")),
+                "clip_min_samples":    int(_cfg_get("clip_min_samples")),
+            },
             "server_time": int(time.time() * 1000),
             # issued_at steckt in command, aber wir lassen es explizit drin und
             # sorgen hier dafür, dass es immer mitkommt (für Client-Dedupe/Debug).
@@ -1010,6 +1413,86 @@ async def _broadcast_host_levels(room: str) -> None:
             _ws_remove(_WS_HOSTS, room, ws)
 
 
+def _guest_ready_state(info: dict, conn_state: str) -> dict:
+    """Fasst zusammen, ob ein Gast technisch und explizit aufnahmebereit ist."""
+    perms = info.get("permissions") or {}
+    mic_ok = bool(info.get("mic_active", False)) and perms.get("microphone") != "denied"
+    cam_needed = not bool(info.get("audio_only", True))
+    cam_ok = (not cam_needed) or (perms.get("camera") != "denied"
+                                  and bool(info.get("cam_active", False)))
+    device_ok = not bool(info.get("mic_mismatch_flag"))
+    blockers = []
+    if conn_state != "online":
+        blockers.append("offline")
+    if perms.get("microphone") == "denied":
+        blockers.append("mic_permission")
+    elif not mic_ok:
+        blockers.append("mic_signal")
+    if cam_needed and not cam_ok:
+        blockers.append("camera")
+    if not device_ok:
+        blockers.append("device_mismatch")
+    return {
+        "tech_ready": conn_state == "online" and mic_ok and cam_ok and device_ok,
+        "declared_ready": bool(info.get("declared_ready")),
+        "blockers": blockers,
+    }
+
+
+def _start_gate(room: str) -> dict:
+    """Prueft, ob eine Aufnahme gestartet werden darf.
+
+    Regeln (Admin-konfigurierbar):
+      - require_guest_online : mindestens ein Gast ist online und technisch bereit
+      - require_guest_ready  : jeder online-Gast hat sich aktiv bereit gemeldet
+    """
+    status = _build_status(room)
+    guests = status.get("guests", [])
+    online = [g for g in guests if g.get("connection") == "online"]
+    require_online = bool(_cfg_get("require_guest_online"))
+    require_ready = bool(_cfg_get("require_guest_ready"))
+    tech_ready = [g for g in online if (g.get("ready") or {}).get("tech_ready")]
+
+    if require_online and not online:
+        return {"ok": False, "reason": "no_guest_online",
+                "detail": "Kein Gast ist online. Die Aufnahme kann nicht starten.",
+                "guests": []}
+    if require_online and not tech_ready:
+        names = ", ".join((g.get("display_name") or g.get("guest") or "?") for g in online)
+        return {"ok": False, "reason": "no_guest_ready",
+                "detail": f"Kein Gast ist aufnahmebereit ({names}). "
+                          "Pruefe Mikrofon-Freigabe und Geraeteauswahl.",
+                "guests": [g.get("guest") for g in online]}
+    if require_ready:
+        missing = [g for g in online if not (g.get("ready") or {}).get("declared_ready")]
+        if missing:
+            names = ", ".join((g.get("display_name") or g.get("guest") or "?") for g in missing)
+            return {"ok": False, "reason": "not_declared_ready",
+                    "detail": f"Diese Gaeste haben sich noch nicht bereit gemeldet: {names}.",
+                    "guests": [g.get("guest") for g in missing]}
+    return {"ok": True, "reason": "", "detail": "",
+            "guests": [g.get("guest") for g in tech_ready]}
+
+
+def _cmd_remember(r: dict, action: str, session: str, issued_at: int) -> bool:
+    """Idempotenz: True, wenn dieser Befehl neu ist (und damit auszufuehren).
+
+    Der Schluessel besteht aus action + session + issued_at -- exakt der Tripel,
+    den auch der Recorder zum Deduplizieren nutzt. Wiederholte Zustellungen
+    (Reconnect, Doppelklick, Retry) bleiben dadurch folgenlos.
+    """
+    seen = r.setdefault("cmd_seen", {})
+    key = f"{action}|{session or ''}|{int(issued_at)}"
+    now = time.time()
+    for k, ts in list(seen.items()):
+        if now - ts > 3600:
+            seen.pop(k, None)
+    if key in seen:
+        return False
+    seen[key] = now
+    return True
+
+
 def _build_status(room: str) -> dict:
     """Erzeugt das Status-Objekt (Gaeste, command, settings, marker) -- die
     gemeinsame Basis fuer HTTP /host/status und den WebSocket-Push."""
@@ -1024,7 +1507,7 @@ def _build_status(room: str) -> dict:
                     else "stale" if age <= GUEST_OFFLINE_AFTER
                     else "offline")
             row  = {k: info.get(k) for k in (
-                "guest", "display_name", "session", "state",
+                "guest", "client_id", "display_name", "session", "state",
                 "mic_label", "speaker_label", "rms", "queue", "rec_mb", "up_mb")}
             # Sprint 2: Mic-Inventar + aktuelles Geraet + Wechsel-Status.
             row["mic_devices"]          = info.get("mic_devices", [])
@@ -1037,12 +1520,25 @@ def _build_status(room: str) -> dict:
             row["mic_mismatch"] = bool(
                 info.get("current_mic_deviceId") and info.get("active_mic_deviceId")
                 and info.get("current_mic_deviceId") != info.get("active_mic_deviceId"))
+            info["mic_mismatch_flag"] = row["mic_mismatch"]
+            # Berechtigungen + Geraetepruefung (Start-Gate).
+            row["permissions"]    = dict(info.get("permissions") or {})
+            row["cam_active"]     = bool(info.get("cam_active", False))
+            row["ready"]          = _guest_ready_state(info, conn)
+            row["declared_ready"] = bool(info.get("declared_ready"))
+            # Clipping-Telemetrie (live).
+            row["clipping"]       = bool(info.get("clipping"))
+            row["clip_count"]     = int(info.get("clip_count", 0) or 0)
+            row["clip_last_dbfs"] = float(info.get("clip_last_dbfs", 0.0) or 0.0)
+            row["clip_last_ts"]   = float(info.get("clip_last_ts", 0.0) or 0.0)
+            row["peak"]           = float(info.get("peak", 0.0) or 0.0)
             row["mic_pending"]          = bool(info.get("mic_cmd"))
             row["mic_last_result"]      = info.get("mic_last_result")
             row["connection"]         = conn
             row["seconds_since_seen"] = round(age, 1)
             guests.append(row)
         guests.sort(key=lambda x: (x.get("display_name") or x.get("guest") or "").lower())
+        lobby_rows = _lobby_list(r, now_s)
         cmd      = dict(r["command"])
         settings = dict(r["settings"])
         cur_session = r.get("rec_session", "")
@@ -1058,9 +1554,22 @@ def _build_status(room: str) -> dict:
     return {
         "ok": True, "room": room, "server_time": int(now_s * 1000),
         "command": cmd, "settings": settings, "guests": guests,
+        # Punkt 8: Wartende Gaeste, die noch keinen Namen bestaetigt haben.
+        "lobby": lobby_rows,
+        "lobby_count": len(lobby_rows),
         "online_count": sum(1 for g in guests if g["connection"] == "online"),
+        "ready_count": sum(1 for g in guests
+                           if (g.get("ready") or {}).get("tech_ready")),
         "markers": markers, "session": cur_session,
         "marker_sessions": sessions_known,
+        # Roadmap 5: Wer steuert diesen Raum gerade?
+        "lock": _lock_public(_lock_get(room)),
+        "guardrails": {
+            "require_guest_online": bool(_cfg_get("require_guest_online")),
+            "require_guest_ready":  bool(_cfg_get("require_guest_ready")),
+            "clip_threshold_dbfs":  float(_cfg_get("clip_threshold_dbfs")),
+            "clip_min_samples":     int(_cfg_get("clip_min_samples")),
+        },
     }
 
 
@@ -1136,10 +1645,14 @@ def whoami(role: str = Depends(require_auth)):
 # Semantische Farben (--ok/--warn/--accent) werden bewusst NICHT angefasst.
 
 def _hex_parse(color: str) -> tuple[int, int, int] | None:
-    m = re.match(r"^#([0-9a-fA-F]{6})$", str(color or "").strip())
+    raw = str(color or "").strip()
+    m = re.match(r"^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$", raw)
     if not m:
         return None
-    n = int(m.group(1), 16)
+    h = m.group(1)
+    if len(h) == 3:               # #abc -> #aabbcc
+        h = "".join(c * 2 for c in h)
+    n = int(h, 16)
     return (n >> 16) & 255, (n >> 8) & 255, n & 255
 
 
@@ -1147,6 +1660,149 @@ def _brand_hover(rgb: tuple[int, int, int]) -> str:
     """Hover-Farbe: ~18 % Richtung Weiss aufhellen (wie bisher im Client)."""
     mix = lambda c: max(0, min(255, round(c + (255 - c) * 0.18)))
     return "#" + "".join(f"{mix(c):02x}" for c in rgb)
+
+
+# ---------------------------------------------------------------------------
+# Theme-Presets und abgeleitete Farbtokens
+# ---------------------------------------------------------------------------
+# Bisher war nur die Primaerfarbe konfigurierbar; Hintergrund, Textfarbe und
+# der Text auf Brand-Flaechen waren in jeder Seite fest verdrahtet. Jetzt gibt
+# es drei versionierte Presets als Basis, die einzeln ueberschrieben werden
+# koennen. Alles Weitere (Panels, Rahmen, gedaempfter Text) wird aus Hinter-
+# grund und Textfarbe berechnet, damit ein helles Theme nicht von Hand
+# nachgepflegt werden muss.
+
+BRAND_PRESETS = {
+    "default":  {"version": 1, "label": "Default",
+                 "bg": "#0f1115", "text": "#e8eaed", "brand": "#30a46c"},
+    "dark":     {"version": 1, "label": "Dark",
+                 "bg": "#07080b", "text": "#f2f4f7", "brand": "#30a46c"},
+    "contrast": {"version": 1, "label": "High Contrast",
+                 "bg": "#000000", "text": "#ffffff", "brand": "#ffd400"},
+}
+DEFAULT_PRESET = "default"
+
+
+def _global_presets(cfg: dict | None = None) -> dict[str, dict]:
+    """Eingebaute und vom Admin angelegte globale Presets als gemeinsamer Katalog."""
+    cfg = cfg or _cfg_load()
+    result = {key: {**value, "key": key, "builtin": True}
+              for key, value in BRAND_PRESETS.items()}
+    for raw in cfg.get("global_presets") or []:
+        if not isinstance(raw, dict):
+            continue
+        key = str(raw.get("key") or "").strip().lower()
+        if (not re.fullmatch(r"[a-z0-9][a-z0-9_-]{1,63}", key)
+                or key in BRAND_PRESETS):
+            # Eingebaute Presets sind reserviert und duerfen nicht durch
+            # benutzerdefinierte Datensaetze ueberschrieben werden.
+            continue
+        base = BRAND_PRESETS[DEFAULT_PRESET]
+        result[key] = {
+            "key": key,
+            "label": str(raw.get("label") or base["label"])[:60],
+            "version": int(raw.get("version") or base.get("version") or 1),
+            "bg": str(raw.get("bg") or base["bg"]),
+            "text": str(raw.get("text") or base["text"]),
+            "brand": str(raw.get("brand") or base["brand"]),
+            "on_brand": str(raw.get("on_brand") or ""),
+            "appearance": str(raw.get("appearance") or "dark"),
+            "builtin": key in BRAND_PRESETS,
+            "custom": True,
+        }
+    return result
+
+
+def _brand_preset(name: str | None = None, cfg: dict | None = None) -> dict:
+    presets = _global_presets(cfg)
+    key = str(name or "").strip().lower()
+    return presets.get(key, presets[DEFAULT_PRESET])
+
+
+def _rel_lum(rgb: tuple[int, int, int]) -> float:
+    def lin(v: float) -> float:
+        c = v / 255.0
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+    return 0.2126 * lin(rgb[0]) + 0.7152 * lin(rgb[1]) + 0.0722 * lin(rgb[2])
+
+
+def _contrast(a: tuple[int, int, int], b: tuple[int, int, int]) -> float:
+    la, lb = _rel_lum(a), _rel_lum(b)
+    hi, lo = max(la, lb), min(la, lb)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def _mix(a: tuple[int, int, int], b: tuple[int, int, int], t: float) -> str:
+    """Mischt zwei Farben; t=0 ergibt a, t=1 ergibt b."""
+    return "#" + "".join(f"{round(a[i] + (b[i] - a[i]) * t):02x}" for i in range(3))
+
+
+def _theme_tokens(cfg: dict) -> dict:
+    """Berechnet alle Theme-Variablen aus Preset plus Overrides.
+
+    Panels, Rahmen und gedaempfter Text werden aus Hintergrund und Textfarbe
+    abgeleitet. Dadurch funktioniert auch ein heller Hintergrund, ohne dass
+    jede Seite eigene Regeln braucht.
+    """
+    preset = _brand_preset(cfg.get("brand_preset"), cfg)
+    preset_key = str(preset.get("key") or DEFAULT_PRESET)
+
+    def pick(key: str, fallback: str) -> str:
+        val = str(cfg.get(key) or "").strip()
+        return val if _hex_parse(val) else fallback
+
+    bg_hex    = pick("brand_bg", preset["bg"])
+    text_hex  = pick("brand_text", preset["text"])
+    brand_hex = pick("brand_color", preset["brand"])
+
+    bg    = _hex_parse(bg_hex)    or _hex_parse(preset["bg"])
+    text  = _hex_parse(text_hex)  or _hex_parse(preset["text"])
+    brand = _hex_parse(brand_hex) or _hex_parse(preset["brand"])
+
+    # Panels heben sich leicht vom Hintergrund ab -- Richtung Text, damit die
+    # Abstufung bei hellen wie dunklen Themes in die richtige Richtung geht.
+    panel  = _mix(bg, text, 0.06)
+    panel2 = _mix(bg, text, 0.03)
+    border = _mix(bg, text, 0.18)
+    muted  = _mix(text, bg, 0.38)
+    # Weitere abgeleitete Flaechen: bisher standen diese Werte als feste
+    # Hex-Codes in jeder Seite und haben jedes helle Theme gebrochen.
+    muted_2       = _mix(text, bg, 0.55)   # zweite, ruhigere Textstufe
+    border_strong = _mix(bg, text, 0.30)   # Rahmen auf Bedienelementen
+    surface_hover = _mix(bg, text, 0.10)   # Hover-Flaeche auf Panels
+
+    # Manuelle Buttontextfarben sind verbindlich. Schwarz/Weiss wird nur
+    # automatisch gewaehlt, wenn kein Override gespeichert ist. Schlechter
+    # Kontrast erzeugt eine Warnung, aber keine heimliche Ueberschreibung.
+    requested_on = str(cfg.get("brand_on_brand") or preset.get("on_brand") or "").strip()
+    on_brand_manual = bool(_hex_parse(str(cfg.get("brand_on_brand") or "").strip()))
+    on_brand_effective = requested_on if _hex_parse(requested_on) else _brand_on(brand)
+
+    return {
+        "preset":         preset["label"],
+        "preset_key":     preset_key,
+        "preset_version": preset["version"],
+        "bg":             bg_hex,
+        "panel":          panel,
+        "panel2":         panel2,
+        "border":         border,
+        "text":           text_hex,
+        "muted":          muted,
+        "muted_2":        muted_2,
+        "border_strong":  border_strong,
+        "surface_hover":  surface_hover,
+        "brand":          brand_hex,
+        "brand_hover":    _brand_hover(brand),
+        "brand_on":       on_brand_effective,
+        "brand_on_requested": requested_on,
+        "brand_on_manual":    on_brand_manual,
+        "brand_on_adjusted":  False,
+        "brand_on_warning":   on_brand_manual and _contrast(_hex_parse(on_brand_effective), brand) < 4.5,
+        "bg_manual":          bool(_hex_parse(str(cfg.get("brand_bg") or "").strip())),
+        "text_manual":        bool(_hex_parse(str(cfg.get("brand_text") or "").strip())),
+        "contrast_text_bg":   round(_contrast(text, bg), 2),
+        "contrast_on_brand":  round(_contrast(_hex_parse(on_brand_effective) or (255, 255, 255), brand), 2),
+    }
 
 
 def _brand_on(rgb: tuple[int, int, int]) -> str:
@@ -1157,39 +1813,277 @@ def _brand_on(rgb: tuple[int, int, int]) -> str:
     L = 0.2126 * lin(rgb[0]) + 0.7152 * lin(rgb[1]) + 0.0722 * lin(rgb[2])
     c_white = (max(L, 1.0) + 0.05) / (min(L, 1.0) + 0.05)
     c_black = (max(L, 0.0) + 0.05) / (min(L, 0.0) + 0.05)
-    return "#000" if c_black >= c_white else "#fff"
+    return "#000000" if c_black >= c_white else "#ffffff"
 
 
-def _branding_head() -> str:
-    """Baut den <head>-Block: Farbvariablen, Titel-Suffix, Favicon, JSON."""
+
+# ---------------------------------------------------------------------------
+# Punkt 7: Branding als verwaltete Dateien (kein Data-URL-Blob in config.json)
+# ---------------------------------------------------------------------------
+# Frueher wanderten Logo und Favicon als base64-Data-URL in config.json. Das
+# blaeht die Konfiguration auf, macht jedes Backup teuer und schickt bei jedem
+# Seitenaufruf denselben Blob durch den <head>. Jetzt liegen die Bytes als
+# Datei unter DATA_DIR/branding/, config.json haelt nur noch Metadaten, und
+# die Auslieferung laeuft ueber eine eigene Route mit ETag/Cache-Header.
+
+# Pro globalem Preset gibt es genau ein Logo sowie ein optionales Favicon.
+BRANDING_KINDS = ("logo", "favicon")
+BRANDING_MIME = {
+    "image/png":     ".png",
+    "image/jpeg":    ".jpg",
+    "image/svg+xml": ".svg",
+    "image/webp":    ".webp",
+    "image/gif":     ".gif",
+    "image/x-icon":  ".ico",
+    "image/vnd.microsoft.icon": ".ico",
+}
+BRANDING_MAX_BYTES = 2 * 1024 * 1024
+
+
+def _branding_asset(kind: str) -> dict | None:
+    """Metadaten eines Branding-Assets; None wenn nicht gesetzt/Datei fehlt."""
+    if kind not in BRANDING_KINDS:
+        return None
     cfg = _cfg_load()
-    name    = str(cfg.get("brand_name", "Podcast Studio"))
-    color   = str(cfg.get("brand_color", "#30a46c"))
-    favicon = str(cfg.get("brand_favicon", ""))
+    preset_key = str(cfg.get("brand_preset") or DEFAULT_PRESET)
+    per_preset = cfg.get("global_preset_assets") or {}
+    meta = (per_preset.get(preset_key) or {}).get(kind)
+    # Einmaliger Legacy-Fallback nur fuer das Default-Preset. Andernfalls
+    # wuerde ein fehlendes Logo versehentlich das Logo eines anderen Presets zeigen.
+    if not isinstance(meta, dict) and not per_preset and preset_key == DEFAULT_PRESET:
+        meta = cfg.get(f"brand_{kind}_asset")
+    if not isinstance(meta, dict):
+        return None
+    fname = str(meta.get("file") or "")
+    if not fname or not SAFE_FILE.match(fname):
+        return None
+    path = BRANDING_DIR / fname
+    if not path.is_file():
+        return None
+    return dict(meta)
 
-    rgb = _hex_parse(color)
-    parts = []
-    if rgb:
-        parts.append(
-            ":root{"
-            f"--brand:{color};"
-            f"--brand-hover:{_brand_hover(rgb)};"
-            f"--brand-on:{_brand_on(rgb)};"
-            "}"
-        )
-    css = f"<style id=\"brand-vars\">{''.join(parts)}</style>" if parts else ""
+
+def _branding_asset_path(kind: str) -> Path | None:
+    meta = _branding_asset(kind)
+    if not meta:
+        return None
+    return BRANDING_DIR / str(meta["file"])
+
+
+def _branding_asset_url(kind: str) -> str:
+    """Oeffentliche URL inkl. Versions-Query, damit Browser sauber neu laden."""
+    meta = _branding_asset(kind)
+    if not meta:
+        return ""
+    return f"/branding/{kind}?v={int(meta.get('updated_at') or 0)}"
+
+
+def _global_preset_asset_url(preset_key: str, kind: str = "logo",
+                             cfg: dict | None = None) -> str:
+    cfg = cfg or _cfg_load()
+    meta = ((cfg.get("global_preset_assets") or {}).get(preset_key) or {}).get(kind)
+    if not isinstance(meta, dict):
+        return ""
+    fname = str(meta.get("file") or "")
+    if not fname or not SAFE_FILE.match(fname) or not (BRANDING_DIR / fname).is_file():
+        return ""
+    return (f"/branding/global-preset/{preset_key}/{kind}"
+            f"?v={int(meta.get('updated_at') or 0)}")
+
+
+def _branding_store(kind: str, data: bytes, mime: str, original_name: str,
+                    preset_key: str | None = None) -> dict:
+    """Schreibt ein Branding-Asset und ersetzt ein evtl. vorhandenes."""
+    if kind not in BRANDING_KINDS:
+        raise HTTPException(400, "Unbekannter Branding-Typ")
+    if not data:
+        raise HTTPException(400, "Leere Datei")
+    if len(data) > BRANDING_MAX_BYTES:
+        raise HTTPException(413, "Datei zu gross (max. 2 MB)")
+    mime = (mime or "").split(";")[0].strip().lower()
+    ext = BRANDING_MIME.get(mime)
+    if not ext:
+        raise HTTPException(415, "Nicht unterstuetztes Bildformat")
+    if mime == "image/svg+xml" and re.search(rb"<script|javascript:|onload=",
+                                             data[:200000], re.I):
+        # SVG kann Skripte tragen -> aktive Inhalte werden abgelehnt.
+        raise HTTPException(400, "SVG mit aktiven Inhalten wird abgelehnt")
+
+    cfg = _cfg_load()
+    preset_key = str(preset_key or cfg.get("brand_preset") or DEFAULT_PRESET)
+    old_meta = ((cfg.get("global_preset_assets") or {}).get(preset_key) or {}).get(kind)
+    old = (BRANDING_DIR / str(old_meta.get("file"))) if isinstance(old_meta, dict) and SAFE_FILE.match(str(old_meta.get("file") or "")) else None
+    fname = f"{kind}-{secrets.token_hex(8)}{ext}"
+    (BRANDING_DIR / fname).write_bytes(data)
+    meta = {
+        "file": fname,
+        "name": str(original_name or fname)[:120],
+        "size": len(data),
+        "mime": mime,
+        "updated_at": int(time.time()),
+    }
+    per_preset = dict(cfg.get("global_preset_assets") or {})
+    slot = dict(per_preset.get(preset_key) or {})
+    slot[kind] = meta
+    per_preset[preset_key] = slot
+    cfg["global_preset_assets"] = per_preset
+    cfg[f"brand_{kind}_asset"] = meta
+    if kind == "favicon":
+        cfg["brand_favicon"] = ""   # Legacy-Data-URL ist damit abgeloest.
+    _cfg_save(cfg)
+    if old and old.name != fname:
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    return meta
+
+
+def _branding_clear(kind: str, preset_key: str | None = None) -> None:
+    cfg = _cfg_load()
+    preset_key = str(preset_key or cfg.get("brand_preset") or DEFAULT_PRESET)
+    old_meta = ((cfg.get("global_preset_assets") or {}).get(preset_key) or {}).get(kind)
+    old = ((BRANDING_DIR / str(old_meta.get("file")))
+           if isinstance(old_meta, dict)
+           and SAFE_FILE.match(str(old_meta.get("file") or "")) else None)
+    per_preset = dict(cfg.get("global_preset_assets") or {})
+    slot = dict(per_preset.get(preset_key) or {})
+    slot[kind] = None
+    per_preset[preset_key] = slot
+    cfg["global_preset_assets"] = per_preset
+    cfg[f"brand_{kind}_asset"] = None
+    if kind == "favicon":
+        cfg["brand_favicon"] = ""
+    _cfg_save(cfg)
+    if old:
+        try:
+            old.unlink()
+        except OSError:
+            pass
+
+
+def _preset_asset_url(preset_id: str, meta: dict | None) -> str:
+    if not preset_id or not isinstance(meta, dict):
+        return ""
+    fname = str(meta.get("file") or "")
+    if not fname or not SAFE_FILE.match(fname) or not (BRANDING_DIR / fname).is_file():
+        return ""
+    return f"/branding/preset/{preset_id}/logo?v={int(meta.get('updated_at') or 0)}"
+
+
+def _room_presets_public(cfg: dict | None = None) -> list[dict]:
+    cfg = cfg or _cfg_load()
+    result = []
+    for raw in cfg.get("branding_presets") or []:
+        if not isinstance(raw, dict) or not raw.get("id") or not raw.get("name"):
+            continue
+        p = dict(raw)
+        p["logo"] = _preset_asset_url(str(p["id"]), p.get("logo_asset"))
+        result.append(p)
+    return result
+
+
+def _room_preset(room: str, cfg: dict | None = None) -> dict | None:
+    cfg = cfg or _cfg_load()
+    preset_id = str((cfg.get("room_preset_assignments") or {}).get(room) or "")
+    return next((p for p in _room_presets_public(cfg) if str(p.get("id")) == preset_id), None)
+
+
+def _branding_public() -> dict:
+    """Was alle Seiten (und das Admin-Panel) ueber das Branding wissen muessen."""
+    cfg = _cfg_load()
+    legacy = str(cfg.get("brand_favicon", "") or "")
+    logo = _branding_asset("logo")
+    fav = _branding_asset("favicon")
+    tok = _theme_tokens(cfg)
+    return {
+        "ok": True,
+        "name":  cfg.get("brand_name", "Podcast Studio"),
+        "color": tok["brand"],
+        # favicon bleibt aus Kompatibilitaet ein einzelnes URL-Feld.
+        "favicon": _branding_asset_url("favicon") or legacy,
+        "logo":    _branding_asset_url("logo"),
+        "theme": tok,
+        "presets": [
+            {**v, "logo": _global_preset_asset_url(k, "logo", cfg)}
+            for k, v in _global_presets(cfg).items()
+        ],
+        "room_presets": _room_presets_public(cfg),
+        "room_preset_assignments": cfg.get("room_preset_assignments") or {},
+        "room_branding": _cfg_get("room_branding") or {},
+        "assets": {
+            "logo":       {**logo, "url": _branding_asset_url("logo")} if logo else None,
+            "favicon":    {**fav, "url": _branding_asset_url("favicon")} if fav else None,
+        },
+        "legacy_favicon": bool(legacy and not fav),
+    }
+
+
+def _script_json(value) -> str:
+    """JSON embedded in HTML must not be able to close its script element."""
+    return json_dumps(value).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+
+
+def _branding_head(room: str | None = None) -> str:
+    """Baut den <head>-Block: Theme-Variablen, Titel-Suffix, Favicon, JSON."""
+    cfg = _cfg_load()
+    tok = _theme_tokens(cfg)
+    name    = str(cfg.get("brand_name", "Podcast Studio"))
+    favicon = _branding_asset_url("favicon") or str(cfg.get("brand_favicon", ""))
+    logo    = _branding_asset_url("logo")
+
+    # Ein Raum verweist auf ein vom Admin vorbereitetes Preset. Das Preset
+    # wirkt ausschliesslich im Gast-Recorder; Host und Admin behalten bewusst
+    # das globale Theme, sehen aber den Preset-Namen als Kontext.
+    room_over = {}
+    if room:
+        preset = _room_preset(room, cfg)
+        if preset:
+            room_over = preset
+            if preset.get("name"):
+                name = str(preset["name"])[:60]
+            if preset.get("logo"):
+                logo = str(preset["logo"])
+            p_cfg = {
+                "brand_preset": preset.get("appearance") == "light" and "default" or "dark",
+                "brand_color": preset.get("brand_color") or cfg.get("brand_color"),
+                "brand_bg": preset.get("bg") or ("#f6f7f9" if preset.get("appearance") == "light" else "#0f1115"),
+                "brand_text": preset.get("text") or ("#15171b" if preset.get("appearance") == "light" else "#e8eaed"),
+                "brand_on_brand": preset.get("on_brand") or "",
+            }
+            tok = _theme_tokens(p_cfg)
+
+    css = (
+        '<style id="brand-vars">:root{'
+        f'--bg:{tok["bg"]};'
+        f'--panel:{tok["panel"]};'
+        f'--panel2:{tok["panel2"]};'
+        f'--border:{tok["border"]};'
+        f'--text:{tok["text"]};'
+        f'--muted:{tok["muted"]};'
+        f'--muted-2:{tok["muted_2"]};'
+        f'--border-strong:{tok["border_strong"]};'
+        f'--surface-hover:{tok["surface_hover"]};'
+        f'--brand:{tok["brand"]};'
+        f'--brand-hover:{tok["brand_hover"]};'
+        f'--brand-on:{tok["brand_on"]};'
+        '}</style>'
+    )
 
     ico = ""
     if favicon and favicon.startswith(("data:", "/", "http")):
         ico = f'<link rel="icon" href="{html_escape(favicon, quote=True)}">'
 
-    payload = json_dumps({"ok": True, "name": name, "color": color,
-                          "favicon": favicon})
+    payload = _script_json({
+        "ok": True, "name": name, "color": tok["brand"],
+        "favicon": favicon, "logo": logo,
+        "theme": tok, "room": room or "", "room_branding": room_over,
+    })
     js = f"<script>window.__BRANDING__={payload};</script>"
     return css + ico + js
 
 
-def _render_page(filename: str, status_code: int = 200) -> HTMLResponse:
+def _render_page(filename: str, status_code: int = 200, room: str | None = None) -> HTMLResponse:
     """Liefert eine HTML-Seite mit serverseitig eingesetztem Branding aus.
 
     Der Marker <!--BRANDING--> steht in jeder Seite als LETZTES Element im
@@ -1203,7 +2097,363 @@ def _render_page(filename: str, status_code: int = 200) -> HTMLResponse:
     except OSError:
         raise HTTPException(404, "Seite nicht gefunden")
 
-    block = _branding_head()
+    block = _branding_head(room)
+    global_locale = _global_locale()
+    page_locale = _room_locale(room) if room else global_locale
+    locale_bootstrap = r"""
+<style id="a11y-base">
+/* Punkt 6: sichtbare Tastatur-Fokuszustaende auf allen Seiten.
+   :focus-visible trifft nur Tastatur-/AT-Navigation, Mausklicks bleiben ruhig.
+   Zwei Ringe (Marke + dunkler Aussenring) halten den Kontrast auf hellen
+   UND dunklen Flaechen ueber 3:1. */
+:where(a,button,input,select,textarea,summary,[tabindex]:not([tabindex="-1"])):focus-visible{
+  outline:3px solid var(--brand,#30a46c);
+  outline-offset:2px;
+  box-shadow:0 0 0 5px rgba(0,0,0,.55);
+  border-radius:6px;
+}
+/* Fokus im Dateiauswahl-Wrapper sichtbar machen: der native Input ist
+   optisch versteckt, der Ring gehoert deshalb an das umgebende Label. */
+.file-btn:focus-within{outline:3px solid var(--brand,#30a46c);outline-offset:2px}
+/* Sprungmarke: nur sichtbar, wenn sie den Fokus hat. */
+.skip-link{position:absolute;left:-9999px;top:0;z-index:9999;padding:10px 16px;
+  background:var(--brand,#30a46c);color:var(--brand-on,#fff);border-radius:0 0 8px 0;
+  font:600 14px/1.2 inherit;text-decoration:none}
+.skip-link:focus{left:0}
+.visually-hidden{position:absolute;width:1px;height:1px;margin:-1px;padding:0;
+  overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation-duration:.001ms !important;animation-iteration-count:1 !important;
+    transition-duration:.001ms !important;scroll-behavior:auto !important}
+}
+/* Punkt 6: enge Viewports. Listen und Raster brechen auf eine Spalte um,
+   Bedienflaechen bleiben mindestens 44 px hoch. */
+@media (max-width: 720px){
+  .wrap,.panel{padding-left:12px;padding-right:12px}
+  .topbar{flex-wrap:wrap;gap:8px}
+  .topbar .row{flex-wrap:wrap}
+  .guest-grid,.guests,.rooms-grid,.overview-dashboard{grid-template-columns:1fr !important}
+  .mk-row{display:grid !important;grid-template-columns:auto 1fr;gap:6px 10px;align-items:center}
+  .mk-shifts{grid-column:1/-1;display:flex;flex-wrap:wrap}
+  .mk-note{grid-column:1/-1;width:100%}
+  .cfg-row{flex-direction:column;align-items:flex-start !important;gap:8px}
+  .link-box{flex-direction:column;align-items:stretch}
+  .link-box input,.link-box button{width:100%}
+  button,.btn,[role="button"]{min-height:44px}
+  table{display:block;overflow-x:auto}
+}
+</style>
+<script id="localization-bootstrap">
+window.OpenPodcastI18n = {
+  locale: __PAGE_LOCALE__,
+  globalLocale: __GLOBAL_LOCALE__,
+  data: {}, ui: {}, _uiKeys: [], _uiSubKeys: [], _patterns: [],
+  _textSources: new WeakMap(), _attributeSources: new WeakMap(), _loadVersion: 0,
+  setData(code, data) {
+    this.locale = code;
+    this.data = data || {};
+    this.ui = this.data.ui || {};
+    this._translatedValues = new Set(Object.values(this.ui));
+    this._uiKeys = Object.keys(this.ui).sort((a,b) => b.length-a.length);
+    this._uiSubKeys = this._uiKeys.filter(k => k.trim().length >= 3 && this.ui[k] !== k);
+    const escape = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    this._patterns = Object.entries(this.data.patterns || {}).map(([source, target]) => {
+      const ids = [];
+      const tokens = source.split(/(\{\d+\})/g);
+      const expression = tokens.map(part => {
+        const m = /^\{(\d+)\}$/.exec(part);
+        if (!m) return escape(part);
+        ids.push(m[1]); return '(.*?)';
+      }).join('');
+      return {re: new RegExp('^' + expression + '$', 's'), ids, target, source,
+        weight: source.replace(/\{\d+\}/g, '').length};
+    }).sort((a,b) => b.weight-a.weight);
+    document.documentElement.lang = code;
+  },
+  async load(locale) {
+    const code = locale || this.locale || 'de';
+    const version = ++this._loadVersion;
+    const res = await fetch('/locales/' + encodeURIComponent(code), {cache:'no-store'});
+    if (!res.ok) throw new Error('Locale HTTP ' + res.status);
+    const data = await res.json();
+    if (version !== this._loadVersion) return; // A newer selection always wins.
+    this.setData(data.meta?.code || code, data);
+    this.apply(document);
+    document.dispatchEvent(new CustomEvent('i18n:applied', {detail:{locale:this.locale}}));
+  },
+  t(key, fallback) {
+    return key.split('.').reduce((o,k)=>o && o[k], this.data) ?? fallback ?? key;
+  },
+  s(text) {
+    const raw = String(text == null ? '' : text);
+    if (this.locale === 'de') return raw;
+    const key = raw.trim();
+    if (!key) return raw;
+    const compact = key.replace(/\s+/g, ' ');
+    const lead = raw.match(/^\s*/)[0], trail = raw.match(/\s*$/)[0];
+    const hit = this.ui[key] ?? this.ui[compact];
+    if (hit != null) return lead + hit + trail;
+    if (this._translatedValues.has(key) || this._translatedValues.has(compact)) return raw;
+    for (const p of this._patterns) {
+      const match = p.re.exec(compact);
+      if (!match) continue;
+      const values = {};
+      p.ids.forEach((id,i) => { values[id] = match[i+1]; });
+      // These captures are application-generated status/error messages, not names.
+      const messageSlots = {
+        'Gast {0}: {1}, wartet seit {2} Sekunden': ['1'],
+        'Fehler: {0}': ['0'],
+        'Wechsel fehlgeschlagen: {0}': ['0'],
+        'Keine Aufnahmebereitschaft. {0}': ['0']
+      };
+      for (const id of messageSlots[p.source] || []) {
+        if (values[id] !== compact) values[id] = this.s(values[id]);
+      }
+      // Captures can contain names, room IDs or device labels. Never translate them.
+      return lead + p.target.replace(/\{(\d+)\}/g, (all,id) => values[id] ?? all) + trail;
+    }
+    // Legacy mixed text: match whole words only and never reprocess replacements.
+    // In particular, German "Marker" must not match English "Markers".
+    const parts = [];
+    let out = raw;
+    const word = c => !!c && /[\p{L}\p{N}_]/u.test(c);
+    for (const source of this._uiSubKeys) {
+      let cursor = 0, next = '', at;
+      while ((at = out.indexOf(source, cursor)) !== -1) {
+        const end = at + source.length;
+        if ((word(source[0]) && word(out[at-1])) ||
+            (word(source[source.length-1]) && word(out[end]))) {
+          next += out.slice(cursor, end); cursor = end; continue;
+        }
+        next += out.slice(cursor, at) + '\u0000' + (parts.push(this.ui[source])-1) + '\u0000';
+        cursor = end;
+      }
+      out = next + out.slice(cursor);
+    }
+    return out.replace(/\u0000(\d+)\u0000/g, (_,i) => parts[Number(i)]);
+  },
+  _excluded(el) {
+    return !el || !!el.closest('script,style,textarea,code,pre,[translate="no"],[data-i18n-ignore]');
+  },
+  _translateNode(n) {
+    if (this._excluded(n.parentElement) || !n.nodeValue.trim()) return;
+    const prior = this._textSources.get(n);
+    const source = prior && n.nodeValue === prior.output ? prior.source : n.nodeValue;
+    const output = this.s(source);
+    this._textSources.set(n, {source, output});
+    if (n.nodeValue !== output) n.nodeValue = output;
+  },
+  _translateTextNodes(root) {
+    if (root.nodeType === 3) { this._translateNode(root); return; }
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) this._translateNode(walker.currentNode);
+  },
+  _elements(root, selector) {
+    const result = root.querySelectorAll ? [...root.querySelectorAll(selector)] : [];
+    if (root.matches && root.matches(selector)) result.unshift(root);
+    return result;
+  },
+  _translateAttributes(root) {
+    const attrs = ['placeholder','title','aria-label','alt','value'];
+    for (const el of this._elements(root, attrs.map(a=>'['+a+']').join(','))) {
+      if (this._excluded(el)) continue;
+      const cache = this._attributeSources.get(el) || {};
+      for (const a of attrs) {
+        if (a === 'value' && !(el.tagName === 'INPUT' && ['button','submit'].includes(el.type))) continue;
+        const value = el.getAttribute(a);
+        if (value == null) continue;
+        const source = cache[a] && value === cache[a].output ? cache[a].source : value;
+        const output = this.s(source);
+        cache[a] = {source, output};
+        if (value !== output) el.setAttribute(a, output);
+      }
+      this._attributeSources.set(el, cache);
+    }
+  },
+  apply(root=document) {
+    if (!root) return;
+    this._translateTextNodes(root);
+    this._translateAttributes(root);
+    for (const attr of ['data-i18n','data-i18n-html','data-i18n-placeholder','data-i18n-title','data-i18n-aria-label']) {
+      for (const el of this._elements(root, '['+attr+']')) {
+        if (this._excluded(el)) continue;
+        const value = this.t(el.getAttribute(attr), null);
+        if (value === el.getAttribute(attr) || value == null) continue;
+        if (attr === 'data-i18n') { if (el.textContent !== value) el.textContent = value; }
+        else if (attr === 'data-i18n-html') { if (el.innerHTML !== value) el.innerHTML = value; }
+        else {
+          const target = attr.slice('data-i18n-'.length);
+          if (el.getAttribute(target) !== value) el.setAttribute(target, value);
+        }
+      }
+    }
+  },
+  install() {
+    if (this._installed) return;
+    this._installed = true;
+    const originalAlert = window.alert.bind(window), originalConfirm = window.confirm.bind(window);
+    window.alert = message => originalAlert(this.translateMessage(message));
+    window.confirm = message => originalConfirm(this.translateMessage(message));
+    const start = () => {
+      this._injectSkipLink();
+      this.apply(document);
+      const pending = new Set();
+      const observer = new MutationObserver(records => {
+        for (const record of records) {
+          if (record.type === 'childList') {
+            for (const node of record.addedNodes) pending.add(node);
+          } else pending.add(record.target);
+        }
+        if (this._pending || !pending.size) return;
+        this._pending = true;
+        requestAnimationFrame(() => {
+          this._pending = false;
+          // Stop observing our own writes; only changed subtrees need work.
+          observer.disconnect();
+          try { for (const node of pending) if (node.isConnected) this.apply(node); }
+          finally { pending.clear(); observer.observe(document.body, options); }
+        });
+      });
+      const options = {childList:true, subtree:true, characterData:true, attributes:true,
+        attributeFilter:['placeholder','title','aria-label','alt','value']};
+      if (document.body) observer.observe(document.body, options);
+    };
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, {once:true});
+    else start();
+  },
+  _injectSkipLink() {
+    if (document.querySelector('.skip-link')) return;
+    const main = document.querySelector('main, .wrap');
+    if (!main) return;
+    if (!main.id) main.id = 'main-content';
+    const a = document.createElement('a');
+    a.className = 'skip-link'; a.href = '#' + main.id;
+    a.dataset.i18n = 'common.skip_to_content';
+    a.textContent = this.t('common.skip_to_content', 'Zum Inhalt springen');
+    document.body.insertBefore(a, document.body.firstChild);
+    if (!main.hasAttribute('tabindex')) main.setAttribute('tabindex', '-1');
+  },
+  translateMessage(message) {
+    const text = String(message ?? '');
+    return this.data.messages?.[text] ?? this.s(text);
+  }
+};
+window.OpenPodcastI18n.setData(__PAGE_LOCALE__, __LOCALE_DATA__);
+window.OpenPodcastI18n.install();
+// ---------------------------------------------------------------------------
+// Branding-Logo des aktiven Presets
+// ---------------------------------------------------------------------------
+// Jedes Preset besitzt genau ein Logo. Eine automatische Hell-/Dunkel-Variante
+// gibt es bewusst nicht mehr; das Logo wird zusammen mit dem Preset gepflegt.
+window.OpenPodcastBranding = {
+  get data() { return window.__BRANDING__ || {}; },
+  logoUrl() {
+    return this.data.logo || '';
+  },
+  brandName() { return this.data.name || 'Podcast Studio'; },
+  // Setzt <img> auf das passende Logo; blendet es aus, wenn keins existiert.
+  applyLogo(img) {
+    if (!img) return false;
+    const url = this.logoUrl();
+    if (!url) { img.removeAttribute('src'); return false; }
+    img.src = url;
+    img.alt = this.brandName();
+    return true;
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Punkt 6: Dialog-Verhalten fuer alle Seiten an einer Stelle
+// ---------------------------------------------------------------------------
+// Die Modals (Gastlink, Clipping, Gast-Logs) waren nur per Maus bedienbar:
+// kein Escape, kein Fokus im Dialog, und der Tab-Fokus lief hinter dem
+// Overlay weiter. Statt das in jeder Seite einzeln zu loesen, beobachten wir
+// hier zentral jedes [role="dialog"] und ergaenzen das fehlende Verhalten.
+window.OpenPodcastDialogs = {
+  _open: null,
+  _lastFocus: null,
+  FOCUSABLE: 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])',
+
+  isVisible(el) {
+    if (el.hidden) return false;
+    const cs = getComputedStyle(el);
+    return cs.display !== 'none' && cs.visibility !== 'hidden';
+  },
+
+  focusables(dialog) {
+    return [...dialog.querySelectorAll(this.FOCUSABLE)].filter(el => this.isVisible(el));
+  },
+
+  onOpen(dialog) {
+    if (this._open === dialog) return;
+    this._open = dialog;
+    this._lastFocus = document.activeElement;
+    // Alles ausserhalb des Dialogs fuer Screenreader stummschalten.
+    [...document.body.children].forEach(node => {
+      if (node !== dialog && !node.contains(dialog) && !node.classList.contains('skip-link')) {
+        if (!node.hasAttribute('aria-hidden')) { node.setAttribute('aria-hidden', 'true'); node.dataset.opsInert = '1'; }
+      }
+    });
+    const first = this.focusables(dialog)[0];
+    (first || dialog).focus({ preventScroll: true });
+    if (!first && !dialog.hasAttribute('tabindex')) dialog.setAttribute('tabindex', '-1');
+  },
+
+  onClose() {
+    if (!this._open) return;
+    document.querySelectorAll('[data-ops-inert]').forEach(node => {
+      node.removeAttribute('aria-hidden'); delete node.dataset.opsInert;
+    });
+    this._open = null;
+    // Fokus zurueck auf das Element, das den Dialog geoeffnet hat.
+    if (this._lastFocus && document.contains(this._lastFocus)) {
+      try { this._lastFocus.focus({ preventScroll: true }); } catch {}
+    }
+    this._lastFocus = null;
+  },
+
+  // Schliessen ohne die Schliess-Logik der Seite zu kennen: wir klicken den
+  // vorhandenen Schliessen-Button. So bleibt jede Seite Herr ihres Zustands.
+  requestClose(dialog) {
+    const btn = dialog.querySelector('[data-dialog-close],[id$="Close"],[id^="close"],#closeModal');
+    if (btn) { btn.click(); return; }
+    dialog.style.display = 'none';
+    dialog.classList.remove('show');
+    this.onClose();
+  },
+
+  install() {
+    document.addEventListener('keydown', (e) => {
+      const dialog = this._open;
+      if (!dialog) return;
+      if (e.key === 'Escape') { e.preventDefault(); this.requestClose(dialog); return; }
+      if (e.key !== 'Tab') return;
+      const items = this.focusables(dialog);
+      if (!items.length) { e.preventDefault(); return; }
+      const first = items[0], last = items[items.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    });
+
+    const scan = () => {
+      const dialogs = [...document.querySelectorAll('[role="dialog"]')];
+      const open = dialogs.find(d => this.isVisible(d));
+      if (open) this.onOpen(open); else this.onClose();
+    };
+    document.addEventListener('DOMContentLoaded', () => {
+      scan();
+      new MutationObserver(scan).observe(document.body, {
+        attributes: true, attributeFilter: ['style', 'class', 'hidden'], subtree: true, childList: true,
+      });
+    });
+  }
+};
+window.OpenPodcastDialogs.install();
+
+</script>"""
+    locale_bootstrap = locale_bootstrap.replace("__PAGE_LOCALE__", json_dumps(page_locale)).replace("__GLOBAL_LOCALE__", json_dumps(global_locale))
+    locale_bootstrap = locale_bootstrap.replace("__LOCALE_DATA__", _script_json(_load_locale(page_locale)))
+    block += locale_bootstrap
     marker = "<!--BRANDING-->"
     if marker in html:
         # Kein re.sub -> keine Backslash-/Gruppen-Escapes im Ersetzungstext.
@@ -1221,16 +2471,212 @@ def _render_page(filename: str, status_code: int = 200) -> HTMLResponse:
                         headers={"Cache-Control": "no-store"})
 
 
+@app.get("/locales/{locale}")
+def locale_data(locale: str):
+    code = _normalise_locale(locale)
+    return JSONResponse(_load_locale(code), headers={"Cache-Control": "no-store"})
+
+
+@app.get("/locales")
+def locales():
+    return {"ok": True, "locales": _available_locales()}
+
+
 @app.get("/branding")
 def branding():
-    """Oeffentliches Branding (Name/Farbe/Favicon) fuer alle Seiten -- Feature 8."""
+    """Oeffentliches Branding (Name/Farbe/Logo/Favicon) fuer alle Seiten."""
+    return _branding_public()
+
+
+@app.get("/branding/preset/{preset_id}/logo")
+def branding_preset_logo(preset_id: str):
+    preset = next((p for p in (_cfg_get("branding_presets") or [])
+                   if isinstance(p, dict) and str(p.get("id")) == preset_id), None)
+    meta = preset.get("logo_asset") if preset else None
+    if not isinstance(meta, dict) or not SAFE_FILE.match(str(meta.get("file") or "")):
+        raise HTTPException(404, "Kein Preset-Logo hinterlegt")
+    path = BRANDING_DIR / str(meta["file"])
+    if not path.is_file():
+        raise HTTPException(404, "Preset-Logo fehlt")
+    return FileResponse(path, media_type=str(meta.get("mime") or "application/octet-stream"),
+                        headers={"Cache-Control": "public, max-age=604800, immutable"})
+
+
+@app.get("/branding/global-preset/{preset_key}/{kind}")
+def branding_global_preset_file(preset_key: str, kind: str):
+    if kind not in BRANDING_KINDS or preset_key not in _global_presets():
+        raise HTTPException(404, "Preset-Asset nicht gefunden")
     cfg = _cfg_load()
-    return {
-        "ok": True,
-        "name":    cfg.get("brand_name", "Podcast Studio"),
-        "color":   cfg.get("brand_color", "#30a46c"),
-        "favicon": cfg.get("brand_favicon", ""),
-    }
+    meta = ((cfg.get("global_preset_assets") or {}).get(preset_key) or {}).get(kind)
+    if not isinstance(meta, dict) or not SAFE_FILE.match(str(meta.get("file") or "")):
+        raise HTTPException(404, "Preset-Asset nicht gefunden")
+    path = BRANDING_DIR / str(meta["file"])
+    if not path.is_file():
+        raise HTTPException(404, "Preset-Asset fehlt")
+    return FileResponse(path, media_type=str(meta.get("mime") or "application/octet-stream"),
+                        headers={"Cache-Control": "public, max-age=604800, immutable"})
+
+
+@app.post("/admin/branding/global-preset/{preset_key}/{kind}")
+async def admin_global_preset_asset_upload(preset_key: str, kind: str,
+                                           request: Request,
+                                           _role=Depends(require_admin)):
+    cfg = _cfg_load()
+    if preset_key not in _global_presets(cfg) or kind not in BRANDING_KINDS:
+        raise HTTPException(404, "Preset-Asset nicht gefunden")
+    form = await request.form()
+    upload = form.get("file")
+    if upload is None or not hasattr(upload, "read"):
+        raise HTTPException(400, "Feld 'file' fehlt")
+    meta = _branding_store(kind, await upload.read(),
+                           getattr(upload, "content_type", "") or "",
+                           getattr(upload, "filename", "") or kind,
+                           preset_key=preset_key)
+    return {"ok": True, "kind": kind,
+            "asset": {**meta, "url": _global_preset_asset_url(preset_key, kind)}}
+
+
+@app.delete("/admin/branding/global-preset/{preset_key}/{kind}")
+def admin_global_preset_asset_delete(preset_key: str, kind: str,
+                                     _role=Depends(require_admin)):
+    cfg = _cfg_load()
+    if preset_key not in _global_presets(cfg) or kind not in BRANDING_KINDS:
+        raise HTTPException(404, "Preset-Asset nicht gefunden")
+    _branding_clear(kind, preset_key=preset_key)
+    return {"ok": True, "kind": kind, "asset": None}
+
+
+@app.get("/branding/{kind}")
+def branding_file(kind: str):
+    """Liefert ein verwaltetes Branding-Asset aus DATA_DIR/branding/ aus."""
+    if kind not in BRANDING_KINDS:
+        raise HTTPException(404, "Unbekannter Branding-Typ")
+    meta = _branding_asset(kind)
+    if not meta:
+        raise HTTPException(404, "Kein Asset hinterlegt")
+    path = BRANDING_DIR / str(meta["file"])
+    return FileResponse(
+        path,
+        media_type=str(meta.get("mime") or "application/octet-stream"),
+        headers={
+            # Der Dateiname enthaelt ein Zufallstoken und die URL eine Version:
+            # Ein neues Asset bekommt eine neue URL, daher ist langes Caching sicher.
+            "Cache-Control": "public, max-age=604800, immutable",
+        },
+    )
+
+
+@app.post("/admin/branding/preset/{preset_id}/logo")
+async def admin_preset_logo_upload(preset_id: str, request: Request,
+                                   _role=Depends(require_admin)):
+    cfg = _cfg_load()
+    presets = list(cfg.get("branding_presets") or [])
+    idx = next((i for i, p in enumerate(presets)
+                if isinstance(p, dict) and str(p.get("id")) == preset_id), -1)
+    if idx < 0:
+        raise HTTPException(404, "Branding-Preset nicht gefunden")
+    form = await request.form()
+    upload = form.get("file")
+    if upload is None or not hasattr(upload, "read"):
+        raise HTTPException(400, "Feld 'file' fehlt")
+    data = await upload.read()
+    mime = (getattr(upload, "content_type", "") or "").split(";")[0].lower()
+    ext = BRANDING_MIME.get(mime)
+    if not data or not ext or len(data) > BRANDING_MAX_BYTES:
+        raise HTTPException(400, "Ungültige Logo-Datei")
+    fname = f"preset-{preset_id}-{secrets.token_hex(8)}{ext}"
+    (BRANDING_DIR / fname).write_bytes(data)
+    meta = {"file": fname, "name": str(getattr(upload, "filename", "") or fname)[:120],
+            "size": len(data), "mime": mime, "updated_at": int(time.time())}
+    old = presets[idx].get("logo_asset")
+    presets[idx] = {**presets[idx], "logo_asset": meta}
+    cfg["branding_presets"] = presets
+    _cfg_save(cfg)
+    if isinstance(old, dict) and SAFE_FILE.match(str(old.get("file") or "")):
+        try: (BRANDING_DIR / str(old["file"])).unlink()
+        except OSError: pass
+    return {"ok": True, "asset": {**meta, "url": _preset_asset_url(preset_id, meta)}}
+
+
+@app.delete("/admin/branding/preset/{preset_id}/logo")
+def admin_preset_logo_delete(preset_id: str, _role=Depends(require_admin)):
+    cfg = _cfg_load()
+    presets = list(cfg.get("branding_presets") or [])
+    idx = next((i for i, p in enumerate(presets)
+                if isinstance(p, dict) and str(p.get("id")) == preset_id), -1)
+    if idx < 0:
+        raise HTTPException(404, "Branding-Preset nicht gefunden")
+    old = presets[idx].get("logo_asset")
+    presets[idx] = {**presets[idx], "logo_asset": None}
+    cfg["branding_presets"] = presets
+    _cfg_save(cfg)
+    if isinstance(old, dict) and SAFE_FILE.match(str(old.get("file") or "")):
+        try: (BRANDING_DIR / str(old["file"])).unlink()
+        except OSError: pass
+    return {"ok": True}
+
+
+@app.post("/admin/branding/{kind}")
+async def admin_branding_upload(kind: str, request: Request,
+                                _role=Depends(require_admin)):
+    """Laedt Logo oder Favicon als verwaltete Datei hoch (multipart oder raw)."""
+    if kind not in BRANDING_KINDS:
+        raise HTTPException(404, "Unbekannter Branding-Typ")
+    ctype = (request.headers.get("content-type") or "").lower()
+    if ctype.startswith("multipart/form-data"):
+        form = await request.form()
+        upload = form.get("file")
+        if upload is None or not hasattr(upload, "read"):
+            raise HTTPException(400, "Feld 'file' fehlt")
+        data = await upload.read()
+        mime = getattr(upload, "content_type", "") or ""
+        name = getattr(upload, "filename", "") or kind
+    else:
+        data = await request.body()
+        mime = ctype
+        name = request.headers.get("x-filename", kind)
+    meta = _branding_store(kind, data, mime, name)
+    return {"ok": True, "kind": kind, "asset": {**meta, "url": _branding_asset_url(kind)}}
+
+
+@app.delete("/admin/branding/{kind}")
+def admin_branding_delete(kind: str, _role=Depends(require_admin)):
+    if kind not in BRANDING_KINDS:
+        raise HTTPException(404, "Unbekannter Branding-Typ")
+    _branding_clear(kind)
+    return {"ok": True, "kind": kind, "asset": None}
+
+
+@app.post("/admin/branding/theme/preview")
+async def admin_branding_preview(request: Request, _role=Depends(require_admin)):
+    """Berechnet die Theme-Tokens, ohne etwas zu speichern.
+
+    Das Admin-Panel nutzt das fuer die Live-Vorschau: dieselbe Berechnung wie
+    beim Ausliefern, damit die Vorschau nicht von der spaeteren Realitaet
+    abweicht (inkl. Kontrastkorrektur der Buttonschrift).
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    cfg = dict(_cfg_load())
+    for key in ("brand_preset", "brand_color", "brand_bg", "brand_text", "brand_on_brand"):
+        if key in payload:
+            cfg[key] = str(payload[key] or "")
+    return {"ok": True, "theme": _theme_tokens(cfg)}
+
+
+@app.post("/admin/branding/theme/reset")
+def admin_branding_reset(_role=Depends(require_admin)):
+    """Setzt Farben auf das Default-Preset zurueck; Dateien bleiben erhalten."""
+    cfg = _cfg_load()
+    cfg["brand_preset"]   = DEFAULT_PRESET
+    cfg["brand_color"]    = ""
+    cfg["brand_bg"]       = ""
+    cfg["brand_text"]     = ""
+    cfg["brand_on_brand"] = ""
+    _cfg_save(cfg)
+    return {"ok": True, "theme": _theme_tokens(cfg)}
 
 
 @app.get("/admin.html")
@@ -1241,7 +2687,10 @@ def admin(_role=Depends(require_admin)):
 
 @app.get("/host.html")
 @app.get("/host")
-def host(_auth=Depends(require_auth)):
+def host(request: Request, _auth=Depends(require_auth)):
+    # Das Host-Studio bleibt global eingefärbt. Das gewählte Raum-Preset wird
+    # dort nur als Label neben dem Raumnamen angezeigt; die Gastseite erhält
+    # das eigentliche Raum-Theme über den tokengebundenen Recorder-Render.
     return _render_page("host.html")
 
 
@@ -1259,7 +2708,36 @@ def recorder(token: str | None = None):
     info = _token_resolve(token)
     if info is None:
         return _render_page("token_error.html", status_code=403)
-    return _render_page("recorder.html")
+    return _render_page("recorder.html", room=info.get("room"))
+
+
+@app.post("/lobby/{room}")
+async def lobby_ping(room: str, request: Request):
+    """Recorder meldet Anwesenheit in der Lobby -- vor der Namenseingabe.
+
+    Abgesichert ueber den Gast-Token: nur wer den Einladungslink hat, kann
+    im Host-Panel auftauchen.
+    """
+    check_ident(room)
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "Invalid lobby payload")
+    token = str(payload.get("token") or "")
+    info = _token_resolve(token) if token else None
+    if info is None or info.get("room") != room:
+        raise HTTPException(403, "Token ungueltig oder abgelaufen")
+    client_id = str(payload.get("client_id") or "")[:64]
+    if not SAFE.match(client_id):
+        raise HTTPException(400, "client_id fehlt oder ist ungueltig")
+    if payload.get("leave"):
+        _lobby_drop(room, client_id)
+    else:
+        _lobby_touch(room, client_id, str(payload.get("stage") or "naming"))
+    await _broadcast_host_status(room)
+    return {"ok": True}
 
 
 @app.get("/token/resolve")
@@ -1278,6 +2756,8 @@ def token_resolve(token: str | None = None):
         "room":       info["room"],
         "expires_at": info["expires_at"],
         "label":      info.get("label", ""),
+        "locale":     _room_locale(info["room"]),
+        "branding":   ((_cfg_get("room_branding") or {}).get(info["room"]) or {}),
     }
 
 
@@ -1468,7 +2948,16 @@ async def upload(room, guest, session, chunk, request: Request, ext: str = "pcm"
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / ("chunk-" + chunk + "." + ext)
     data = await request.body()
-    dest.write_bytes(data)
+    try:
+        dest.write_bytes(data)
+    except OSError as e:
+        # Roadmap 6: Schreibfehler (z. B. volles Volume) muss der Admin sehen.
+        _diag_bump("upload_errors")
+        _error_record("upload", "Chunk konnte nicht geschrieben werden",
+                      room=room, detail=f"{guest}/{session}/{chunk}: {e}")
+        raise HTTPException(507, "Chunk konnte nicht gespeichert werden")
+    _diag_bump("upload_chunks")
+    _diag_bump("upload_bytes", len(data))
     return {"ok": True, "bytes": len(data), "path": str(dest.relative_to(BASE))}
 
 
@@ -1528,13 +3017,19 @@ async def finish(room, guest, session):
         except OSError:
             pass
     else:
+        _diag_bump("finish_errors")
+        _error_record("merge", "Finish ohne Chunks angefordert",
+                      room=room, detail=f"{guest}/{session}")
         raise HTTPException(404, "Keine Chunks vorhanden")
+
+    _diag_bump("finish_ok")
 
     # Feature 7: Marker in WAV schreiben (nur Marker dieser Session)
     try:
         _wav_add_markers(wav_path, _marker_list(room, session))
     except Exception as e:
-        print("[markers] Fehler:", e)
+        _error_record("markers", "Marker konnten nicht in die WAV geschrieben werden",
+                      room=room, detail=str(e))
 
     with _LOCK:
         r = ROOMS.get(room)
@@ -1556,6 +3051,88 @@ async def finish(room, guest, session):
             "merged": str(wav_path.relative_to(BASE)),
             "mixdown": f"/host/mixdown/{room}/{session}" if mixdown else None,
             "size_mb": round(wav_path.stat().st_size / 1024 / 1024, 2)}
+
+
+# ── Host-Lock-API (Roadmap 5) ────────────────────────────────────────────────
+# Der Lock ist auch ohne WebSocket explizit steuerbar. Das macht Erwerb,
+# Erneuerung, Freigabe und Wiederaufnahme testbar und erlaubt einen sauberen
+# Release beim Schliessen des Tabs (sendBeacon/keepalive).
+
+def _lock_client_id(payload: dict) -> str:
+    cid = str(payload.get("client_id") or "")[:64]
+    return cid if re.match(r"^[A-Za-z0-9_-]{8,64}$", cid) else ""
+
+
+@app.get("/host/lock/{room}")
+def host_lock_state(room, role=Depends(require_auth), client_id: str = ""):
+    """Aktueller Lock-Zustand eines Raums (ohne ihn zu erwerben)."""
+    check_ident(room)
+    lock = _lock_get(room)
+    cid = _lock_client_id({"client_id": client_id})
+    mine = bool(lock and cid and lock["client_id"] == cid)
+    return {"ok": True, "room": room, "locked": bool(lock), "mine": mine,
+            "mode": "control" if mine else ("readonly" if lock else "free"),
+            "lock": _lock_public(lock)}
+
+
+@app.post("/host/lock/{room}/acquire")
+async def host_lock_acquire(room, request: Request, role=Depends(require_auth)):
+    """Lock erwerben. Body: { client_id, label?, force? }
+
+    `force` ist nur fuer Admins erlaubt: ein Admin kann eine haengende, aber
+    formal noch gueltige Host-Instanz uebernehmen. Hosts bekommen bei einem
+    fremden Lock immer `mode: "readonly"`.
+    """
+    check_ident(room)
+    _room_register(room)
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    cid = _lock_client_id(payload)
+    if not cid:
+        raise HTTPException(400, "client_id fehlt oder ist ungueltig")
+    label = str(payload.get("label") or "")[:80]
+    force = bool(payload.get("force")) and role == "admin"
+    res = _lock_acquire(room, cid, role=role, label=label, force=force)
+    res.update({"ok": True, "room": room})
+    if res["mode"] == "control":
+        await _broadcast_host_status(room)
+    return res
+
+
+@app.post("/host/lock/{room}/renew")
+async def host_lock_renew(room, request: Request, role=Depends(require_auth)):
+    """Lock erneuern. Body: { client_id }"""
+    check_ident(room)
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    cid = _lock_client_id(payload)
+    if not cid:
+        raise HTTPException(400, "client_id fehlt oder ist ungueltig")
+    res = _lock_renew(room, cid)
+    res.update({"ok": True, "room": room})
+    return res
+
+
+@app.post("/host/lock/{room}/release")
+async def host_lock_release(room, request: Request, role=Depends(require_auth)):
+    """Lock freigeben. Body: { client_id }"""
+    check_ident(room)
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    cid = _lock_client_id(payload)
+    if not cid:
+        raise HTTPException(400, "client_id fehlt oder ist ungueltig")
+    res = _lock_release(room, cid)
+    res.update({"ok": True, "room": room})
+    if res.get("released"):
+        await _broadcast_host_status(room)
+    return res
 
 
 # ── Host-API (geschuetzt) ─────────────────────────────────────────────────────
@@ -1583,6 +3160,82 @@ def host_room_ensure(room, _auth=Depends(require_auth)):
     return {"ok": True, "room": room}
 
 
+def _apply_trigger(room: str, action: str, issued_at: int | None = None,
+                   force: bool = False) -> dict:
+    """Fuehrt start/stop/clear aus -- idempotent und mit Start-Gate.
+
+    Idempotenz: Jeder Trigger wird ueber (action, session, issued_at) im Raum
+    vermerkt; eine wiederholte Zustellung desselben Tripels aendert nichts.
+    Zusaetzlich zustandsbezogen: ein zweites "start" bei laufender Aufnahme
+    erzeugt KEINE neue session_id, ein "stop" ohne Aufnahme bleibt folgenlos.
+    """
+    now_ms = int(time.time() * 1000)
+    issued = int(issued_at or now_ms)
+
+    if action not in ("start", "stop", "clear"):
+        return {"ok": False, "blocked": True, "duplicate": False, "reason": "bad_action",
+                "detail": "action muss start, stop oder clear sein", "command": None}
+
+    if action == "start" and not force:
+        gate = _start_gate(room)
+        if not gate["ok"]:
+            with _LOCK:
+                cmd = dict(_room(room)["command"])
+            return {"ok": False, "blocked": True, "duplicate": False,
+                    "reason": gate["reason"], "detail": gate["detail"], "command": cmd}
+
+    with _LOCK:
+        r = _room(room)
+        state = r.get("rec_state", "idle")
+        cur_session = r.get("rec_session", "")
+
+        # Zustandsbezogene Idempotenz.
+        if action == "start" and state == "recording":
+            return {"ok": True, "duplicate": True, "blocked": False,
+                    "reason": "already_recording", "detail": "Aufnahme laeuft bereits.",
+                    "command": dict(r["command"])}
+        if action == "stop" and state != "recording":
+            return {"ok": True, "duplicate": True, "blocked": False,
+                    "reason": "not_recording", "detail": "Es laeuft keine Aufnahme.",
+                    "command": dict(r["command"])}
+
+        # Trigger-Dedupe ueber (action, session, issued_at).
+        dedupe_session = cur_session if action in ("stop", "clear") else ""
+        if not _cmd_remember(r, action, dedupe_session, issued):
+            return {"ok": True, "duplicate": True, "blocked": False, "reason": "duplicate",
+                    "detail": "Befehl bereits verarbeitet.", "command": dict(r["command"])}
+
+        if action == "start":
+            sid = _new_session_id()
+            r["command"] = {"action": "start",
+                            "start_at": now_ms + int(START_LEAD_SECONDS * 1000),
+                            "session": sid, "issued_at": now_ms}
+            r["rec_started_at"] = now_ms + int(START_LEAD_SECONDS * 1000)
+            r["rec_session"]    = sid
+            r["rec_state"]      = "recording"
+        elif action == "stop":
+            r["command"] = {"action": "stop", "start_at": None,
+                            "session": cur_session, "issued_at": now_ms}
+            r["rec_state"] = "idle"
+            # rec_session bleibt bestehen: Marker und Clip-Events der gerade
+            # beendeten Aufnahme brauchen die Session-Bindung weiterhin.
+        else:  # clear
+            r["command"] = {"action": None, "start_at": None,
+                            "session": None, "issued_at": now_ms}
+            r["rec_state"] = "idle"
+        cmd = dict(r["command"])
+
+    return {"ok": True, "duplicate": False, "blocked": False, "reason": "",
+            "detail": "", "command": cmd}
+
+
+@app.get("/host/start_check/{room}")
+def host_start_check(room, _auth=Depends(require_auth)):
+    """Vorabpruefung fuer den Host-Startknopf (Gaeste online/bereit, Geraete)."""
+    check_ident(room)
+    return {"ok": True, "room": room, "gate": _start_gate(room)}
+
+
 @app.post("/host/trigger/{room}")
 async def host_trigger(room, request: Request, _auth=Depends(require_auth)):
     check_ident(room)
@@ -1591,34 +3244,37 @@ async def host_trigger(room, request: Request, _auth=Depends(require_auth)):
         payload = await request.json()
     except Exception:
         payload = {}
-    action = payload.get("action")
+    action = str(payload.get("action") or "")
+    try:
+        issued_at = int(payload.get("issued_at") or 0) or None
+    except (TypeError, ValueError):
+        issued_at = None
+    force  = bool(payload.get("force"))
     now_ms = int(time.time() * 1000)
-    with _LOCK:
-        r = _room(room)
-        if action == "start":
-            # Gemeinsame Session-ID fuer diese Aufnahme (Host + alle Gaeste + Marker + Historie).
-            # Wir verwenden eine kurze Base36-ID (lesbar/kompakt), bleibt aber eindeutig genug.
-            sid = _new_session_id()
-            r["command"] = {"action": "start",
-                            "start_at": now_ms + int(START_LEAD_SECONDS * 1000),
-                            "session": sid, "issued_at": now_ms}
-            # Aufnahme-Startzeit merken (fuer Marker-Offsets).
-            r["rec_started_at"] = now_ms + int(START_LEAD_SECONDS * 1000)
-            r["rec_session"]    = sid
-        elif action == "stop":
-            # Session bleibt die aktuelle Aufnahme-Session (nicht neu generieren)
-            r["command"] = {"action": "stop", "start_at": None,
-                            "session": r.get("rec_session", ""), "issued_at": now_ms}
-        elif action == "clear":
-            r["command"] = {"action": None, "start_at": None,
-                            "session": None, "issued_at": now_ms}
-        else:
-            raise HTTPException(400, "action muss start, stop oder clear sein")
-        cmd = dict(r["command"])
-    # Echtzeit-Push: Gaeste bekommen den Befehl sofort, Host-Panels den Status.
-    await _broadcast_guests(room)
-    await _broadcast_host_status(room)
-    return {"ok": True, "command": cmd, "server_time": now_ms}
+
+    # Roadmap 5: Nur die steuernde Host-Instanz darf Aufnahmen starten/stoppen.
+    cid = _lock_client_id(payload)
+    if not _lock_holds(room, cid):
+        cur = _lock_get(room)
+        return JSONResponse(status_code=409, content={
+            "ok": False, "reason": "readonly",
+            "detail": "Dieser Raum wird bereits von einer anderen Host-Instanz gesteuert.",
+            "mode": "readonly", "lock": _lock_public(cur), "server_time": now_ms})
+
+    res = _apply_trigger(room, action, issued_at, force)
+    if res.get("reason") == "bad_action":
+        raise HTTPException(400, res["detail"])
+    if res.get("blocked"):
+        return JSONResponse(status_code=409, content={
+            "ok": False, "reason": res["reason"], "detail": res["detail"],
+            "command": res.get("command"), "server_time": now_ms})
+    if not res.get("duplicate"):
+        # Echtzeit-Push: Gaeste bekommen den Befehl sofort, Host-Panels den Status.
+        await _broadcast_guests(room)
+        await _broadcast_host_status(room)
+    return {"ok": True, "command": res["command"],
+            "duplicate": res.get("duplicate", False),
+            "reason": res.get("reason", ""), "server_time": now_ms}
 
 
 @app.post("/host/settings/{room}")
@@ -1629,6 +3285,13 @@ async def host_settings(room, request: Request, _auth=Depends(require_auth)):
     except Exception:
         payload = {}
     now_ms = int(time.time() * 1000)
+    # Roadmap 5: Settings sind ein Steuerbefehl -> Lock erforderlich.
+    if not _lock_holds(room, _lock_client_id(payload)):
+        return JSONResponse(status_code=409, content={
+            "ok": False, "reason": "readonly",
+            "detail": "Nur-Lesen-Modus: eine andere Host-Instanz steuert diesen Raum.",
+            "mode": "readonly", "lock": _lock_public(_lock_get(room)),
+            "server_time": now_ms})
     with _LOCK:
         r = _room(room)
         s = r["settings"]
@@ -1667,8 +3330,23 @@ async def host_marker_create(room, request: Request, _auth=Depends(require_auth)
     with _LOCK:
         r = _room(room)
         started = r.get("rec_started_at") or now_ms
-        session = r.get("rec_session", "")
-    offset_ms = max(0, now_ms - int(started))
+        cur_session = r.get("rec_session", "")
+    # Marker sind STRIKT an eine session_id gebunden. Der Client darf die
+    # Session explizit mitschicken (z.B. Nachtrag zu einer beendeten Aufnahme);
+    # ohne Session wird nichts gespeichert, damit kein Marker allein im
+    # Raumzustand haengen bleibt.
+    session = str(payload.get("session") or cur_session or "")[:40]
+    if not session:
+        raise HTTPException(409, "Kein aktiver session_id -- Marker koennen nur "
+                                 "innerhalb einer Aufnahme-Session gesetzt werden.")
+    if payload.get("session") and session != cur_session:
+        if session not in _marker_sessions(room):
+            raise HTTPException(400, "Unbekannte session_id fuer diesen Raum.")
+    offset_ms = max(0, now_ms - int(started)) if session == cur_session else 0
+    try:
+        offset_ms = max(0, int(payload.get("offset_ms", offset_ms)))
+    except (TypeError, ValueError):
+        pass
     m = _marker_create(room, session, kind, offset_ms, note)
     await _broadcast_host_status(room)
     return {"ok": True, "marker": m}
@@ -1847,6 +3525,7 @@ async def admin_config_set(request: Request, _auth=Depends(require_auth)):
     except Exception:
         payload = {}
     cfg = _cfg_load()
+    files_to_delete: list[Path] = []
     if "token_days" in payload:
         cfg["token_days"]     = max(1, min(365, int(payload["token_days"])))
     if "recording_days" in payload:
@@ -1855,16 +3534,148 @@ async def admin_config_set(request: Request, _auth=Depends(require_auth)):
         cfg["chunk_hours"]    = max(1, min(8760, int(payload["chunk_hours"])))
     if "log_days" in payload:
         cfg["log_days"]       = max(0, min(3650, int(payload["log_days"])))
+    if "require_guest_online" in payload:
+        cfg["require_guest_online"] = bool(payload["require_guest_online"])
+    if "require_guest_ready" in payload:
+        cfg["require_guest_ready"]  = bool(payload["require_guest_ready"])
+    if "clip_threshold_dbfs" in payload:
+        try:
+            cfg["clip_threshold_dbfs"] = max(-12.0, min(0.0, float(payload["clip_threshold_dbfs"])))
+        except (TypeError, ValueError):
+            pass
+    if "clip_min_samples" in payload:
+        try:
+            cfg["clip_min_samples"] = max(1, min(100, int(payload["clip_min_samples"])))
+        except (TypeError, ValueError):
+            pass
+    if "locale" in payload:
+        # _normalise_locale faellt auf DEFAULT_LOCALE zurueck, wenn keine
+        # passende Datei in locale/ existiert -- ungueltige Codes koennen die
+        # Oberflaeche also nicht unbrauchbar machen.
+        cfg["locale"] = _normalise_locale(payload["locale"])
+    if "room_locales" in payload and isinstance(payload["room_locales"], dict):
+        cfg["room_locales"] = {
+            str(room)[:64]: _normalise_locale(code)
+            for room, code in payload["room_locales"].items()
+            if SAFE.match(str(room))
+        }
     if "brand_name" in payload:
         cfg["brand_name"]     = str(payload["brand_name"] or "Podcast Studio")[:60]
     if "brand_color" in payload:
         c = str(payload["brand_color"] or "").strip()
-        if re.match(r"^#[0-9a-fA-F]{6}$", c):
+        if not c or re.match(r"^#[0-9a-fA-F]{6}$", c):
             cfg["brand_color"] = c
+    if "brand_preset" in payload:
+        key = str(payload["brand_preset"] or "").strip().lower()
+        if key in _global_presets(cfg):
+            cfg["brand_preset"] = key
+            # Ein Presetwechsel bedeutet bewusst: exakt dieses Preset nutzen.
+            if payload.get("reset_brand_overrides", True):
+                cfg["brand_color"] = ""
+                cfg["brand_bg"] = ""
+                cfg["brand_text"] = ""
+                cfg["brand_on_brand"] = ""
+    if "global_presets" in payload and isinstance(payload["global_presets"], list):
+        presets = []
+        seen = set()
+        for raw in payload["global_presets"][:50]:
+            if not isinstance(raw, dict):
+                continue
+            key = str(raw.get("key") or "").strip().lower()
+            if (not re.fullmatch(r"[a-z0-9][a-z0-9_-]{1,63}", key)
+                    or key in seen or key in BRAND_PRESETS):
+                continue
+            label = str(raw.get("label") or "").strip()[:60]
+            if not label:
+                continue
+            def global_col(name, fallback):
+                val = str(raw.get(name) or "").strip()
+                return val if _hex_parse(val) else fallback
+            presets.append({
+                "key": key, "label": label,
+                "version": max(1, int(raw.get("version") or 1)),
+                "appearance": "light" if raw.get("appearance") == "light" else "dark",
+                "brand": global_col("brand", "#30a46c"),
+                "bg": global_col("bg", "#0f1115"),
+                "text": global_col("text", "#e8eaed"),
+                "on_brand": global_col("on_brand", "#ffffff"),
+            })
+            seen.add(key)
+        old_custom_keys = {str(p.get("key")) for p in cfg.get("global_presets") or []
+                           if isinstance(p, dict)}
+        new_custom_keys = {p["key"] for p in presets}
+        removed_keys = old_custom_keys - new_custom_keys
+        per_preset_assets = dict(cfg.get("global_preset_assets") or {})
+        for removed_key in removed_keys:
+            for meta in (per_preset_assets.pop(removed_key, {}) or {}).values():
+                if isinstance(meta, dict) and SAFE_FILE.match(str(meta.get("file") or "")):
+                    files_to_delete.append(BRANDING_DIR / str(meta["file"]))
+        cfg["global_preset_assets"] = per_preset_assets
+        cfg["global_presets"] = presets
+        if cfg.get("brand_preset") not in _global_presets(cfg):
+            cfg["brand_preset"] = DEFAULT_PRESET
+            cfg["brand_color"] = ""
+            cfg["brand_bg"] = ""
+            cfg["brand_text"] = ""
+            cfg["brand_on_brand"] = ""
+    # Leerer String setzt einen Override bewusst zurueck auf den Preset-Wert.
+    for key in ("brand_bg", "brand_text", "brand_on_brand"):
+        if key in payload:
+            val = str(payload[key] or "").strip()
+            if not val:
+                cfg[key] = ""
+            elif re.match(r"^#[0-9a-fA-F]{6}$", val):
+                cfg[key] = val
+    if "branding_presets" in payload and isinstance(payload["branding_presets"], list):
+        old_room_presets = [p for p in cfg.get("branding_presets") or []
+                            if isinstance(p, dict)]
+        presets = []
+        seen = set()
+        for raw in payload["branding_presets"][:50]:
+            if not isinstance(raw, dict):
+                continue
+            pid = str(raw.get("id") or "").strip().lower()
+            if not re.match(r"^[a-z0-9_-]{2,40}$", pid) or pid in seen:
+                continue
+            name = str(raw.get("name") or "").strip()[:60]
+            if not name:
+                continue
+            old = next((p for p in cfg.get("branding_presets") or []
+                        if isinstance(p, dict) and str(p.get("id")) == pid), {})
+            def col(key, fallback):
+                val = str(raw.get(key) or "").strip()
+                return val if _hex_parse(val) else fallback
+            presets.append({
+                "id": pid, "name": name,
+                "appearance": "light" if raw.get("appearance") == "light" else "dark",
+                "brand_color": col("brand_color", "#30a46c"),
+                "bg": col("bg", "#0f1115"),
+                "text": col("text", "#e8eaed"),
+                "on_brand": col("on_brand", ""),
+                "logo_asset": old.get("logo_asset"),
+            })
+            seen.add(pid)
+        valid = {p["id"] for p in presets}
+        for old_preset in old_room_presets:
+            if str(old_preset.get("id")) in valid:
+                continue
+            meta = old_preset.get("logo_asset")
+            if isinstance(meta, dict) and SAFE_FILE.match(str(meta.get("file") or "")):
+                files_to_delete.append(BRANDING_DIR / str(meta["file"]))
+        cfg["branding_presets"] = presets
+        cfg["room_preset_assignments"] = {
+            r: p for r, p in (cfg.get("room_preset_assignments") or {}).items()
+            if p in valid
+        }
     if "brand_favicon" in payload:
         cfg["brand_favicon"]  = str(payload["brand_favicon"] or "")[:200000]
     _cfg_save(cfg)
-    return {"ok": True, "config": cfg}
+    for path in files_to_delete:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+    return {"ok": True, "config": cfg, "theme": _theme_tokens(cfg)}
 
 
 # ── Admin: Passwort-Reset (Feature 2 + 13) ───────────────────────────────────
@@ -1997,12 +3808,407 @@ def export_room_zip(room, _role=Depends(require_admin)):
     )
 
 
+# ── Roadmap 6: Health & Diagnostics + manueller WAV-Rebuild ──────────────────
+
+def _dir_size_bytes(path: Path) -> int:
+    total = 0
+    if not path.exists():
+        return 0
+    for p in path.rglob("*"):
+        try:
+            if p.is_file():
+                total += p.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def _upload_backlog() -> dict:
+    """Findet Sessions mit Chunks, aber ohne fertige full.wav.
+
+    Das ist der eigentliche Rueckstand: Material liegt auf der Platte, ist aber
+    noch nicht zusammengefuehrt. Genau diese Sessions sind Kandidaten fuer den
+    manuellen WAV-Rebuild.
+    """
+    pending: list[dict] = []
+    total_chunks = 0
+    total_bytes = 0
+    if UPLOADS.exists():
+        for room_dir in sorted(UPLOADS.iterdir()):
+            if not room_dir.is_dir():
+                continue
+            for guest_dir in sorted(room_dir.iterdir()):
+                if not guest_dir.is_dir():
+                    continue
+                for sess_dir in sorted(guest_dir.iterdir()):
+                    if not sess_dir.is_dir():
+                        continue
+                    chunks = sorted(sess_dir.glob("chunk-*.pcm")) or \
+                             sorted(sess_dir.glob("chunk-*.webm"))
+                    if not chunks:
+                        continue
+                    wav = sess_dir / "full.wav"
+                    if wav.exists() and wav.stat().st_size > 44:
+                        continue
+                    size = 0
+                    newest = 0.0
+                    for c in chunks:
+                        try:
+                            st = c.stat()
+                            size += st.st_size
+                            newest = max(newest, st.st_mtime)
+                        except OSError:
+                            continue
+                    total_chunks += len(chunks)
+                    total_bytes += size
+                    pending.append({
+                        "room": room_dir.name,
+                        "guest": guest_dir.name,
+                        "session": sess_dir.name,
+                        "chunks": len(chunks),
+                        "size_mb": round(size / 1024 / 1024, 2),
+                        "kind": "pcm" if chunks[0].suffix == ".pcm" else "webm",
+                        "last_chunk_ts": round(newest, 1),
+                        "age_minutes": round(max(0.0, time.time() - newest) / 60, 1),
+                    })
+    pending.sort(key=lambda x: x["last_chunk_ts"], reverse=True)
+    return {"sessions": pending, "count": len(pending),
+            "chunks": total_chunks, "size_mb": round(total_bytes / 1024 / 1024, 2)}
+
+
+def _ws_connection_stats() -> dict:
+    """Zaehlt offene WebSockets pro Rolle und Raum."""
+    with _WS_LOCK:
+        hosts = {room: len(s) for room, s in _WS_HOSTS.items() if s}
+        guests = {room: len(s) for room, s in _WS_GUESTS.items() if s}
+    return {
+        "host_sockets": sum(hosts.values()),
+        "guest_sockets": sum(guests.values()),
+        "rooms_with_hosts": len(hosts),
+        "rooms_with_guests": len(guests),
+        "per_room_hosts": hosts,
+        "per_room_guests": guests,
+    }
+
+
+def _active_rooms_diag() -> list[dict]:
+    """Raeume mit aktueller Aktivitaet: Host verbunden, Gaeste online, Aufnahme."""
+    now_s = time.time()
+    ws = _ws_connection_stats()
+    rows = []
+    with _LOCK:
+        names = list(ROOMS.keys())
+    for name in names:
+        status = _build_status(name)
+        guests = status.get("guests", [])
+        online = [g for g in guests if g.get("connection") == "online"]
+        cmd = status.get("command") or {}
+        now_ms = int(now_s * 1000)
+        start_at = cmd.get("start_at")
+        recording = bool(cmd.get("action") == "start" and start_at
+                         and now_ms >= int(start_at))
+        host_sockets = ws["per_room_hosts"].get(name, 0)
+        if not (host_sockets or online or recording):
+            continue
+        lock = _lock_get(name)
+        # Summe des noch nicht hochgeladenen Materials, wie die Gaeste es melden.
+        queue = sum(int(g.get("queue") or 0) for g in guests)
+        rows.append({
+            "room": name,
+            "host_sockets": host_sockets,
+            "guest_sockets": ws["per_room_guests"].get(name, 0),
+            "guests_online": len(online),
+            "guests_known": len(guests),
+            "recording": recording,
+            "session": status.get("session", ""),
+            "pending_chunks": queue,
+            "locked": bool(lock),
+            "lock_role": (lock or {}).get("role", ""),
+            "lock_connected": bool((lock or {}).get("connected")),
+        })
+    rows.sort(key=lambda x: (not x["recording"], x["room"].lower()))
+    return rows
+
+
+def _ping_stats() -> dict:
+    """Latenz-/Frische-Kennzahlen aus den Gast-Heartbeats.
+
+    Wir messen keinen eigenen RTT, sondern wie alt der letzte Heartbeat je Gast
+    ist. Das beantwortet die operative Frage: reagieren die Clients noch?
+    """
+    now_s = time.time()
+    ages: list[float] = []
+    stale = 0
+    with _LOCK:
+        for r in ROOMS.values():
+            for info in r.get("guests", {}).values():
+                last = info.get("last_seen") or 0
+                if not last:
+                    continue
+                age = now_s - last
+                ages.append(age)
+                if age > GUEST_STALE_AFTER:
+                    stale += 1
+    if not ages:
+        return {"guests_measured": 0, "avg_age_s": 0.0, "max_age_s": 0.0,
+                "stale_guests": 0, "stale_after_s": GUEST_STALE_AFTER}
+    return {
+        "guests_measured": len(ages),
+        "avg_age_s": round(sum(ages) / len(ages), 1),
+        "max_age_s": round(max(ages), 1),
+        "stale_guests": stale,
+        "stale_after_s": GUEST_STALE_AFTER,
+    }
+
+
+@app.get("/admin/diagnostics")
+def admin_diagnostics(_role=Depends(require_admin), errors: int = 30):
+    """Zustandsbericht fuer die Health-&-Diagnostics-Ansicht im Admin-Panel."""
+    now_s = time.time()
+    uptime = now_s - SERVER_START_TS
+    counters = _diag_snapshot()
+    backlog = _upload_backlog()
+    ws = _ws_connection_stats()
+    ping = _ping_stats()
+    active = _active_rooms_diag()
+
+    # Ableitung eines Gesamtzustands. "warn" statt "ok", sobald etwas
+    # Aufmerksamkeit braucht -- der Admin soll nicht Zahlen vergleichen muessen.
+    recent_errors = _errors_recent(limit=max(1, min(int(errors or 30), 100)))
+    problems = []
+    if backlog["count"]:
+        problems.append(f"{backlog['count']} Session(s) ohne fertige WAV")
+    if ping["stale_guests"]:
+        problems.append(f"{ping['stale_guests']} Gast/Gaeste ohne aktuellen Heartbeat")
+    if counters["upload_errors"]:
+        problems.append(f"{counters['upload_errors']} Upload-Fehler")
+    if counters["room_list_denied"]:
+        problems.append(f"{counters['room_list_denied']} abgelehnte Raumlisten-Zugriffe")
+    fresh_errors = [e for e in recent_errors if now_s - e["ts"] < 900]
+    if fresh_errors:
+        problems.append(f"{len(fresh_errors)} Fehler in den letzten 15 Minuten")
+    state = "ok" if not problems else "warn"
+
+    data_bytes = _dir_size_bytes(UPLOADS)
+    try:
+        du = shutil.disk_usage(str(DATA_DIR))
+        disk = {"total_gb": round(du.total / 1024 ** 3, 1),
+                "used_gb": round(du.used / 1024 ** 3, 1),
+                "free_gb": round(du.free / 1024 ** 3, 1),
+                "free_pct": round(du.free / du.total * 100, 1) if du.total else 0.0}
+    except Exception as e:
+        disk = {"error": str(e)}
+
+    return {
+        "ok": True,
+        "state": state,
+        "problems": problems,
+        "server_time": int(now_s * 1000),
+        "uptime": {"seconds": round(uptime, 1), "human": _fmt_uptime(uptime),
+                   "started_at": round(SERVER_START_TS, 1)},
+        "websocket": {
+            "backend": "uvicorn/websockets (FastAPI WebSocket)",
+            "transport": "ws/wss (kein HTTP-Poll-Fallback)",
+            **ws,
+        },
+        "active_rooms": active,
+        "active_rooms_count": len(active),
+        "registered_rooms": len(_room_registry_list()),
+        "ping": ping,
+        "upload_backlog": backlog,
+        "counters": counters,
+        "room_list": {
+            "last": dict(_ROOM_LIST_LAST),
+            "ok": counters["room_list_ok"],
+            "denied": counters["room_list_denied"],
+            "unauthenticated": counters["room_list_unauthenticated"],
+            "errors": counters["room_list_error"],
+        },
+        "storage": {
+            "data_dir": str(DATA_DIR),
+            "uploads_mb": round(data_bytes / 1024 / 1024, 1),
+            "disk": disk,
+        },
+        "locks": {
+            "held": len(_HOST_LOCKS),
+            "ttl_s": HOST_LOCK_TTL,
+            "grace_s": HOST_LOCK_GRACE,
+        },
+        "recent_errors": recent_errors,
+    }
+
+
+@app.get("/admin/diagnostics/logs")
+def admin_diagnostics_logs(_role=Depends(require_admin),
+                           since: float = 0.0, limit: int = 300):
+    """Client-Logs aller Raeume, jung zuerst -- fuer die Diagnose-Ansicht.
+
+    Die raumbezogene Ansicht (/admin/room/{room}/logs) bleibt unveraendert;
+    hier geht es um den instanzweiten Blick.
+    """
+    limit = max(1, min(int(limit or 300), 2000))
+    rows: list[dict] = []
+    try:
+        with _DB_LOCK, _db_conn() as conn:
+            cur = conn.execute(
+                "SELECT room, guest, session, ts, level, msg FROM guest_logs "
+                "WHERE ts > ? ORDER BY ts DESC LIMIT ?", (since, limit))
+            rows = [dict(r) for r in cur.fetchall()]
+    except Exception as e:
+        _error_record("diagnostics", "Client-Logs konnten nicht gelesen werden",
+                      detail=str(e))
+        raise HTTPException(500, "Client-Logs konnten nicht gelesen werden")
+    counts = {"info": 0, "ok": 0, "err": 0}
+    for r in rows:
+        lvl = str(r.get("level") or "info")
+        counts[lvl] = counts.get(lvl, 0) + 1
+    return {"ok": True, "lines": rows, "count": len(rows), "levels": counts,
+            "newest_ts": rows[0]["ts"] if rows else since}
+
+
+@app.post("/admin/rebuild-wav/{room}/{guest}/{session}")
+async def admin_rebuild_wav(room, guest, session, request: Request,
+                            _role=Depends(require_admin)):
+    """Baut `full.wav` aus den vorhandenen Chunks neu.
+
+    Anwendungsfall: der Gast hat die Verbindung verloren, bevor `/finish` lief,
+    oder die Zusammenfuehrung ist fehlgeschlagen. Die Chunks liegen aber noch
+    auf der Platte.
+
+    Body (optional): { "force": bool }
+      force=false (Standard): eine vorhandene, gueltige WAV wird NICHT
+      ueberschrieben -- der Aufruf meldet stattdessen 409.
+    """
+    check_ident(room, guest, session)
+    dest_dir = safe(room, guest, session)
+    if not dest_dir.exists():
+        raise HTTPException(404, "Session nicht gefunden")
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    force = bool(payload.get("force"))
+
+    wav_path = dest_dir / "full.wav"
+    existed = wav_path.exists() and wav_path.stat().st_size > 44
+    if existed and not force:
+        raise HTTPException(409, "Es existiert bereits eine WAV. "
+                                 "Zum Ueberschreiben force=true senden.")
+
+    pcm_chunks = sorted(dest_dir.glob("chunk-*.pcm"))
+    webm_chunks = sorted(dest_dir.glob("chunk-*.webm"))
+    if not pcm_chunks and not webm_chunks:
+        raise HTTPException(404, "Keine Chunks vorhanden -- Neuaufbau nicht moeglich")
+
+    # Vor dem Ueberschreiben sichern, damit ein Fehlschlag nichts vernichtet.
+    backup = None
+    if existed:
+        backup = dest_dir / "full.wav.bak"
+        try:
+            shutil.copy2(wav_path, backup)
+        except OSError as e:
+            _error_record("rebuild", "Sicherungskopie fehlgeschlagen",
+                          room=room, detail=str(e))
+            backup = None
+
+    try:
+        if pcm_chunks:
+            sample_rate, channels = DEFAULT_SAMPLE_RATE, DEFAULT_CHANNELS
+            meta_file = dest_dir / "meta.json"
+            if meta_file.exists():
+                try:
+                    m = json.loads(meta_file.read_text())
+                    sample_rate = int(m.get("sample_rate", sample_rate))
+                    channels = int(m.get("channels", channels))
+                except Exception:
+                    pass
+            wav_path = _write_wav_from_pcm(pcm_chunks, dest_dir, sample_rate, channels)
+            n_chunks, kind = len(pcm_chunks), "pcm"
+        else:
+            wav_path, tmp_webm = _transcode_webm_to_wav(webm_chunks, dest_dir)
+            n_chunks, kind = len(webm_chunks), "webm"
+            try:
+                _maybe_make_mp4(tmp_webm, dest_dir)
+            except Exception as e:
+                _error_record("rebuild", "MP4-Fallback fehlgeschlagen",
+                              room=room, detail=str(e))
+            try:
+                tmp_webm.unlink()
+            except OSError:
+                pass
+    except HTTPException:
+        # Rueckrollen: der alte Stand ist besser als eine kaputte Datei.
+        if backup and backup.exists():
+            try:
+                shutil.move(str(backup), str(wav_path))
+            except OSError:
+                pass
+        _diag_bump("finish_errors")
+        _error_record("rebuild", "WAV-Neuaufbau fehlgeschlagen",
+                      room=room, detail=f"{guest}/{session}")
+        raise
+    except Exception as e:
+        if backup and backup.exists():
+            try:
+                shutil.move(str(backup), str(wav_path))
+            except OSError:
+                pass
+        _diag_bump("finish_errors")
+        _error_record("rebuild", "WAV-Neuaufbau fehlgeschlagen",
+                      room=room, detail=f"{guest}/{session}: {e}")
+        raise HTTPException(500, f"WAV-Neuaufbau fehlgeschlagen: {e}")
+
+    # Marker dieser Session wieder einbetten.
+    try:
+        _wav_add_markers(wav_path, _marker_list(room, session))
+    except Exception as e:
+        _error_record("rebuild", "Marker konnten nicht eingebettet werden",
+                      room=room, detail=str(e))
+
+    if backup and backup.exists():
+        try:
+            backup.unlink()
+        except OSError:
+            pass
+
+    with _LOCK:
+        r = ROOMS.get(room)
+        if r and guest in r.get("guests", {}):
+            r["guests"][guest]["state"] = "done"
+            r["guests"][guest]["queue"] = 0
+
+    try:
+        await _broadcast_host_status(room)
+    except Exception:
+        pass
+
+    # Session-Mixdown neu erzeugen, damit die Vorschau zur neuen Spur passt.
+    mixdown = None
+    try:
+        mixdown = _ensure_session_mixdown(room, session, force=True)
+    except Exception as e:
+        _error_record("rebuild", "Mixdown-Aktualisierung fehlgeschlagen",
+                      room=room, detail=str(e))
+
+    _diag_bump("wav_rebuilds")
+    size_mb = round(wav_path.stat().st_size / 1024 / 1024, 2)
+    _error_record("rebuild", f"WAV neu aufgebaut ({n_chunks} Chunks, {size_mb} MB)",
+                  room=room, detail=f"{guest}/{session}")
+    return {"ok": True, "room": room, "guest": guest, "session": session,
+            "chunks": n_chunks, "kind": kind, "replaced": existed,
+            "size_mb": size_mb,
+            "mixdown": f"/host/mixdown/{room}/{session}" if mixdown else None}
+
+
 # ── Raum-Management: Liste / Archivieren / Loeschen (Feature 6) ───────────────
 
-@app.get("/admin/rooms")
-def admin_rooms(_role=Depends(require_admin)):
-    """Alle Raeume mit Statistik + Archiv-Flag."""
+def _rooms_overview(include_archived: bool = True) -> list[dict]:
+    """Raumuebersicht mit Statistik, Archiv-Flag, Live-Status und Lock-Zustand.
 
+    Gemeinsame Basis fuer die Host-Route (/rooms) und die Admin-Route
+    (/admin/rooms). Die Daten sind identisch; nur die Verwaltungsaktionen
+    (archivieren, loeschen, Downloads) bleiben Admin-only.
+    """
     cfg = _cfg_load()
     archived = set(cfg.get("archived_rooms", []))
     rooms = {}
@@ -2054,9 +4260,87 @@ def admin_rooms(_role=Depends(require_admin)):
         except Exception:
             info["recording"] = False
             info["countdown"] = False
+        # Roadmap 5: Lock-Zustand fuer die Uebersicht.
+        lock = _lock_get(name)
+        info["locked"] = bool(lock)
+        info["lock"] = _lock_public(lock) if lock else None
+        info["lock_role"] = (lock or {}).get("role", "")
+        info["lock_label"] = (lock or {}).get("label", "")
+        # Ein Lock ohne offene Verbindung laeuft in der Kulanzzeit aus.
+        info["lock_reconnecting"] = bool(lock and not lock.get("connected"))
         out.append(info)
     out.sort(key=lambda x: x["room"].lower())
-    return {"ok": True, "rooms": out}
+    if not include_archived:
+        out = [r for r in out if not r.get("archived")]
+    return out
+
+
+@app.get("/rooms/{room}/branding")
+def room_branding_context(room: str, _role=Depends(require_auth)):
+    check_ident(room)
+    return {"ok": True, "room": room, "preset": _room_preset(room)}
+
+
+@app.post("/rooms")
+async def rooms_create(request: Request, _role=Depends(require_auth)):
+    """Legt einen Raum an und weist das vom Host gewaehlte Gast-Preset zu."""
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    room = str(payload.get("room") or "").strip()
+    check_ident(room)
+    preset_id = str(payload.get("preset_id") or "").strip()
+    cfg = _cfg_load()
+    valid = {str(p.get("id")) for p in cfg.get("branding_presets") or [] if isinstance(p, dict)}
+    if preset_id and preset_id not in valid:
+        raise HTTPException(400, "Unbekanntes Branding-Preset")
+    assignments = dict(cfg.get("room_preset_assignments") or {})
+    if preset_id:
+        assignments[room] = preset_id
+    else:
+        assignments.pop(room, None)
+    cfg["room_preset_assignments"] = assignments
+    _cfg_save(cfg)
+    _room_register(room)
+    return {"ok": True, "room": room, "preset_id": preset_id,
+            "branding": _room_preset(room, cfg)}
+
+
+@app.get("/rooms")
+def rooms_list(role=Depends(require_auth)):
+    """Raumuebersicht fuer authentifizierte Hosts UND Admins.
+
+    Hosts brauchen die Liste, um bestehende Raeume zu finden und zu oeffnen,
+    ohne den Raumnamen manuell zu tippen. Archivierte Raeume liefern wir nur
+    an Admins aus; fuer Hosts ist die Liste reine Navigation.
+    """
+    is_admin = (role == "admin")
+    try:
+        rooms = _rooms_overview(include_archived=is_admin)
+    except Exception as e:
+        _diag_bump("room_list_error")
+        _error_record("room-list", "Raumliste konnte nicht erstellt werden", detail=str(e))
+        raise HTTPException(500, "Raumliste konnte nicht erstellt werden")
+    _diag_bump("room_list_ok")
+    _ROOM_LIST_LAST.update({"ts": time.time(), "role": role, "status": 200,
+                            "count": len(rooms), "route": "/rooms"})
+    return {"ok": True, "role": role, "is_admin": is_admin, "rooms": rooms}
+
+
+@app.get("/admin/rooms")
+def admin_rooms(_role=Depends(require_admin)):
+    """Alle Raeume mit Statistik + Archiv-Flag (Admin-Sicht)."""
+    try:
+        rooms = _rooms_overview(include_archived=True)
+    except Exception as e:
+        _diag_bump("room_list_error")
+        _error_record("room-list", "Raumliste konnte nicht erstellt werden", detail=str(e))
+        raise HTTPException(500, "Raumliste konnte nicht erstellt werden")
+    _diag_bump("room_list_ok")
+    _ROOM_LIST_LAST.update({"ts": time.time(), "role": "admin", "status": 200,
+                            "count": len(rooms), "route": "/admin/rooms"})
+    return {"ok": True, "role": "admin", "is_admin": True, "rooms": rooms}
 
 
 @app.post("/admin/room/{room}/archive")
@@ -2101,6 +4385,7 @@ def admin_room_delete(room, _role=Depends(require_admin)):
     with _DB_LOCK, _db_conn() as conn:
         conn.execute("DELETE FROM guest_tokens WHERE room=?", (room,))
         conn.execute("DELETE FROM markers WHERE room=?", (room,))
+        conn.execute("DELETE FROM clip_events WHERE room=?", (room,))
         conn.commit()
     # Persistente Gast-Logs des Raums ebenfalls entfernen (sonst verwaiste Zeilen).
     _guest_logs_delete_room(room)
@@ -2130,7 +4415,7 @@ def admin_room_guests(room, _role=Depends(require_admin)):
             conn = ("online" if age <= GUEST_STALE_AFTER
                     else "stale" if age <= GUEST_OFFLINE_AFTER else "offline")
             row = {k: info.get(k) for k in (
-                "guest", "display_name", "session", "state",
+                "guest", "client_id", "display_name", "session", "state",
                 "mic_label", "speaker_label", "rms", "queue", "rec_mb", "up_mb")}
             # Sprint 2: Mic-Inventar + aktuelles Geraet + Wechsel-Status.
             row["mic_devices"]          = info.get("mic_devices", [])
@@ -2146,6 +4431,31 @@ def admin_room_guests(room, _role=Depends(require_admin)):
 
 
 # ── Sessions-API (geschuetzt) ─────────────────────────────────────────────────
+
+@app.get("/admin/room/{room}/clips")
+def admin_room_clips(room, session: str | None = None, since: float = 0.0,
+                     _role=Depends(require_admin)):
+    """Persistierte Clipping-Ereignisse eines Raums, optional je Session."""
+    check_ident(room)
+    rows = _clip_events_query(room, session=session, since=since)
+    groups: dict[str, dict] = {}
+    for r in rows:
+        g = str(r.get("guest") or "")
+        grp = groups.setdefault(g, {"guest": g, "count": 0, "worst_dbfs": -120.0,
+                                    "last_ts": 0.0, "events": []})
+        grp["count"] += 1
+        grp["worst_dbfs"] = max(grp["worst_dbfs"], float(r.get("peak_dbfs") or -120.0))
+        grp["last_ts"] = max(grp["last_ts"], float(r.get("ts") or 0.0))
+        grp["events"].append({
+            "ts": r.get("ts"), "session": r.get("session"),
+            "offset_ms": r.get("offset_ms"), "peak_dbfs": r.get("peak_dbfs"),
+            "samples": r.get("samples"), "duration_ms": r.get("duration_ms"),
+        })
+    out = sorted(groups.values(), key=lambda x: x["last_ts"], reverse=True)
+    return {"ok": True, "room": room, "session": session or "",
+            "server_time": time.time(), "guests": out,
+            "total": sum(g["count"] for g in out)}
+
 
 @app.get("/admin/room/{room}/logs")
 def admin_room_logs(room, since: float = 0.0, _role=Depends(require_admin)):
@@ -2258,8 +4568,113 @@ def sessions(role=Depends(require_auth)):
 # Chunk-Upload bleibt bewusst bei HTTP (PUT /upload ...) -- nur die Steuer- und
 # Telemetriedaten laufen hier in Echtzeit.
 
+
+# ---------------------------------------------------------------------------
+# Punkt 8: Lobby-Presence -- Gaeste erscheinen vor der Namenseingabe
+# ---------------------------------------------------------------------------
+# Bisher tauchte ein Gast erst im Host-Panel auf, nachdem er seinen Namen
+# bestaetigt hatte. Der Host sah also nicht, dass jemand schon wartet.
+# Jetzt meldet der Recorder direkt nach dem Aufloesen des Tokens eine Lobby-
+# Praesenz. Die Identitaet kommt aus einer pro Recorder-Dokument
+# erzeugten client_id -- getrennte Dokumente teilen keine Lobby-Identitaet.
+
+LOBBY_FORGET_AFTER = 45.0   # Sekunden ohne Lobby-Ping -> Eintrag verfaellt
+
+
+def _lobby_touch(room: str, client_id: str, stage: str = "naming") -> dict:
+    """Legt eine Lobby-Praesenz an oder haelt sie frisch."""
+    now = time.time()
+    with _LOCK:
+        r = _room(room)
+        lobby = r.setdefault("lobby", {})
+        retired = r.setdefault("lobby_retired", {})
+        for cid, until in list(retired.items()):
+            if until <= now:
+                retired.pop(cid, None)
+        # A delayed ping must never undo a leave or an authenticated join.
+        if client_id in retired or any(
+            g.get("client_id") == client_id for g in r["guests"].values()
+        ):
+            lobby.pop(client_id, None)
+            return {}
+        entry = lobby.get(client_id)
+        if entry is None:
+            # Kurzes, gut vorlesbares Kuerzel: der Host kann so ueber
+            # "Gast A" / "Gast B" sprechen, bevor Namen existieren.
+            used = {e.get("label") for e in lobby.values()}
+            idx = 0
+            while _lobby_label(idx) in used:
+                idx += 1
+            entry = {
+                "client_id": client_id,
+                "label": _lobby_label(idx),
+                "joined_at": now,
+            }
+            lobby[client_id] = entry
+        entry["stage"] = stage if stage in ("joining", "naming", "named") else "naming"
+        entry["last_seen"] = now
+        return dict(entry)
+
+
+def _lobby_label(index: int) -> str:
+    """A, B, ... Z, AA, AB ... -- stabil und ohne Zaehlerluecken im UI."""
+    label = ""
+    n = index
+    while True:
+        label = chr(ord("A") + (n % 26)) + label
+        n = n // 26 - 1
+        if n < 0:
+            break
+    return label
+
+
+def _lobby_retire(room_obj: dict, client_id: str, now: float) -> None:
+    retired = room_obj.setdefault("lobby_retired", {})
+    for cid, until in list(retired.items()):
+        if until <= now:
+            retired.pop(cid, None)
+    retired[client_id] = now + LOBBY_FORGET_AFTER * 2
+    # Bound memory even for many short-lived invitation visits.
+    while len(retired) > 4096:
+        retired.pop(next(iter(retired)))
+
+
+def _lobby_drop(room: str, client_id: str) -> None:
+    with _LOCK:
+        r = _room(room)
+        r.get("lobby", {}).pop(client_id, None)
+        _lobby_retire(r, client_id, time.time())
+
+
+def _lobby_list(room_obj: dict, now: float | None = None) -> list[dict]:
+    """Aktive Lobby-Eintraege; abgelaufene werden dabei entfernt."""
+    now = time.time() if now is None else now
+    lobby = room_obj.setdefault("lobby", {})
+    joined = {g.get("client_id") for g in room_obj.get("guests", {}).values()}
+    retired = room_obj.setdefault("lobby_retired", {})
+    for cid, until in list(retired.items()):
+        if until <= now:
+            retired.pop(cid, None)
+    stale = [cid for cid, e in lobby.items()
+             if cid in joined or cid in retired
+             or now - e.get("last_seen", 0) > LOBBY_FORGET_AFTER]
+    for cid in stale:
+        lobby.pop(cid, None)
+    rows = []
+    for e in lobby.values():
+        rows.append({
+            "client_id": e["client_id"],
+            "label": e["label"],
+            "stage": e.get("stage", "naming"),
+            "waiting_seconds": round(now - e.get("joined_at", now), 1),
+            "seconds_since_seen": round(now - e.get("last_seen", now), 1),
+        })
+    rows.sort(key=lambda x: x["label"])
+    return rows
+
+
 def _apply_guest_telemetry(room: str, guest: str, payload: dict) -> None:
-    """Uebernimmt einen Gast-Heartbeat in ROOMS (gemeinsam von HTTP /poll und WS)."""
+    """Apply an authenticated WebSocket guest heartbeat to ROOMS."""
     # Konsolen-Logs (optional) mitschreiben.
     lines = payload.get("console") or []
     if lines and isinstance(lines, list):
@@ -2284,6 +4699,11 @@ def _apply_guest_telemetry(room: str, guest: str, payload: dict) -> None:
     with _LOCK:
         r = _room(room)
         g = r["guests"].get(guest, {})
+        client_id = str(payload.get("client_id") or "")[:64]
+        if client_id and SAFE.fullmatch(client_id):
+            g["client_id"] = client_id
+            r.setdefault("lobby", {}).pop(client_id, None)
+            _lobby_retire(r, client_id, now_s)
         g.update({
             "guest":         guest,
             "display_name":  str(payload.get("display_name", guest))[:80],
@@ -2327,6 +4747,24 @@ def _apply_guest_telemetry(room: str, guest: str, payload: dict) -> None:
             g.pop("mic_alert", None)
         if "mic_lost_during_recording" in payload:
             g["mic_lost_during_recording"] = bool(payload.get("mic_lost_during_recording"))
+        # --- Guardrails: Berechtigungen, Kamera, Bereitschaft ---------------
+        perms_in = payload.get("permissions")
+        if isinstance(perms_in, dict):
+            g["permissions"] = {
+                "microphone": str(perms_in.get("microphone", "unknown"))[:10],
+                "camera":     str(perms_in.get("camera", "unknown"))[:10],
+            }
+        if "cam_active" in payload:
+            g["cam_active"] = bool(payload.get("cam_active"))
+        if "audio_only" in payload:
+            g["audio_only"] = bool(payload.get("audio_only"))
+        if "declared_ready" in payload:
+            g["declared_ready"] = bool(payload.get("declared_ready"))
+        if "peak" in payload:
+            try:
+                g["peak"] = float(payload.get("peak") or 0.0)
+            except (TypeError, ValueError):
+                pass
         # Ergebnis nur fuer den EXAKT passenden Mic-Befehl akzeptieren.
         # Der Recorder sendet Telemetrie wiederholt; eine alte Bestaetigung darf
         # daher keinen spaeteren Befehl loeschen oder dessen Status ueberschreiben.
@@ -2382,6 +4820,11 @@ async def ws_guest(websocket: WebSocket, room: str, guest: str, token: str | Non
                         "type": "command",
                         "command": dict(r["command"]),
                         "settings": dict(r["settings"]),
+                        "guardrails": {
+                            "require_guest_ready": bool(_cfg_get("require_guest_ready")),
+                            "clip_threshold_dbfs": float(_cfg_get("clip_threshold_dbfs")),
+                            "clip_min_samples":    int(_cfg_get("clip_min_samples")),
+                        },
                         "mic_cmd": dict(mic_cmd) if mic_cmd else None,
                         "server_time": int(time.time() * 1000),
                     })
@@ -2402,13 +4845,70 @@ async def ws_guest(websocket: WebSocket, room: str, guest: str, token: str | Non
                         gi["peak"] = peak
                         gi["last_seen"] = time.time()
                 await _broadcast_host_levels(room)
+            elif mtype == "ready":
+                # Gast meldet sich aktiv bereit (oder widerruft die Meldung).
+                ready = bool(data.get("ready"))
+                with _LOCK:
+                    gi = _room(room)["guests"].get(guest)
+                    if gi is not None:
+                        gi["declared_ready"] = ready
+                        gi["last_seen"] = time.time()
+                await _broadcast_host_status(room)
+            elif mtype == "clip":
+                # Clipping-Ereignis: an die Session gebunden persistieren und
+                # den Host sofort informieren.
+                now_s = time.time()
+                try:
+                    peak_dbfs = float(data.get("peak_dbfs", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    peak_dbfs = 0.0
+                try:
+                    samples = int(data.get("samples", 0) or 0)
+                except (TypeError, ValueError):
+                    samples = 0
+                try:
+                    duration_ms = max(0, int(data.get("duration_ms", 0) or 0))
+                except (TypeError, ValueError):
+                    duration_ms = 0
+                with _LOCK:
+                    r = _room(room)
+                    session = str(data.get("session") or r.get("rec_session", ""))[:40]
+                    started = r.get("rec_started_at") or int(now_s * 1000)
+                    gi = r["guests"].get(guest)
+                    if gi is not None:
+                        gi["clipping"] = True
+                        gi["clip_count"] = int(gi.get("clip_count", 0) or 0) + 1
+                        gi["clip_last_dbfs"] = peak_dbfs
+                        gi["clip_last_ts"] = now_s
+                        gi["last_seen"] = now_s
+                        display = gi.get("display_name") or guest
+                    else:
+                        display = guest
+                offset_ms = max(0, int(now_s * 1000) - int(started))
+                if session:
+                    _clip_event_store(room, guest, session, now_s, offset_ms,
+                                      peak_dbfs, samples, duration_ms)
+                # Zusaetzlich in die Gast-Logs, damit das Ereignis in der
+                # bestehenden Admin-Logansicht ohne Extra-Klick sichtbar ist.
+                _guest_logs_store(room, guest, session, [{
+                    "ts": now_s, "level": "err",
+                    "msg": f"Clipping: {display} uebersteuert "
+                           f"({peak_dbfs:.1f} dBFS, {duration_ms} ms)",
+                }])
+                await _broadcast_host_status(room)
+            elif mtype == "clip_clear":
+                with _LOCK:
+                    gi = _room(room)["guests"].get(guest)
+                    if gi is not None:
+                        gi["clipping"] = False
+                await _broadcast_host_status(room)
             elif mtype == "ping":
                 await _ws_send(websocket, {"type": "pong",
                                           "server_time": int(time.time() * 1000)})
     except WebSocketDisconnect:
         pass
     except Exception as e:
-        print("[ws-guest] Fehler:", e)
+        _error_record("ws-guest", "Gast-WebSocket-Fehler", room=room, detail=str(e))
     finally:
         _ws_remove(_WS_GUESTS, room, websocket)
 
@@ -2420,6 +4920,7 @@ async def ws_host(websocket: WebSocket, room: str,
     if not SAFE.match(room) or _session_role(ps_session or "") is None:
         await websocket.close(code=4401)
         return
+    role = _session_role(ps_session or "") or "host"
     await websocket.accept()
     _room_register(room)
     # Mark host presence for room overview (index + admin rooms list)
@@ -2428,31 +4929,109 @@ async def ws_host(websocket: WebSocket, room: str,
         r["host_online"] = True
         r["host_last_seen"] = time.time()
     _ws_add(_WS_HOSTS, room, websocket)
+
+    # Roadmap 5: Lock-Zustand dieser Verbindung. Die Client-Kennung kommt mit
+    # der ersten "hello"-Nachricht; bis dahin ist die Verbindung read-only.
+    client_id = ""
+    mode = "readonly"
+
+    async def send_lock_state(extra: dict | None = None) -> None:
+        lock = _lock_get(room)
+        msg = {"type": "lock", "room": room, "mode": mode,
+               "mine": bool(client_id and lock and lock["client_id"] == client_id),
+               "locked": bool(lock), "lock": _lock_public(lock),
+               "client_id": client_id,
+               "server_time": int(time.time() * 1000)}
+        if extra:
+            msg.update(extra)
+        await _ws_send(websocket, msg)
+
     try:
         # Initialer Status-Push.
         await _ws_send(websocket, {**_build_status(room), "type": "status"})
+        await send_lock_state({"reason": "awaiting_hello"})
         while True:
             data = await websocket.receive_json()
             mtype = data.get("type")
             now_ms = int(time.time() * 1000)
+
+            # ── Lock-Protokoll ────────────────────────────────────────────
+            if mtype == "hello":
+                cid = _lock_client_id(data)
+                if not cid:
+                    await send_lock_state({"reason": "bad_client_id"})
+                    continue
+                client_id = cid
+                res = _lock_acquire(room, cid, role=role,
+                                    label=str(data.get("label") or "")[:80],
+                                    force=bool(data.get("force")) and role == "admin")
+                mode = res["mode"]
+                await send_lock_state({"reason": res["reason"],
+                                       "takeover": res.get("takeover", False)})
+                await _broadcast_host_status(room)
+                continue
+            if mtype == "lock_renew":
+                if not client_id:
+                    await send_lock_state({"reason": "no_client_id"})
+                    continue
+                res = _lock_renew(room, client_id)
+                if res["mode"] == "none":
+                    # Lock ist weg (Serverneustart oder stale) -> neu erwerben.
+                    res = _lock_acquire(room, client_id, role=role)
+                mode = res["mode"] if res["mode"] != "none" else "readonly"
+                await send_lock_state({"reason": res["reason"]})
+                continue
+            if mtype == "lock_acquire":
+                if not client_id:
+                    client_id = _lock_client_id(data)
+                if not client_id:
+                    await send_lock_state({"reason": "no_client_id"})
+                    continue
+                res = _lock_acquire(room, client_id, role=role,
+                                    label=str(data.get("label") or "")[:80],
+                                    force=bool(data.get("force")) and role == "admin")
+                mode = res["mode"]
+                await send_lock_state({"reason": res["reason"],
+                                       "takeover": res.get("takeover", False)})
+                await _broadcast_host_status(room)
+                continue
+            if mtype == "lock_release":
+                if client_id:
+                    _lock_release(room, client_id)
+                mode = "readonly"
+                await send_lock_state({"reason": "released"})
+                await _broadcast_host_status(room)
+                continue
+
+            # ── Steuerbefehle: nur mit gueltigem Lock ─────────────────────
+            if mtype in LOCK_GUARDED_ACTIONS:
+                if not client_id or not _lock_holds(room, client_id):
+                    mode = "readonly"
+                    await send_lock_state({"reason": "denied_readonly",
+                                           "denied_action": mtype})
+                    continue
+                mode = "control"
+
             if mtype == "trigger":
-                action = data.get("action")
-                with _LOCK:
-                    r = _room(room)
-                    if action == "start":
-                        sid = _new_session_id()
-                        r["command"] = {"action": "start",
-                                        "start_at": now_ms + int(START_LEAD_SECONDS * 1000),
-                                        "session": sid, "issued_at": now_ms}
-                        r["rec_started_at"] = now_ms + int(START_LEAD_SECONDS * 1000)
-                        r["rec_session"]    = sid
-                    elif action == "stop":
-                        r["command"] = {"action": "stop", "start_at": None,
-                                        "session": r.get("rec_session", ""), "issued_at": now_ms}
-                    elif action == "clear":
-                        r["command"] = {"action": None, "start_at": None,
-                                        "session": None, "issued_at": now_ms}
-                await _broadcast_guests(room)
+                action = str(data.get("action") or "")
+                try:
+                    issued_at = int(data.get("issued_at") or 0) or None
+                except (TypeError, ValueError):
+                    issued_at = None
+                res = _apply_trigger(room, action, issued_at, bool(data.get("force")))
+                if res.get("blocked"):
+                    await _ws_send(websocket, {
+                        "type": "trigger_result", "ok": False, "action": action,
+                        "reason": res.get("reason", ""), "detail": res.get("detail", ""),
+                        "server_time": now_ms})
+                else:
+                    await _ws_send(websocket, {
+                        "type": "trigger_result", "ok": True, "action": action,
+                        "duplicate": bool(res.get("duplicate")),
+                        "reason": res.get("reason", ""),
+                        "command": res.get("command"), "server_time": now_ms})
+                    if not res.get("duplicate"):
+                        await _broadcast_guests(room)
                 await _broadcast_host_status(room)
             elif mtype == "settings":
                 with _LOCK:
@@ -2475,10 +5054,21 @@ async def ws_host(websocket: WebSocket, room: str,
                     with _LOCK:
                         r = _room(room)
                         started = r.get("rec_started_at") or now_ms
-                        session = r.get("rec_session", "")
-                    offset_ms = max(0, now_ms - int(started))
-                    _marker_create(room, session, kind, offset_ms, note)
-                    await _broadcast_host_status(room)
+                        cur_session = r.get("rec_session", "")
+                    session = str(data.get("session") or cur_session or "")[:40]
+                    if not session:
+                        # Ohne session_id kein Marker -- der Raumzustand allein
+                        # ist keine gueltige Bindung.
+                        await _ws_send(websocket, {
+                            "type": "marker_result", "ok": False, "reason": "no_session",
+                            "detail": "Marker brauchen eine laufende Aufnahme-Session.",
+                            "server_time": now_ms})
+                    else:
+                        offset_ms = max(0, now_ms - int(started)) if session == cur_session else 0
+                        m = _marker_create(room, session, kind, offset_ms, note)
+                        await _ws_send(websocket, {"type": "marker_result", "ok": True,
+                                                   "marker": m, "server_time": now_ms})
+                        await _broadcast_host_status(room)
             elif mtype == "marker_delete":
                 mid = str(data.get("id", ""))
                 if re.match(r"^[0-9a-f]{8}$", mid):
@@ -2507,22 +5097,49 @@ async def ws_host(websocket: WebSocket, room: str,
                             gi.pop("mic_last_result", None)
                     await _broadcast_host_status(room)
             elif mtype == "ping":
-                await _ws_send(websocket, {"type": "pong", "server_time": now_ms})
+                # Der Host-Ping erneuert gleichzeitig den Lock (Heartbeat).
+                if client_id:
+                    res = _lock_renew(room, client_id)
+                    if res["mode"] == "none":
+                        res = _lock_acquire(room, client_id, role=role)
+                    new_mode = res["mode"] if res["mode"] != "none" else "readonly"
+                    if new_mode != mode:
+                        mode = new_mode
+                        await send_lock_state({"reason": res["reason"]})
+                    else:
+                        mode = new_mode
+                await _ws_send(websocket, {"type": "pong", "server_time": now_ms,
+                                          "mode": mode})
     except WebSocketDisconnect:
         pass
     except Exception as e:
-        print("[ws-host] Fehler:", e)
+        _error_record("ws-host", "Host-WebSocket-Fehler", room=room, detail=str(e))
     finally:
         _ws_remove(_WS_HOSTS, room, websocket)
-        # Unmark host presence when the host socket disconnects
+        # Roadmap 5: Der Lock bleibt fuer HOST_LOCK_GRACE reserviert, damit ein
+        # Reload oder ein kurzer Netzausfall die Steuerung zurueckbekommt.
+        if client_id:
+            _lock_mark_disconnected(room, client_id)
+        # Unmark host presence only when no other host socket remains.
+        remaining = bool(_ws_targets(_WS_HOSTS, room))
         with _LOCK:
             r = _room(room)
-            r["host_online"] = False
+            r["host_online"] = remaining
             r["host_last_seen"] = time.time()
+        try:
+            await _broadcast_host_status(room)
+        except Exception:
+            pass
 
 
 # ── Static Uploads ─────────────────────────────────────────────────────────
-app.mount("/uploads", StaticFiles(directory=str(UPLOADS)), name="uploads")
+@app.get("/uploads/{asset_path:path}")
+def protected_upload(asset_path: str, _auth=Depends(require_auth)):
+    base = UPLOADS.resolve()
+    path = (base / asset_path).resolve()
+    if not path.is_relative_to(base) or not path.is_file():
+        raise HTTPException(404, "File not found")
+    return FileResponse(path, headers={"Cache-Control": "private, no-store"})
 
 
 # ── Auto-Lösch-Task ───────────────────────────────────────────────────────────
@@ -2633,6 +5250,8 @@ def _cleanup_old_logs():
                 with _DB_LOCK, _db_conn() as conn:
                     cur = conn.execute(
                         "DELETE FROM guest_logs WHERE ts < ?", (cutoff,))
+                    # Clipping-Ereignisse folgen derselben Aufbewahrungsfrist.
+                    conn.execute("DELETE FROM clip_events WHERE ts < ?", (cutoff,))
                     conn.commit()
                     if cur.rowcount:
                         print(f"[log-cleanup] {cur.rowcount} alte Log-Zeile(n) geloescht (>{days} Tage).")

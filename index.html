@@ -34,6 +34,11 @@
     --brand: var(--ok);
     --brand-hover: var(--ok-hover);
     --brand-on: #fff;
+  
+    /* Abgeleitete Flaechen; der Server ueberschreibt sie themebasiert. */
+    --muted-2: #6b7280;
+    --border-strong: #3a4150;
+    --surface-hover: #1c2029;
   }
 
   * { box-sizing: border-box; }
@@ -48,7 +53,7 @@
     border-radius: 8px; padding: 7px 14px; font: inherit; font-size: 14px;
     cursor: pointer; transition: border-color .15s, color .15s;
   }
-  .logout-btn:hover { border-color: #3a4150; color: var(--text); }
+  .logout-btn:hover { border-color: var(--border-strong); color: var(--text); }
 
   .room-item {
     display: flex; align-items: center; justify-content: space-between;
@@ -72,6 +77,12 @@
   }
   .pill.live { border-color: var(--ok); color: var(--ok); }
   .pill.rec  { border-color: #e5484d; color: #e5484d; }
+  .pill.locked { border-color: #f5a524; color: #f5a524; }
+  .pill.reconnect { border-color: #8e8ea0; color: #c9ccd6; }
+  a.enter.readonly {
+    background: transparent; color: var(--text); border-color: var(--border);
+  }
+  a.enter.readonly:hover { background: var(--panel2); border-color: var(--border-strong); }
 
   a.enter {
     display: inline-flex; align-items: center; justify-content: center;
@@ -112,10 +123,16 @@
   .panel { background: var(--panel); border: 1px solid var(--border);
     border-radius: 12px; padding: 24px; display: flex; flex-direction: column; gap: 14px; }
   label { font-size: 15px; color: var(--text); font-weight: 700; letter-spacing: .1px; }
-  input { background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+  input, select { background: var(--panel2); color: var(--text); border: 1px solid var(--border);
     border-radius: 8px; padding: 12px 14px; font: inherit; width: 100%; outline: none;
-    transition: border-color .15s; }
-  input:focus { border-color: var(--brand); }
+    transition: border-color .15s, box-shadow .15s; }
+  input:focus, select:focus { border-color: var(--brand); box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 18%, transparent); }
+  .field-group { display:flex; flex-direction:column; gap:7px; }
+  .preset-choice { display:grid; grid-template-columns:44px minmax(0,1fr); gap:11px; align-items:center; }
+  .preset-mark { width:44px; height:44px; border:1px solid var(--border); border-radius:9px; background:var(--panel2); display:grid; place-items:center; overflow:hidden; }
+  .preset-mark img { width:100%; height:100%; object-fit:contain; padding:5px; }
+  .preset-mark span { font-weight:800; color:var(--brand); }
+  .room-preset-meta { color:var(--muted); font-size:12px; margin-top:3px; }
   button.primary { background: var(--brand); color: var(--brand-on); border: 1px solid var(--brand);
     border-radius: 8px; padding: 13px 16px; font: inherit; font-weight: 700;
     cursor: pointer; transition: background .15s, border-color .15s; }
@@ -152,9 +169,9 @@
   <button class="logout-btn" id="logoutBtn">Abmelden</button>
 </div>
 
-<div class="wrap">
+<main class="wrap" id="main-content" tabindex="-1">
   <h1>Podcast Studio</h1>
-  <p class="sub">Gib einen Raumnamen ein, um ein Host-Studio zu öffnen. Über den Raumnamen lädst du anschließend deine Gäste ein.</p>
+  <p class="sub">Öffne einen bestehenden Raum aus der Übersicht oder gib einen neuen Raumnamen ein. Über den Raumnamen lädst du anschließend deine Gäste ein.</p>
 
   <div class="panel admin-panel" id="adminPanel" style="display:none">
     <div style="font-size:15px;font-weight:700; padding-bottom:10px">Admin</div>
@@ -162,17 +179,30 @@
   </div>
 
   <div class="panel">
-    <label for="roomInput">Raumname</label>
-    <input id="roomInput" type="text" placeholder="z. B. podcast-episode-42" spellcheck="false">
-    <p class="hint" id="hint">Erlaubt: Buchstaben, Zahlen, Bindestrich, Unterstrich.</p>
-    <button class="primary" id="goBtn">Host-Studio öffnen →</button>
+    <div style="font-size:16px;font-weight:700">Neuen Raum erstellen</div>
+    <div class="field-group">
+      <label for="roomInput">Raumname</label>
+      <input id="roomInput" aria-describedby="hint" type="text" placeholder="z. B. podcast-episode-42" spellcheck="false">
+      <p class="hint" id="hint" role="status" aria-live="polite" style="margin:0">Erlaubt: Buchstaben, Zahlen, Bindestrich, Unterstrich.</p>
+    </div>
+    <div class="field-group">
+      <label for="roomPreset">Branding-Preset für Gäste</label>
+      <div class="preset-choice">
+        <div class="preset-mark" id="roomPresetMark" aria-hidden="true"><span>PS</span></div>
+        <div>
+          <select id="roomPreset" aria-describedby="roomPresetHint"><option value="">Globales Branding</option></select>
+          <div class="room-preset-meta" id="roomPresetHint">Das Preset wird nur in der Gastoberfläche angewendet.</div>
+        </div>
+      </div>
+    </div>
+    <button class="primary" id="goBtn">Raum erstellen und öffnen →</button>
   </div>
 
-  <div class="panel" id="roomsPanel" style="display:none">
+  <div class="panel" id="roomsPanel">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
       <div>
         <div style="font-size:15px;font-weight:700">Räume</div>
-        <div class="hint" style="margin-top:4px">Übersicht über alle bestehenden Räume (inkl. live). Archivierte Räume werden ausgeblendet.</div>
+        <div class="hint" style="margin-top:4px">Bestehende Räume öffnen. Räume, die gerade von einer anderen Host-Instanz gesteuert werden, öffnest du im Nur-Lesen-Modus.</div>
       </div>
       <button class="logout-btn" id="refreshRoomsBtn" type="button" style="padding:10px 14px">↻ Aktualisieren</button>
     </div>
@@ -185,7 +215,7 @@
     <div id="roomsBox" style="margin-top:12px;font-size:14px;color:var(--muted)">Lade…</div>
   </div>
 
-  </div>
+  </main>
 
 <script>
 (() => {
@@ -197,16 +227,56 @@
     return s.trim().replace(/\s+/g, '-').replace(/[^a-zA-Z0-9_-]/g, '');
   }
 
-  function go() {
+  let brandingPresets = [];
+
+  function updatePresetSummary() {
+    const selected = brandingPresets.find(p => p.id === $('roomPreset').value);
+    const mark = $('roomPresetMark');
+    const presetHint = $('roomPresetHint');
+    if (!selected) {
+      mark.innerHTML = '<span>PS</span>';
+      presetHint.textContent = 'Verwendet das globale Branding. Die Raum-Farben sind nur für Gäste sichtbar.';
+      return;
+    }
+    mark.innerHTML = selected.logo ? `<img src="${escapeHtml(selected.logo)}" alt="">` : `<span>${escapeHtml((selected.name || 'P').slice(0,2).toUpperCase())}</span>`;
+    presetHint.textContent = `${selected.name} · ${selected.appearance === 'light' ? 'heller' : 'dunkler'} Hintergrund · nur für Gäste`;
+  }
+
+  async function loadBrandingPresets() {
+    try {
+      const b = await (await fetch('/branding', { cache: 'no-store' })).json();
+      brandingPresets = Array.isArray(b.room_presets) ? b.room_presets : [];
+      const select = $('roomPreset');
+      select.innerHTML = '<option value="">Globales Branding</option>' + brandingPresets.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join('');
+      updatePresetSummary();
+    } catch {}
+  }
+
+  async function go() {
     const room = sanitize(input.value);
     if (room.length < 2) {
       hint.textContent = 'Bitte mindestens 2 gültige Zeichen eingeben.';
       hint.classList.add('err');
       return;
     }
-    location.href = `/host.html?room=${encodeURIComponent(room)}`;
+    const btn = $('goBtn');
+    btn.disabled = true;
+    try {
+      const res = await fetch('/rooms', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ room, preset_id: $('roomPreset').value || '' }),
+      });
+      if (!res.ok) throw new Error('Der Raum konnte nicht erstellt werden.');
+      location.href = `/host.html?room=${encodeURIComponent(room)}`;
+    } catch (err) {
+      hint.textContent = err.message;
+      hint.classList.add('err');
+      btn.disabled = false;
+    }
   }
 
+  $('roomPreset').addEventListener('change', updatePresetSummary);
+  loadBrandingPresets();
   $('goBtn').addEventListener('click', go);
   input.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
   input.addEventListener('input',   () => hint.classList.remove('err'));
@@ -268,65 +338,111 @@ async function loadRooms() {
   // Use the latest filter value (avoid stale closure when loadRooms runs from setInterval)
   try {
     if (typeof window.roomsFilter !== 'undefined') {
-      // Keep local variable in sync if it exists
       try { roomsFilter = window.roomsFilter; } catch {}
     }
   } catch {}
 
   const box = document.getElementById('roomsBox');
   const panel = document.getElementById('roomsPanel');
+  panel.style.display = 'block';
+
+  let res;
   try {
-    const res = await fetch('/admin/rooms', { cache: 'no-store' });
-    if (res.status === 401 || res.status === 303) { panel.style.display = 'none'; return; }
-    const data = await res.json();
-    let rooms = (data && data.rooms) ? data.rooms : [];
-
-    // Archivierte Räume ausblenden (Startseite = Navigation, kein Archiv-Browser).
-    rooms = rooms.filter(r => !(r.archived));
-
-    // Optionaler Filter: nur live
-    try {
-      if (typeof roomsFilter !== 'undefined' && roomsFilter === 'live') {
-        rooms = rooms.filter(r => !!r.online);
-      }
-    } catch {}
-
-    // Sortierung: zuletzt erstellt zuerst (Fallback: live zuerst, dann alphabetisch)
-    rooms.sort((a, b) => {
-      const aCreated = (a.created_at ?? a.createdAt ?? 0);
-      const bCreated = (b.created_at ?? b.createdAt ?? 0);
-      if (aCreated !== bCreated) return bCreated - aCreated;
-
-      const ao = a.online ? 0 : 1;
-      const bo = b.online ? 0 : 1;
-      if (ao !== bo) return ao - bo;
-
-      return String(a.room || '').localeCompare(String(b.room || ''), 'de');
-    });
-
-    if (!rooms.length) {
-      panel.style.display = 'block';
-      box.innerHTML = '<div class="hint">Keine Räume gefunden.</div>';
-      return;
-    }
-
-    panel.style.display = 'block';
-    box.innerHTML = '';
-    for (const r of rooms) {
-      const row = document.createElement('div');
-      row.className = 'room-item';
-      row.innerHTML = `
-        <div style="flex:1;min-width:200px">
-          <div class="nm">${escapeHtml(r.room)}</div>
-          <div class="meta">${r.sessions || 0} Session(s) · ${r.size_mb || 0} MB</div>
-        </div>
-        ${r.online ? '<span class="pill live">🟢 online</span>' : '<span class="pill">⚪ offline</span>'}
-        <a class="enter" href="/host.html?room=${encodeURIComponent(r.room)}">Raum öffnen →</a>
-      `;
-      box.appendChild(row);
-    }
+    // Roadmap 5: /rooms ist die rollenbewusste Route -- Hosts UND Admins duerfen
+    // die Uebersicht lesen. Verwaltungsaktionen bleiben in /admin.
+    res = await fetch('/rooms', { cache: 'no-store', redirect: 'follow' });
   } catch {
-    panel.style.display = 'none';
+    box.innerHTML = '<div class="hint err">Räume konnten nicht geladen werden: keine Verbindung zum Server. Erneut versuchen.</div>';
+    return;
+  }
+
+  // Abgelaufene Session: der Server leitet auf /login um oder antwortet 401.
+  if (res.status === 401 || res.redirected || /\/login/.test(new URL(res.url, location.href).pathname)) {
+    box.innerHTML = '<div class="hint err">Sitzung abgelaufen. <a href="/login" style="color:var(--brand)">Neu anmelden</a></div>';
+    return;
+  }
+  if (res.status === 403) {
+    box.innerHTML = '<div class="hint err">Keine Berechtigung für die Raumübersicht.</div>';
+    return;
+  }
+  if (!res.ok) {
+    box.innerHTML = `<div class="hint err">Räume konnten nicht geladen werden (Serverfehler ${res.status}).</div>`;
+    return;
+  }
+
+  let data;
+  try { data = await res.json(); }
+  catch {
+    box.innerHTML = '<div class="hint err">Unerwartete Serverantwort beim Laden der Räume.</div>';
+    return;
+  }
+
+  let rooms = (data && data.rooms) ? data.rooms : [];
+
+  // Archivierte Räume ausblenden (Startseite = Navigation, kein Archiv-Browser).
+  rooms = rooms.filter(r => !(r.archived));
+
+  try {
+    if (typeof roomsFilter !== 'undefined' && roomsFilter === 'live') {
+      rooms = rooms.filter(r => !!r.online);
+    }
+  } catch {}
+
+  rooms.sort((a, b) => {
+    const aCreated = (a.created_at ?? a.createdAt ?? 0);
+    const bCreated = (b.created_at ?? b.createdAt ?? 0);
+    if (aCreated !== bCreated) return bCreated - aCreated;
+    const ao = a.online ? 0 : 1;
+    const bo = b.online ? 0 : 1;
+    if (ao !== bo) return ao - bo;
+    return String(a.room || '').localeCompare(String(b.room || ''), 'de');
+  });
+
+  if (!rooms.length) {
+    box.innerHTML = (typeof roomsFilter !== 'undefined' && roomsFilter === 'live')
+      ? '<div class="hint">Aktuell ist kein Raum live.</div>'
+      : '<div class="hint">Noch keine Räume. Gib oben einen Raumnamen ein, um den ersten zu erstellen.</div>';
+    return;
+  }
+
+  box.innerHTML = '';
+  for (const r of rooms) {
+    const row = document.createElement('div');
+    row.className = 'room-item';
+
+    // Roadmap 5: Lock-Zustand direkt in der Uebersicht.
+    // locked = eine andere Host-Instanz steuert -> Oeffnen ergibt Nur-Lesen.
+    const lock = r.lock || null;
+    const locked = !!r.locked;
+    const reconnecting = !!r.lock_reconnecting;
+
+    let statusPill;
+    if (r.recording)      statusPill = '<span class="pill rec">⏺ Aufnahme</span>';
+    else if (r.countdown) statusPill = '<span class="pill rec">Countdown</span>';
+    else if (r.online)    statusPill = '<span class="pill live">🟢 online</span>';
+    else                  statusPill = '<span class="pill">⚪ offline</span>';
+
+    let lockPill = '';
+    if (locked && reconnecting) {
+      lockPill = '<span class="pill reconnect" title="Die steuernde Host-Instanz ist getrennt. Die Steuerung wird kurz reserviert.">⏳ verbindet neu</span>';
+    } else if (locked) {
+      const who = lock && lock.role === 'admin' ? 'Admin' : 'Host';
+      lockPill = `<span class="pill locked" title="Wird von einer anderen ${who}-Instanz gesteuert. Öffnen ergibt Nur-Lesen.">🔒 gesteuert</span>`;
+    }
+
+    const enterCls = locked && !reconnecting ? 'enter readonly' : 'enter';
+    const enterTxt = locked && !reconnecting ? 'Nur lesen öffnen' : 'Raum öffnen →';
+
+    row.innerHTML = `
+      <div style="flex:1;min-width:200px">
+        <div class="nm">${escapeHtml(r.room)}</div>
+        <div class="meta">${r.sessions || 0} Session(s) · ${r.size_mb || 0} MB</div>
+      </div>
+      ${statusPill}
+      ${lockPill}
+      <a class="${enterCls}" href="/host.html?room=${encodeURIComponent(r.room)}">${enterTxt}</a>
+    `;
+    box.appendChild(row);
   }
 }
 
@@ -338,32 +454,7 @@ async function applyBranding() {
   try {
     const b = await (await fetch('/branding', { cache: 'no-store' })).json();
     if (!b.ok) return;
-    if (b.color) {
-      /* Farben kommen serverseitig aus BRANDING-Block */;
-      // Hover-Farbe automatisch aus Primärfarbe ableiten (leicht heller) + "on brand" Textfarbe per WCAG.
-      try {
-        const hex = String(b.color).trim();
-        const m = /^#([0-9a-fA-F]{6})$/.exec(hex);
-        if (m) {
-          const n = parseInt(m[1], 16);
-          const r = (n >> 16) & 255, g = (n >> 8) & 255, bl = n & 255;
-          const mix = (c) => Math.max(0, Math.min(255, Math.round(c + (255 - c) * 0.18)));
-          const rh = mix(r), gh = mix(g), bh = mix(bl);
-          const hover = '#' + [rh, gh, bh].map(x => x.toString(16).padStart(2, '0')).join('');
-          /* Farben kommen serverseitig aus BRANDING-Block */;
-
-          const srgbToLin = (v) => {
-            const s = v / 255;
-            return s <= 0.04045 ? (s / 12.92) : Math.pow((s + 0.055) / 1.055, 2.4);
-          };
-          const L = 0.2126 * srgbToLin(r) + 0.7152 * srgbToLin(g) + 0.0722 * srgbToLin(bl);
-          const contrast = (L1, L2) => (Math.max(L1, L2) + 0.05) / (Math.min(L1, L2) + 0.05);
-          const cWhite = contrast(L, 1);
-          const cBlack = contrast(L, 0);
-          /* Farben kommen serverseitig aus BRANDING-Block */;
-        }
-      } catch {}
-    }
+    // Theme colors and contrast are computed once by the server.
     if (b.name) {
       document.title = b.name + ' · Start';
       const h = document.querySelector('h1');

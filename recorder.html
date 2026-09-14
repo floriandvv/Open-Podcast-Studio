@@ -31,6 +31,11 @@
     --ok-hover: #3cbf7e;
     --warn: #f59e0b;
     --warn-hover: #fbb040;
+  
+    /* Abgeleitete Flaechen; der Server ueberschreibt sie themebasiert. */
+    --muted-2: #6b7280;
+    --border-strong: #3a4150;
+    --surface-hover: #1c2029;
   }
   * { box-sizing: border-box; }
   html, body {
@@ -163,11 +168,11 @@
   body.audio-only .view-toolbar { display: none; }
   .view-toolbar .vt-hint { font-size: 13px; color: var(--muted); }
   .toggle-btn {
-    background: #0f1115; color: var(--text); border: 1px solid var(--border);
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
     border-radius: 999px; padding: 8px 14px; font: inherit; font-size: 14px;
     font-weight: 600; cursor: pointer; transition: border-color .15s, color .15s, background .15s;
   }
-  .toggle-btn:hover { border-color: #3a4150; }
+  .toggle-btn:hover { border-color: var(--border-strong); }
   .toggle-btn.active { border-color: var(--ok); color: var(--ok); background: rgba(48,164,108,0.10); }
 
   /* ---------- Portrait-Layout: Video links, Anzeigen rechts ---------- */
@@ -253,7 +258,7 @@
   }
   .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
   select, button, input {
-    background: #0f1115; color: var(--text);
+    background: var(--bg); color: var(--text);
     border: 1px solid var(--border); border-radius: 8px;
     padding: 10px 12px; font: inherit;
   }
@@ -266,7 +271,7 @@
     cursor: pointer; font-weight: 600;
     transition: background 0.15s, border-color 0.15s;
   }
-  button:hover:not(:disabled) { border-color: #3a4150; }
+  button:hover:not(:disabled) { border-color: var(--border-strong); }
   button:disabled { opacity: 0.4; cursor: not-allowed; }
   .dot {
     display: inline-block; width: 10px; height: 10px; border-radius: 50%;
@@ -275,11 +280,11 @@
   }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
   .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
-  .stat { background: #0f1115; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+  .stat { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
   .stat .k { color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; }
   .stat .v { font-size: 18px; font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums; }
   .log {
-    background: #0f1115; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
     padding: 10px 12px; height: 140px; overflow-y: auto;
     font-family: "JetBrains Mono", monospace; font-size: 14px; color: var(--muted);
   }
@@ -294,7 +299,7 @@
   .vu-peak { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
   .vu-peak.clip { color: var(--accent); font-weight: 600; }
   .vu-bar {
-    position: relative; height: 14px; background: #0f1115;
+    position: relative; height: 14px; background: var(--bg);
     border: 1px solid var(--border); border-radius: 6px; overflow: hidden;
   }
   .vu-fill {
@@ -366,6 +371,39 @@
   .warn-banner.show { display: block; }
   .warn-banner b { color: var(--accent); }
 
+  /* ---------- Clipping-Warnung ---------- */
+  .clip-banner {
+    display: none;
+    background: rgba(229,72,77,0.16);
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    padding: 10px 12px;
+    color: var(--text);
+    font-size: 15px;
+    line-height: 1.5;
+  }
+  .clip-banner.show { display: block; }
+  .clip-banner b { color: var(--accent); }
+
+  /* ---------- Bereitschaft + Startpruefung ---------- */
+  .ready-panel { display: none; }
+  .ready-panel.show { display: block; }
+  .ready-row {
+    display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
+  }
+  .ready-btn {
+    padding: 10px 18px; font-size: 15px; font-weight: 600;
+  }
+  .ready-btn.is-ready { background: var(--ok); border-color: var(--ok); }
+  .check-list { list-style: none; margin: 10px 0 0; padding: 0;
+                display: flex; flex-direction: column; gap: 6px; }
+  .check-list li { font-size: 14px; color: var(--muted);
+                   display: flex; gap: 8px; align-items: baseline; }
+  .check-list li .mark { font-weight: 700; }
+  .check-list li.ok  .mark { color: var(--ok); }
+  .check-list li.bad .mark { color: var(--accent); }
+  .check-list li.bad { color: var(--text); }
+
   /* ---------- Host-gesteuerter Modus-Hinweis (read-only fuer den Gast) ---------- */
   .host-info {
     display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
@@ -373,7 +411,7 @@
   }
   .host-info .badge {
     border: 1px solid var(--border); border-radius: 999px; padding: 4px 12px;
-    background: #0f1115; color: var(--text); font-weight: 600;
+    background: var(--bg); color: var(--text); font-weight: 600;
   }
   .host-info .badge.audio { border-color: var(--warn); color: var(--warn); }
   .host-info .badge.video { border-color: var(--ok); color: var(--ok); }
@@ -384,7 +422,7 @@
      - Kamera-Auswahl wird ausgeblendet. */
   .audio-placeholder {
     display: none; width: 100%; border-radius: 8px;
-    background: #0f1115; border: 1px solid var(--border);
+    background: var(--bg); border: 1px solid var(--border);
     align-items: center; justify-content: center; flex-direction: column; gap: 8px;
     color: var(--muted); font-size: 16px; padding: 28px 16px;
   }
@@ -421,14 +459,19 @@
   }
   .countdown-overlay .cd-num.pop { animation: cdPop 0.9s ease-out; }
 </style>
+<style>
+  .lobby-brand-name{display:block;margin-top:8px;color:var(--text);font-weight:700;font-size:18px}
+  .lobby-brand:not(.show) .lobby-brand-name{margin-top:0}
+</style>
 <!-- Branding zuletzt: ueberschreibt die :root-Defaults oben. -->
 <!--BRANDING-->
 </head>
 <body class="audio-only">
-<div class="wrap">
+<main class="wrap" id="main-content" tabindex="-1">
   <div class="guest-brand-head">
     <div class="lobby-brand" id="lobbyBrand" aria-label="Marke des Aufnahmestudios">
       <img id="lobbyBrandImg" alt="" />
+      <span class="lobby-brand-name" id="lobbyBrandName"></span>
     </div>
   </div>
 
@@ -442,13 +485,15 @@
 
   <!-- Name-Gate: wird angezeigt, bis der Gast seinen Namen eingegeben hat -->
   <div class="panel" id="nameGate">
-    <h1 class="name-gate-title">Bitte Namen eingeben</h1>
+    <h1 class="name-gate-title" id="nameGateTitle">Bitte Namen eingeben</h1>
     <div class="row" style="margin-top: 8px;">
+      <label class="visually-hidden" for="nameInput">Dein Name</label>
       <input id="nameInput" type="text" placeholder="z.B. Anna Schmidt" autocomplete="name"
-             style="flex:1; min-width: 220px;" maxlength="60" />
+             style="flex:1; min-width: 220px;" maxlength="60"
+             aria-describedby="nameHint" />
       <button id="nameBtn">Weiter</button>
     </div>
-    <div class="sub" id="nameHint" style="margin-top: 8px;">
+    <div class="sub" id="nameHint" role="status" aria-live="polite" style="margin-top: 8px;">
       Erlaubt: Buchstaben, Zahlen, Leerzeichen, Bindestrich.
     </div>
   </div>
@@ -496,6 +541,24 @@
     </div> <!-- /#topGrid -->
 
     <div id="bottomStack">
+
+      <!-- Clipping-Warnung: erscheint, sobald das Signal übersteuert -->
+      <div class="clip-banner" id="clipBanner" role="alert" aria-live="assertive">
+        <b>Dein Ton übersteuert.</b>
+        <span id="clipBannerText">Sprich etwas leiser oder verringere die Eingangsverstärkung.</span>
+      </div>
+
+      <!-- Bereitschaft: Selbstprüfung + aktive Bereit-Meldung -->
+      <div class="panel ready-panel" id="readyPanel">
+        <b>Bereit für die Aufnahme?</b>
+        <ul class="check-list" id="readyChecks"></ul>
+        <div class="ready-row" style="margin-top:12px">
+          <button id="readyBtn" class="ready-btn" type="button" aria-pressed="false">
+            Ich bin bereit
+          </button>
+          <span class="sub" id="readyHint">Der Host startet erst, wenn du bereit bist.</span>
+        </div>
+      </div>
 
       <!-- Warn-Banner: nur sichtbar, solange Aufnahme/Upload läuft -->
       <div class="warn-banner" id="warnBanner">
@@ -556,7 +619,7 @@
     </div> <!-- /#bottomStack -->
 
   </div>
-</div>
+</main>
 
 <!-- Countdown-Overlay: grosser, nicht zu uebersehender 3-2-1-Countdown -->
 <div class="countdown-overlay" id="countdownOverlay">
@@ -611,6 +674,54 @@
   let sessionId = "";
 
   // Token beim Server pruefen und Raum ermitteln
+
+  // ---------- Punkt 8: Lobby-Praesenz ----------
+  // Der Host soll sehen, dass jemand da ist, bevor ein Name existiert.
+  // One identity per document: duplicated tabs must not share lobby entries.
+  function lobbyClientId() {
+    const bytes = new Uint8Array(16);
+    window.crypto.getRandomValues(bytes);
+    return [...bytes].map(b => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  let lobbyId = lobbyClientId();
+  let lobbyStage = "joining";
+  let lobbyTimer = null;
+
+  async function lobbyPing(extra = {}) {
+    if (!room) return;
+    try {
+      await fetch(`${SERVER}/lobby/${encodeURIComponent(room)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        keepalive: !!extra.leave,
+        body: JSON.stringify({
+          token: guestToken, client_id: lobbyId, stage: lobbyStage, ...extra,
+        }),
+      });
+    } catch {}
+  }
+
+  function startLobbyPresence() {
+    if (lobbyTimer) return;
+    lobbyPing();
+    lobbyTimer = setInterval(lobbyPing, 10000);
+  }
+
+  function stopLobbyPresence(leave) {
+    if (lobbyTimer) { clearInterval(lobbyTimer); lobbyTimer = null; }
+    if (leave) lobbyPing({ leave: true });
+  }
+
+  // Tab geschlossen, bevor ein Name eingegeben wurde -> Eintrag sofort raus.
+  window.addEventListener("pagehide", () => { if (lobbyTimer) stopLobbyPresence(true); });
+  window.addEventListener("pageshow", event => {
+    if (event.persisted && !guest && room) {
+      lobbyId = lobbyClientId();
+      startLobbyPresence();
+    }
+  });
+
   async function resolveToken() {
     if (!guestToken) { location.href = "/token_error.html"; return false; }
     try {
@@ -619,6 +730,13 @@
       const data = await res.json();
       if (!data.ok) { location.href = "/token_error.html"; return false; }
       room = data.room;
+      // Sofort in der Lobby anmelden -- noch vor der Namenseingabe.
+      lobbyStage = guest ? "named" : "naming";
+      startLobbyPresence();
+      if (data.locale && window.OpenPodcastI18n) {
+        try { await window.OpenPodcastI18n.load(data.locale); }
+        catch (error) { console.warn('Locale refresh failed; using embedded translations.', error); }
+      }
       const daysLeft = Math.ceil((data.expires_at - Date.now() / 1000) / 86400);
 
       // Nur solange der Gast noch keinen Namen bestätigt hat, den Hinweis zeigen.
@@ -663,8 +781,15 @@
     const b = window.__BRANDING__;
     const wrap = $("lobbyBrand");
     const img = $("lobbyBrandImg");
-    if (!wrap || !img || !b || !b.ok || !b.favicon) return;
-    img.src = b.favicon;
+    const name = $("lobbyBrandName");
+    if (name && b && b.ok) name.textContent = b.name || "Podcast Studio";
+    if (b && b.ok && b.name) document.title = 'Recorder · ' + b.name;
+    // Logo-Variante passend zum Hintergrund.
+    const src = (b && b.ok)
+      ? ((window.OpenPodcastBranding && window.OpenPodcastBranding.logoUrl()) || b.logo || b.favicon)
+      : "";
+    if (!wrap || !img || !src) return;
+    img.src = src;
     img.alt = b.name || "";
     wrap.classList.add("show");
   })();
@@ -680,7 +805,7 @@
     if (!el) return;
     const line = document.createElement("div");
     line.className = cls;
-    line.textContent = new Date().toLocaleTimeString() + "  " + msg;
+    line.textContent = new Date().toLocaleTimeString(window.OpenPodcastI18n?.locale || document.documentElement.lang || 'de') + "  " + msg;
     el.appendChild(line);
     el.scrollTop = el.scrollHeight;
     try {
@@ -1059,8 +1184,8 @@
       document.body.appendChild(t);
     }
     const col = kind === "err" ? "#e5484d" : kind === "info" ? "#f59e0b" : "#30a46c";
-    t.style.background = "#181b22";
-    t.style.color = "#e8eaed";
+    t.style.background = "var(--panel)";
+    t.style.color = "var(--text)";
     t.style.border = "1px solid " + col;
     t.textContent = text;
     // Fade in, dann nach 3.2s wieder aus.
@@ -1381,6 +1506,67 @@
   let currentRms = 0;            // letzter RMS-Wert (0..1) fuer den Host-Heartbeat
   let currentPeak = 0;           // letzter Sample-Peak (0..1) fuer den Host
 
+  // ---------- Verbesserte RMS-Messung ----------
+  // Frueher war der RMS der Mittelwert EINES Analyser-Blocks (~21 ms bei 48 kHz).
+  // Das schwankt bei Sprache stark und macht die Host-Anzeige nervoes. Wir
+  // mitteln die Energie jetzt ueber ein gleitendes 300-ms-Fenster: der Wert
+  // entspricht damit dem, was ein Mensch als Lautheit wahrnimmt, und bleibt
+  // ueber Sprechpausen hinweg stabil.
+  const RMS_WINDOW_MS = 300;
+  let rmsWindow = [];            // [{ t, energy }] -- Energie = rms^2
+  let rmsWindowEnergy = 0;       // laufende Summe (energy * dt)
+  let rmsWindowSpan = 0;         // aufsummierte Zeit im Fenster (ms)
+
+  function pushRmsSample(rms, tMs, dtMs) {
+    const energy = rms * rms;
+    rmsWindow.push({ t: tMs, e: energy, dt: dtMs });
+    rmsWindowEnergy += energy * dtMs;
+    rmsWindowSpan   += dtMs;
+    while (rmsWindow.length && (tMs - rmsWindow[0].t) > RMS_WINDOW_MS) {
+      const old = rmsWindow.shift();
+      rmsWindowEnergy -= old.e * old.dt;
+      rmsWindowSpan   -= old.dt;
+    }
+    if (rmsWindowSpan <= 0) return rms;
+    // Numerische Drift abfangen (lange Laufzeiten summieren Rundungsfehler).
+    if (rmsWindowEnergy < 0) rmsWindowEnergy = 0;
+    return Math.sqrt(rmsWindowEnergy / rmsWindowSpan);
+  }
+
+  function resetRmsWindow() {
+    rmsWindow = []; rmsWindowEnergy = 0; rmsWindowSpan = 0;
+  }
+
+  // ---------- Clipping-Erkennung ----------
+  // Ein einzelnes Sample nahe Vollaussteuerung ist noch kein Clipping -- das
+  // erzeugt nur Fehlalarme. Erst wenn mindestens clip_min_samples AUFEINANDER-
+  // FOLGENDE Samples ueber der Schwelle liegen, ist die Wellenform wirklich
+  // abgeschnitten. Wir zaehlen die laengste solche Kette pro Analyse-Block.
+  let clipThresholdDbfs = -1.0;   // vom Server (Admin-Einstellung)
+  let clipMinSamples    = 3;
+  let clipActive        = false;  // aktuell im Clipping-Zustand
+  let clipRunStart      = 0;      // Beginn der laufenden Clipping-Phase (ms)
+  let clipLastReportTs  = 0;      // Drossel fuer Meldungen an den Host
+  let clipLastPeakDbfs  = -120;
+  let clipLastSamples   = 0;
+  let clipTailSamples   = 0;      // Kette laeuft ueber Blockgrenzen hinweg weiter
+  const CLIP_REPORT_MIN_MS = 1500;  // hoechstens alle 1,5 s ein Ereignis melden
+  const CLIP_RELEASE_MS    = 2000;  // so lange bleibt die Warnung stehen
+
+  function clipThresholdAmp() {
+    return Math.pow(10, clipThresholdDbfs / 20);
+  }
+
+  function setClipBanner(show, text) {
+    const el = $("clipBanner");
+    if (!el) return;
+    el.classList.toggle("show", !!show);
+    if (show && text) {
+      const t = $("clipBannerText");
+      if (t) t.textContent = text;
+    }
+  }
+
   function stopVuMeter() {
     if (vuRaf) cancelAnimationFrame(vuRaf);
     vuRaf = 0;
@@ -1416,20 +1602,43 @@
       const fill = $("vuFill");
       const peakEl = $("vuPeak");
       vuDisplayNorm = 0; vuLastTs = 0;   // Decay-Zustand zuruecksetzen
+      resetRmsWindow();
+      clipTailSamples = 0;
 
       const loop = () => {
         vuAnalyser.getFloatTimeDomainData(buf);
+        const clipAmp = clipThresholdAmp();
         let sumSq = 0;
         let peak = 0;
+        let run = clipTailSamples;     // laufende Kette aus dem Vorblock
+        let longestRun = 0;
         for (let i = 0; i < buf.length; i++) {
-          const s = buf[i];
-          sumSq += s * s;
-          const a = Math.abs(s);
+          const v = buf[i];
+          sumSq += v * v;
+          const a = Math.abs(v);
           if (a > peak) peak = a;
+          if (a >= clipAmp) {
+            run++;
+            if (run > longestRun) longestRun = run;
+          } else {
+            run = 0;
+          }
         }
-        const rms = Math.sqrt(sumSq / buf.length);
-        currentRms = rms;            // fuer Host-Heartbeat
-        currentPeak = peak;          // fuer Host-Pegelanzeige (Peak-Hold)
+        clipTailSamples = run;         // Kette darf ueber den Block hinauslaufen
+        const blockRms = Math.sqrt(sumSq / buf.length);
+
+        // Zeitbasis fuer Fenster und Ballistik.
+        const nowMs = performance.now();
+        const blockMs = vuLastTs ? Math.min(100, nowMs - vuLastTs) : 16;
+
+        // Gleitendes 300-ms-Fenster statt Einzelblock -- ruhiger und naeher
+        // an der wahrgenommenen Lautheit.
+        currentRms  = pushRmsSample(blockRms, nowMs, blockMs);
+        currentPeak = peak;          // Peak bleibt block-genau (Transienten!)
+
+        handleClipDetection(longestRun, peak, nowMs);
+
+        const rms = currentRms;
         // Auf 0..1 mappen (−60 dB .. 0 dB)
         const db = 20 * Math.log10(rms || 1e-7);
         const norm = Math.max(0, Math.min(1, (db + 60) / 60));
@@ -1489,6 +1698,198 @@
     }
   }
 
+  // Wertet die laengste Ueberschreitungs-Kette eines Blocks aus und meldet
+  // echtes Clipping an den Host (gedrosselt, damit ein lauter Lacher nicht
+  // dutzende Ereignisse erzeugt).
+  function handleClipDetection(longestRun, peak, nowMs) {
+    const peakDbfs = 20 * Math.log10(peak || 1e-7);
+    const isClipping = longestRun >= clipMinSamples;
+
+    if (isClipping) {
+      if (!clipActive) {
+        clipActive = true;
+        clipRunStart = nowMs;
+      }
+      if (peakDbfs > clipLastPeakDbfs) clipLastPeakDbfs = peakDbfs;
+      clipLastSamples = Math.max(clipLastSamples, longestRun);
+      setClipBanner(true,
+        `Spitze bei ${peakDbfs.toFixed(1)} dBFS. Sprich etwas leiser oder ` +
+        `verringere die Eingangsverstärkung.`);
+
+      if (nowMs - clipLastReportTs > CLIP_REPORT_MIN_MS) {
+        clipLastReportTs = nowMs;
+        reportClip(clipLastPeakDbfs, clipLastSamples,
+                   Math.round(nowMs - clipRunStart));
+        log(`Clipping erkannt: ${clipLastPeakDbfs.toFixed(1)} dBFS ` +
+            `(${clipLastSamples} Samples am Anschlag)`, "err");
+        clipLastPeakDbfs = -120;
+        clipLastSamples = 0;
+      }
+    } else if (clipActive && nowMs - clipRunStart > CLIP_RELEASE_MS) {
+      // Signal ist wieder sauber: Warnung abbauen und den Host entwarnen.
+      clipActive = false;
+      clipLastPeakDbfs = -120;
+      clipLastSamples = 0;
+      setClipBanner(false);
+      if (ws && wsConnected && ws.readyState === 1) {
+        try { ws.send(JSON.stringify({ type: "clip_clear" })); } catch {}
+      }
+    }
+  }
+
+  function reportClip(peakDbfs, samples, durationMs) {
+    if (!(ws && wsConnected && ws.readyState === 1)) return;
+    try {
+      ws.send(JSON.stringify({
+        type: "clip",
+        // Clip-Ereignisse gehoeren zur laufenden Aufnahme-Session; ohne sie
+        // kann der Admin sie spaeter keiner Aufnahme zuordnen.
+        session: pendingSessionId || sessionId || "",
+        peak_dbfs: +peakDbfs.toFixed(2),
+        samples: samples,
+        duration_ms: durationMs
+      }));
+    } catch {}
+  }
+
+  // ---------- Berechtigungen + Bereitschaft ----------
+  // Der Host darf erst starten, wenn Mikrofon (und im Videomodus die Kamera)
+  // freigegeben sind UND das gewaehlte Geraet wirklich Signal liefert.
+  let permState = { microphone: "unknown", camera: "unknown" };
+  let declaredReady = false;
+  let requireGuestReady = false;
+
+  async function refreshPermissions() {
+    if (!navigator.permissions || !navigator.permissions.query) {
+      // Safari kennt die Permissions-API fuer Kamera/Mikrofon nicht. Wir leiten
+      // den Zustand dann aus dem tatsaechlich aktiven Track ab.
+      permState.microphone = activeAudioTrack() ? "granted" : "unknown";
+      permState.camera = audioOnly ? "unknown"
+                       : (stream && stream.getVideoTracks().length ? "granted" : "unknown");
+      return permState;
+    }
+    for (const name of ["microphone", "camera"]) {
+      try {
+        const st = await navigator.permissions.query({ name });
+        permState[name] = st.state;      // granted | denied | prompt
+        if (!st._psBound) {
+          st._psBound = true;
+          st.onchange = () => { permState[name] = st.state; renderReadyChecks(); };
+        }
+      } catch { /* Name nicht unterstuetzt -> unknown lassen */ }
+    }
+    return permState;
+  }
+
+  function activeCamTrack() {
+    if (!stream) return null;
+    const t = stream.getVideoTracks()[0];
+    return (t && t.readyState === "live") ? t : null;
+  }
+
+  // Einzelpruefungen fuer die Anzeige und fuer das lokale Start-Gate.
+  function readyChecks() {
+    const micTrack = activeAudioTrack();
+    const selMic = (($("micSel") && $("micSel").value) || "");
+    const gotMic = activeMicDeviceId();
+    const list = [];
+
+    list.push({
+      key: "mic_permission",
+      ok: permState.microphone !== "denied",
+      label: permState.microphone === "denied"
+        ? "Mikrofon ist im Browser blockiert — Freigabe in den Seiteneinstellungen erteilen."
+        : "Mikrofon ist freigegeben."
+    });
+    list.push({
+      key: "mic_signal",
+      ok: !!micTrack,
+      label: micTrack
+        ? `Mikrofon aktiv: ${currentMicLabel()}`
+        : "Kein aktives Mikrofon — Gerät auswählen und Vorschau starten."
+    });
+    list.push({
+      key: "device_match",
+      ok: !(selMic && gotMic && selMic !== gotMic),
+      label: (selMic && gotMic && selMic !== gotMic)
+        ? `Es ist ein anderes Gerät aktiv als ausgewählt: ${micLabelFor(gotMic) || gotMic}`
+        : "Ausgewähltes und aktives Gerät stimmen überein."
+    });
+    if (!audioOnly) {
+      const cam = activeCamTrack();
+      list.push({
+        key: "camera",
+        ok: permState.camera !== "denied" && !!cam,
+        label: permState.camera === "denied"
+          ? "Kamera ist im Browser blockiert — der Host nimmt Video auf."
+          : cam ? `Kamera aktiv: ${cam.label || "Kamera"}`
+                : "Keine aktive Kamera — Gerät auswählen und Vorschau starten."
+      });
+    }
+    return list;
+  }
+
+  function techReady() {
+    return readyChecks().every(c => c.ok);
+  }
+
+  function renderReadyChecks() {
+    const panel = $("readyPanel");
+    const box = $("readyChecks");
+    if (!panel || !box) return;
+    // Das Panel ist nur relevant, solange nicht aufgenommen wird.
+    const show = !isRecording;
+    panel.classList.toggle("show", show);
+    if (!show) return;
+
+    const checks = readyChecks();
+    const sig = checks.map(c => `${c.key}:${c.ok ? 1 : 0}:${c.label}`).join("|");
+    if (box.dataset.sig !== sig) {
+      box.dataset.sig = sig;
+      box.innerHTML = "";
+      for (const c of checks) {
+        const li = document.createElement("li");
+        li.className = c.ok ? "ok" : "bad";
+        li.innerHTML = `<span class="mark">${c.ok ? "✔" : "✖"}</span>` +
+                       `<span></span>`;
+        li.lastElementChild.textContent = c.label;
+        box.appendChild(li);
+      }
+    }
+
+    const btn = $("readyBtn");
+    const hint = $("readyHint");
+    if (!btn) return;
+    const ok = checks.every(c => c.ok);
+    // Ohne Admin-Pflicht bleibt der Knopf sichtbar, ist aber optional.
+    btn.disabled = !ok;
+    btn.classList.toggle("is-ready", declaredReady && ok);
+    btn.setAttribute("aria-pressed", String(!!(declaredReady && ok)));
+    btn.textContent = declaredReady && ok ? "Bereit ✔" : "Ich bin bereit";
+    if (hint) {
+      hint.textContent = !ok
+        ? "Erst die offenen Punkte oben lösen."
+        : declaredReady
+          ? "Der Host sieht dich als bereit."
+          : requireGuestReady
+            ? "Der Host startet erst, wenn du dich bereit meldest."
+            : "Optional — der Host sieht deine Bereitschaft.";
+    }
+    // Technische Probleme setzen eine frühere Bereit-Meldung zurück.
+    if (!ok && declaredReady) setDeclaredReady(false);
+  }
+
+  function setDeclaredReady(v) {
+    const next = !!v;
+    if (next === declaredReady) return;
+    declaredReady = next;
+    if (ws && wsConnected && ws.readyState === 1) {
+      try { ws.send(JSON.stringify({ type: "ready", ready: declaredReady })); } catch {}
+    }
+    log(declaredReady ? "Bereit gemeldet." : "Bereit-Meldung zurückgenommen.", "ok");
+    renderReadyChecks();
+  }
+
   // ---------- Browser-Kompatibilitaets-Check ----------
   function checkBrowserCompat() {
     // Neuer Weg: rohe PCM-Aufnahme via Web Audio / AudioWorklet.
@@ -1502,8 +1903,8 @@
     if (!hasUserMedia || !AC) {
       document.body.innerHTML = `
         <div style="max-width:560px;margin:80px auto;padding:32px;
-                    background:#181b22;border:1px solid #e5484d;border-radius:12px;
-                    color:#e8eaed;font-family:Inter,system-ui,sans-serif;line-height:1.55;">
+                    background:var(--panel);border:1px solid #e5484d;border-radius:12px;
+                    color:var(--text);font-family:Inter,system-ui,sans-serif;line-height:1.55;">
           <h1 style="margin-top:0;color:#e5484d;">Browser nicht unterstützt</h1>
           <p>Dein Browser unterstützt die benötigte Audio-Aufnahme (Web Audio API)
           nicht. Bitte öffne den Link in einer aktuellen Version von
@@ -2228,6 +2629,7 @@
       let msg; try { msg = JSON.parse(ev.data); } catch { return; }
       if (msg.type === "command") {
         if (typeof msg.server_time === "number") serverOffset = msg.server_time - Date.now();
+        applyGuardrails(msg.guardrails);
         applyHostSettings(msg.settings);
         handleCommand(msg.command);
         // Sprint 2: gast-gezieltes Mic-Kommando (falls vorhanden).
@@ -2251,6 +2653,7 @@
   function telemetryPayload() {
     return {
       display_name: displayName || guest,
+      client_id: lobbyId,
       session: sessionId,
       state: currentState(),
       mic_label: currentMicLabel(),
@@ -2270,6 +2673,12 @@
       mic_lost_during_recording: micLostDuringRec,
       // Ergebnis eines zuvor angeforderten Wechsels (Host zeigt es an).
       mic_last_result: micLastResult,
+      // Start-Gate: Berechtigungen, Kamera und aktive Bereit-Meldung.
+      peak: currentPeak,
+      permissions: { microphone: permState.microphone, camera: permState.camera },
+      cam_active: !!activeCamTrack(),
+      audio_only: audioOnly,
+      declared_ready: declaredReady,
       console: consoleBuf.splice(0)
     };
   }
@@ -2319,6 +2728,18 @@
     } catch {}
   }
 
+  // Admin-Einstellungen fuer Bereitschaft und Clipping uebernehmen.
+  function applyGuardrails(g) {
+    if (!g) return;
+    if (typeof g.require_guest_ready === "boolean") {
+      const changed = g.require_guest_ready !== requireGuestReady;
+      requireGuestReady = g.require_guest_ready;
+      if (changed) renderReadyChecks();
+    }
+    if (typeof g.clip_threshold_dbfs === "number") clipThresholdDbfs = g.clip_threshold_dbfs;
+    if (typeof g.clip_min_samples === "number") clipMinSamples = Math.max(1, g.clip_min_samples);
+  }
+
   function handleCommand(cmd) {
     // Best-practice: Idempotenz muss Action (und idealerweise issued_at) berücksichtigen.
     // Der Server nutzt für START und STOP dieselbe session-ID (rec_session).
@@ -2346,6 +2767,7 @@
       if (scheduledStart) clearTimeout(scheduledStart);
       const secs = Math.max(1, Math.ceil(delay / 1000));
       setStatus(`▶ Host startet die Aufnahme — Countdown ${secs}…`);
+      renderReadyChecks();
       runCountdown(secs, () => {
         if (!isRecording) _doStartRecording();
       });
@@ -2366,21 +2788,29 @@
       if (isRecording) {
         stopRecording();
       }
+      // Nach dem Stopp gilt die Bereit-Meldung nicht mehr: die naechste
+      // Aufnahme braucht eine neue, bewusste Bestaetigung.
+      setDeclaredReady(false);
+      renderReadyChecks();
     }
   }
 
   // Feature 8: Custom Branding anwenden (inkl. Logo + bedingter Header-Linie)
   // IMPORTANT: do NOT override semantic success color (--ok). Keep it green.
   // Use --brand for branding accents.
-  (async () => {
+  (() => {
     try {
-      const b = await (await fetch('/branding', { cache: 'no-store' })).json();
+      // Bereits serverseitig mit dem Token-Raum gerendert; nicht durch globales Branding ersetzen.
+      const b = window.__BRANDING__ || {};
       const brandHead = $("lobbyBrand")?.closest(".guest-brand-head");
       const brandImg = $("lobbyBrandImg");
-      const hasLogo = !!(b && b.ok && b.favicon);
+      const logoSrc = (b && b.ok)
+        ? ((window.OpenPodcastBranding && window.OpenPodcastBranding.logoUrl()) || b.logo || b.favicon)
+        : "";
+      const hasLogo = !!logoSrc;
       if (brandHead) brandHead.classList.toggle("has-logo", hasLogo);
       if (brandImg && hasLogo) {
-        brandImg.src = b.favicon;
+        brandImg.src = logoSrc;
         brandImg.onload = () => {
           if (brandHead) brandHead.classList.add("has-logo");
         };
@@ -2405,7 +2835,11 @@
           }
         } catch {}
       }
-      if (b.name) document.title = 'Recorder · ' + b.name;
+      if (b.name) {
+        document.title = 'Recorder · ' + b.name;
+        const brandNameEl = $("lobbyBrandName");
+        if (brandNameEl) brandNameEl.textContent = b.name;
+      }
       if (b.favicon) {
         let link = document.querySelector('link[rel="icon"]');
         if (!link) { link = document.createElement('link'); link.rel = 'icon'; document.head.appendChild(link); }
@@ -2549,6 +2983,9 @@
     }
     guest = slug;
     displayName = raw;
+    // Der Gast ist jetzt eine echte Gastspur -- die Lobby-Karte entfaellt.
+    lobbyStage = "named";
+    stopLobbyPresence(true);
 
     // Log-Event: Gast hat seinen Namen eingegeben und betritt die Recorder-UI.
     try { log(`Name bestätigt: ${displayName} (${guest})`, "ok"); } catch {}
@@ -2570,6 +3007,13 @@
     // nachdem der Name feststeht.
     init();
 
+    // Berechtigungen pruefen und die Bereitschafts-Checkliste laufend
+    // aktualisieren (Geraetewechsel, entzogene Freigaben, Modewechsel).
+    refreshPermissions().then(renderReadyChecks).catch(() => {});
+    setInterval(() => {
+      refreshPermissions().then(renderReadyChecks).catch(() => renderReadyChecks());
+    }, 2000);
+
     // Echtzeit-Kanal aufbauen, sobald der Gastname (und damit guest) feststeht.
     try { console.log('[submitName] fertig — guest=', guest, 'room=', room, '-> connectWs()'); } catch {}
     try { log('connectWs(): versuche WebSocket zu ' + wsUrl(), 'ok'); } catch {}
@@ -2578,6 +3022,14 @@
     // Sofort Heartbeat senden, damit UI/Host direkt den Namen sieht
     try { heartbeat(); } catch {}
 
+  }
+
+  const readyBtnEl = $("readyBtn");
+  if (readyBtnEl) {
+    readyBtnEl.addEventListener("click", () => {
+      if (!techReady()) { renderReadyChecks(); return; }
+      setDeclaredReady(!declaredReady);
+    });
   }
 
   $("nameBtn").addEventListener("click", submitName);
@@ -2595,6 +3047,10 @@
 
   const preset = params.get("guest");
   if (preset) { $("nameInput").value = preset; }
+  // Lobby-Anmeldung startet sofort am Name-Gate, vor Name und Medienfreigabe.
+  resolveToken().then(ok => {
+    if (ok && !guest) { lobbyStage = "naming"; startLobbyPresence(); }
+  });
   $("nameInput").focus();
 })();
 </script>
