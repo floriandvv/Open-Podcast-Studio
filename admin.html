@@ -1251,6 +1251,7 @@
     for (const [name, value] of Object.entries(vars)) {
       if (value) root.style.setProperty(name, value);
     }
+    if (theme.color_scheme) root.style.colorScheme = theme.color_scheme;
     setPreview(theme);
   }
 

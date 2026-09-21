@@ -1,33 +1,31 @@
 """
-Mini Podcast Recorder Server
-----------------------------
-Nimmt WebM/PCM-Chunks von Gast-Browsern entgegen und legt sie unter
-    uploads/<room>/<guest>/<session>/chunk-XXXXXX.pcm
-ab. Beim Finish werden alle Chunks zu einer WAV-Datei zusammengefuegt.
+Open Podcast Studio - self-hosted remote podcast recording
+---------------------------------------------------------
+Receives browser audio/video chunks, builds separate WAV tracks and session
+MP3 mixdowns, and protects Host/Admin pages with signed session cookies.
+Guests join through cryptographically random invitation links.
 
-Phase 3 -- Authentifizierung:
-    Admin/Host/Index-Seiten sind durch ein Session-Cookie geschuetzt.
-    Das Admin-Passwort wird als bcrypt-Hash in der .env-Datei hinterlegt.
+Initial setup:
+    1. Install the dependencies described in README.md, including FFmpeg.
+       Keep the HTML pages beside server.py and de.json/en.json in locale/.
+    2. Optionally set DATA_DIR to a writable, persistent data directory.
+    3. Run: python server.py
+    4. Open http://localhost:8000/ and sign in with CHANGEME!
+    5. Immediately set DIFFERENT admin and host passwords in the Admin panel
+       before making the application accessible to others.
 
-Phase 4 -- Gast-Token:
-    Gaeste erhalten einen kryptografisch sicheren Einladungslink der Form
-        /recorder.html?token=<token>
-    Der Token enthaelt keinen sichtbaren Raumnamen. Der Raum ist
-    ausschliesslich serverseitig in tokens.db hinterlegt.
-    Neue Routen:
-        POST /host/token/<room>        -> Token erzeugen (Auth required)
-        GET  /host/tokens/<room>       -> Token-Liste anzeigen (Auth required)
-        DELETE /host/token/<token_id>  -> Token widerrufen (Auth required)
-        GET  /token/resolve            -> Token pruefen + Raum zurueckgeben (offen)
+On first startup, a cryptographically random session secret is generated and
+saved as DATA_DIR/session_secret (owner-only permissions on POSIX). Subsequent
+starts reuse it. An explicit SESSION_SECRET environment variable (or .env with
+python-dotenv installed) takes precedence. Persist the data directory across
+container replacements; do not delete or publish session_secret.
 
-    Passwort-Hash erzeugen:
-        python -c "from passlib.hash import bcrypt; print(bcrypt.hash('DEIN_PASSWORT'))"
-    Dann in .env eintragen:
-        ADMIN_PASSWORD_HASH=$2b$12$...
-        SESSION_SECRET=<langer-zufaelliger-string>
-
-Start:
-    python server.py
+Both roles initially use CHANGEME! unless DEFAULT_ADMIN_PASSWORD and/or
+DEFAULT_HOST_PASSWORD are set before first startup. Identical passwords resolve
+to admin because admin is checked first. Password hashes are created in
+auth.json; later environment changes do not replace existing passwords.
+ADMIN_PASSWORD_HASH in .env is NOT used. Change passwords in the Admin panel.
+Use HTTPS and review access controls before a public deployment.
 """
 
 import hmac
@@ -40,10 +38,12 @@ import sqlite3
 import subprocess
 import threading
 import time
+import tempfile
 import wave
 import zipfile
 import io
-from html import escape as html_escape
+from html import escape as html_escape, unescape as html_unescape
+from html.parser import HTMLParser
 from json import dumps as json_dumps
 from pathlib import Path
 
@@ -103,12 +103,6 @@ SESSION_MAX_AGE: int     = int(os.environ.get("SESSION_MAX_AGE_HOURS", "12")) * 
 # Defaults gelten nur beim allerersten Start.
 CONFIG_PATH = None  # wird nach BASE-Definition gesetzt
 
-if not SESSION_SECRET:
-    SESSION_SECRET = secrets.token_hex(32)
-    print("WARNUNG: SESSION_SECRET nicht gesetzt — temporaerer Secret aktiv.")
-    print("  Bitte SESSION_SECRET in .env setzen.")
-
-_SIGNER    = TimestampSigner(SESSION_SECRET, salt="podcast-session")
 COOKIE_NAME = "ps_session"
 
 
@@ -202,6 +196,41 @@ BRANDING_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG_PATH = DATA_DIR / "config.json"
 AUTH_PATH   = DATA_DIR / "auth.json"
 
+
+def _load_session_secret(data_dir: Path, configured: str = "") -> str:
+    """Reuse an explicit secret or atomically publish one persistent secret.
+
+    A private temporary file is fully written before the no-clobber hard link.
+    Concurrent workers therefore never read a partly written secret and cannot
+    overwrite each other's key. Storage errors abort startup, not persistence.
+    """
+    if configured:
+        return configured
+    path = data_dir / "session_secret"
+    if not path.exists():
+        fd, temporary = tempfile.mkstemp(prefix=".session-secret-", dir=data_dir)
+        try:
+            with os.fdopen(fd, "w", encoding="ascii") as out:
+                out.write(secrets.token_hex(32) + "\n")
+                out.flush()
+                os.fsync(out.fileno())
+            try:
+                os.link(temporary, path)
+            except FileExistsError:
+                pass  # Another worker published its complete key first.
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+    secret = path.read_text(encoding="ascii").strip()
+    if not re.fullmatch(r"[0-9a-f]{64}", secret):
+        raise RuntimeError("Invalid session_secret file; restore it from backup. "
+                           "It will not be silently replaced.")
+    return secret
+
+
+SESSION_SECRET = _load_session_secret(DATA_DIR, SESSION_SECRET)
+_SIGNER = TimestampSigner(SESSION_SECRET, salt="podcast-session")
+_auth_load()  # Initialize first-install credentials before accepting requests.
+
 # ---------------------------------------------------------------------------
 # Persistente Konfiguration (config.json)
 # ---------------------------------------------------------------------------
@@ -217,7 +246,7 @@ _CFG_DEFAULTS = {
     "brand_favicon":    "",     # Legacy Data-URL (nur noch Fallback beim Lesen)
     # Erweitertes Theming: Hintergrund, Buttontext und allgemeine Textfarbe
     # sind jetzt eigene Tokens. Leer = Wert aus dem gewaehlten Preset.
-    "brand_preset":     "default",  # default | dark | contrast
+    "brand_preset":     "default",  # stable IDs: default=Dark, dark=Light, contrast
     "brand_bg":         "",         # Seitenhintergrund
     "brand_text":       "",         # Allgemeine UI-Textfarbe
     "brand_on_brand":   "",         # Textfarbe auf Brand-Flaechen (Buttons)
@@ -1673,10 +1702,10 @@ def _brand_hover(rgb: tuple[int, int, int]) -> str:
 # nachgepflegt werden muss.
 
 BRAND_PRESETS = {
-    "default":  {"version": 1, "label": "Default",
+    "default":  {"version": 2, "label": "Dark", "appearance": "dark",
                  "bg": "#0f1115", "text": "#e8eaed", "brand": "#30a46c"},
-    "dark":     {"version": 1, "label": "Dark",
-                 "bg": "#07080b", "text": "#f2f4f7", "brand": "#30a46c"},
+    "dark":     {"version": 2, "label": "Light", "appearance": "light",
+                 "bg": "#f6f7f9", "text": "#15171b", "brand": "#30a46c"},
     "contrast": {"version": 1, "label": "High Contrast",
                  "bg": "#000000", "text": "#ffffff", "brand": "#ffd400"},
 }
@@ -1782,6 +1811,7 @@ def _theme_tokens(cfg: dict) -> dict:
         "preset":         preset["label"],
         "preset_key":     preset_key,
         "preset_version": preset["version"],
+        "color_scheme":   "light" if _rel_lum(bg) > 0.5 else "dark",
         "bg":             bg_hex,
         "panel":          panel,
         "panel2":         panel2,
@@ -2045,7 +2075,7 @@ def _branding_head(room: str | None = None) -> str:
             if preset.get("logo"):
                 logo = str(preset["logo"])
             p_cfg = {
-                "brand_preset": preset.get("appearance") == "light" and "default" or "dark",
+                "brand_preset": "dark" if preset.get("appearance") == "light" else "default",
                 "brand_color": preset.get("brand_color") or cfg.get("brand_color"),
                 "brand_bg": preset.get("bg") or ("#f6f7f9" if preset.get("appearance") == "light" else "#0f1115"),
                 "brand_text": preset.get("text") or ("#15171b" if preset.get("appearance") == "light" else "#e8eaed"),
@@ -2055,6 +2085,7 @@ def _branding_head(room: str | None = None) -> str:
 
     css = (
         '<style id="brand-vars">:root{'
+        f'color-scheme:{tok["color_scheme"]};'
         f'--bg:{tok["bg"]};'
         f'--panel:{tok["panel"]};'
         f'--panel2:{tok["panel2"]};'
@@ -2083,6 +2114,147 @@ def _branding_head(room: str | None = None) -> str:
     return css + ico + js
 
 
+def _locale_text(text: str, locale: str, data: dict) -> str:
+    """Translate template text before the browser can paint it."""
+    if locale == "de" or not text.strip():
+        return text
+    key = text.strip()
+    compact = re.sub(r"\s+", " ", key)
+    ui = data.get("ui", {})
+    translated = ui.get(key, ui.get(compact))
+    if translated is None:
+        for source, target in sorted(data.get("patterns", {}).items(),
+                                     key=lambda item: len(item[0]), reverse=True):
+            ids = re.findall(r"\{(\d+)\}", source)
+            parts = re.split(r"(\{\d+\})", source)
+            pattern = "".join("(.*?)" if re.fullmatch(r"\{\d+\}", p)
+                              else re.escape(p) for p in parts)
+            match = re.fullmatch(pattern, compact, re.S)
+            if match:
+                values = dict(zip(ids, match.groups()))
+                translated = re.sub(r"\{(\d+)\}", lambda m: values.get(m[1], m[0]), target)
+                break
+    if translated is None:
+        # Single pass: never translate a replacement for a second time.
+        keys = sorted((k for k in ui if len(k.strip()) >= 3 and ui[k] != k),
+                      key=len, reverse=True)
+        if keys:
+            pattern = "|".join((r"(?<!\w)" if k[0].isalnum() or k[0] == "_" else "")
+                               + re.escape(k)
+                               + (r"(?!\w)" if k[-1].isalnum() or k[-1] == "_" else "")
+                               for k in keys)
+            translated = re.sub(pattern, lambda m: ui[m[0]], key)
+        else:
+            translated = key
+    return text[:len(text) - len(text.lstrip())] + str(translated) + text[len(text.rstrip()):]
+
+
+def _localize_html(source: str, locale: str, data: dict) -> str:
+    """Localize markup only; never modify scripts, styles or machine values.
+
+    Uses the standard library so first-paint localization needs no extra
+    dependency, network request, hidden body, or delayed reveal.
+    """
+    class PageTranslator(HTMLParser):
+        VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input",
+                "link", "meta", "param", "source", "track", "wbr"}
+        EXCLUDED = {"script", "style", "textarea", "code", "pre"}
+
+        def __init__(self):
+            super().__init__(convert_charrefs=False)
+            self.output = []
+            self.stack = []
+            self.text = []
+
+        def excluded(self):
+            return bool(self.stack and self.stack[-1][1])
+
+        def flush(self):
+            if not self.text:
+                return
+            raw = "".join(self.text)
+            self.text.clear()
+            if self.excluded():
+                self.output.append(raw)
+            else:
+                self.output.append(html_escape(_locale_text(html_unescape(raw), locale, data), quote=False))
+
+        def lookup(self, key):
+            value = data
+            for part in key.split("."):
+                value = value.get(part) if isinstance(value, dict) else None
+            return value if isinstance(value, str) else None
+
+        def start(self, tag, attrs, closed=False):
+            self.flush()
+            values = dict(attrs)
+            excluded = (self.excluded() or tag in self.EXCLUDED or
+                        values.get("translate") == "no" or "data-i18n-ignore" in values)
+            keyed = None if excluded else self.lookup(values.get("data-i18n", ""))
+            for attr, value in attrs:
+                if value is None:
+                    continue
+                if tag == "html" and attr == "lang":
+                    values[attr] = locale
+                elif not excluded and (attr in {"placeholder", "title", "aria-label", "alt"} or
+                      (attr == "value" and tag == "input" and values.get("type") in {"submit", "button"})):
+                    values[attr] = _locale_text(value, locale, data)
+            if tag == "html":
+                values["lang"] = locale
+            if not excluded:
+                for attr in ("placeholder", "title", "aria-label"):
+                    key = values.get("data-i18n-" + attr)
+                    if key and self.lookup(key) is not None:
+                        values[attr] = self.lookup(key)
+            # Leave untouched tags byte-for-byte intact, including script attrs.
+            if values == dict(attrs):
+                self.output.append(self.get_starttag_text())
+            else:
+                rendered = "".join(" " + k if v is None else
+                                   ' ' + k + '="' + html_escape(v, quote=True) + '"'
+                                   for k, v in values.items())
+                self.output.append("<" + tag + rendered + (" />" if closed else ">"))
+            if not closed and tag not in self.VOID:
+                self.stack.append((tag, excluded, keyed, len(self.output)))
+
+        def handle_starttag(self, tag, attrs):
+            self.start(tag, attrs)
+
+        def handle_startendtag(self, tag, attrs):
+            self.start(tag, attrs, True)
+
+        def handle_endtag(self, tag):
+            self.flush()
+            if self.stack and self.stack[-1][0] == tag:
+                _, _, keyed, start = self.stack.pop()
+                if keyed is not None:
+                    self.output[start:] = [html_escape(keyed, quote=False)]
+            self.output.append("</" + tag + ">")
+
+        def handle_data(self, text):
+            self.text.append(text)
+
+        def handle_entityref(self, name):
+            self.text.append("&" + name + ";")
+
+        def handle_charref(self, name):
+            self.text.append("&#" + name + ";")
+
+        def handle_comment(self, text):
+            self.flush()
+            self.output.append("<!--" + text + "-->")
+
+        def handle_decl(self, text):
+            self.flush()
+            self.output.append("<!" + text + ">")
+
+    parser = PageTranslator()
+    parser.feed(source)
+    parser.close()
+    parser.flush()
+    return "".join(parser.output)
+
+
 def _render_page(filename: str, status_code: int = 200, room: str | None = None) -> HTMLResponse:
     """Liefert eine HTML-Seite mit serverseitig eingesetztem Branding aus.
 
@@ -2097,9 +2269,11 @@ def _render_page(filename: str, status_code: int = 200, room: str | None = None)
     except OSError:
         raise HTTPException(404, "Seite nicht gefunden")
 
-    block = _branding_head(room)
     global_locale = _global_locale()
     page_locale = _room_locale(room) if room else global_locale
+    locale_data = _load_locale(page_locale)
+    html = _localize_html(html, page_locale, locale_data)
+    block = _branding_head(room)
     locale_bootstrap = r"""
 <style id="a11y-base">
 /* Punkt 6: sichtbare Tastatur-Fokuszustaende auf allen Seiten.
@@ -2172,6 +2346,10 @@ window.OpenPodcastI18n = {
   },
   async load(locale) {
     const code = locale || this.locale || 'de';
+    if (code === this.locale && Object.keys(this.data).length) {
+      this.apply(document);
+      return;
+    }
     const version = ++this._loadVersion;
     const res = await fetch('/locales/' + encodeURIComponent(code), {cache:'no-store'});
     if (!res.ok) throw new Error('Locale HTTP ' + res.status);
@@ -2304,15 +2482,13 @@ window.OpenPodcastI18n = {
             for (const node of record.addedNodes) pending.add(node);
           } else pending.add(record.target);
         }
-        if (this._pending || !pending.size) return;
-        this._pending = true;
-        requestAnimationFrame(() => {
-          this._pending = false;
+        if (!pending.size) return;
+        {
           // Stop observing our own writes; only changed subtrees need work.
           observer.disconnect();
           try { for (const node of pending) if (node.isConnected) this.apply(node); }
           finally { pending.clear(); observer.observe(document.body, options); }
-        });
+        }
       });
       const options = {childList:true, subtree:true, characterData:true, attributes:true,
         attributeFilter:['placeholder','title','aria-label','alt','value']};
@@ -2452,7 +2628,7 @@ window.OpenPodcastDialogs.install();
 
 </script>"""
     locale_bootstrap = locale_bootstrap.replace("__PAGE_LOCALE__", json_dumps(page_locale)).replace("__GLOBAL_LOCALE__", json_dumps(global_locale))
-    locale_bootstrap = locale_bootstrap.replace("__LOCALE_DATA__", _script_json(_load_locale(page_locale)))
+    locale_bootstrap = locale_bootstrap.replace("__LOCALE_DATA__", _script_json(locale_data))
     block += locale_bootstrap
     marker = "<!--BRANDING-->"
     if marker in html:

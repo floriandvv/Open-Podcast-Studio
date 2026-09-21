@@ -26,7 +26,7 @@ The host opens a room, invites guests through secure token links, and controls s
 - ✅ Admin recording history grouped by session with nested guest tracks
 - ✅ Recording markers, individual WAV downloads, and per-session ZIP export
 
-See `Roadmap_Open_Podcast_Studio.md` for the longer-term plan and `Open_Podcast_Studio_Dokumentation.md` for the technical documentation.
+See `Roadmap.md` for the longer-term plan and `Documentation.md` for the technical documentation.
 
 ## Features
 
@@ -62,35 +62,66 @@ See `Roadmap_Open_Podcast_Studio.md` for the longer-term plan and `Open_Podcast_
 
 ### 1. Requirements
 
-- **Python 3.10 or newer**
-- A browser with `MediaRecorder`, `getUserMedia`, and WebSocket support
-- A Uvicorn WebSocket backend: `websockets` or `wsproto`
-- **FFmpeg** is required for WebM processing, MP4 transcoding, and session MP3 mixdown generation
-- FFmpeg must provide the `libmp3lame` encoder (`ffmpeg -hide_banner -encoders | grep -i mp3`)
+#### Runtime requirements
 
-The repository currently does not include a `requirements.txt`. Install the dependencies directly:
+- **Python 3.10 or newer**
+- A modern browser with support for:
+  - `MediaRecorder`
+  - `getUserMedia`
+  - WebSockets
+  - microphone and camera permissions
+- **FFmpeg including `ffprobe`** available in the system `PATH`
+  - required for WebM processing, MP4 transcoding, and MP3 mixdown generation
+  - FFmpeg must include the `libmp3lame` encoder:
+
+    ```bash
+    ffmpeg -hide_banner -encoders | grep -i mp3
+    ```
+
+#### Python dependencies
+
+The application uses the following packages:
+
+| Package | Purpose | Status |
+|---|---|---|
+| `fastapi` | HTTP API, WebSockets, and routing | required |
+| `uvicorn` | ASGI server used to run the application | required |
+| `passlib[bcrypt]` | Password hashing and verification | required |
+| `itsdangerous` | Signed and time-limited session cookies | required |
+| `websockets` | WebSocket implementation for Uvicorn | required |
+| `python-dotenv` | Loads configuration from `.env` | optional, recommended |
+
+The other Python modules used by the application (`sqlite3`, `wave`, `zipfile`, `threading`, `subprocess`, `pathlib`, and others) are part of the Python standard library and do not need to be installed separately.
+
+Install the dependencies in a virtual environment:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\\Scripts\\activate
 
 python -m pip install --upgrade pip
-python -m pip install fastapi uvicorn passlib[bcrypt] itsdangerous python-dotenv websockets
+python -m pip install fastapi uvicorn 'passlib[bcrypt]' itsdangerous websockets python-dotenv
 ```
 
-`python-dotenv` is optional but recommended when using a `.env` file. For video support, make sure `ffmpeg` and `ffprobe` are available in the system `PATH`.
+You may omit `python-dotenv` if environment variables are provided by another mechanism. Without `passlib[bcrypt]` or `itsdangerous`, the server exits during startup and reports the missing package. Video output and MP3 mixdowns additionally require the `ffmpeg` and `ffprobe` system binaries.
+
+Alternatively, the included Docker setup installs the Python and FFmpeg dependencies in the image. Runtime data must be persisted through a volume.
 
 ### 2. Initial configuration
 
-Set a persistent session secret before starting the server. Example `.env`:
+No manual session-secret setup is required. On first startup, the server generates a cryptographically random secret and saves it in `DATA_DIR/session_secret` (by default, beside `server.py`). It reuses this file after restarts; the file is created with owner-only permissions on POSIX. Keep `DATA_DIR` writable and persistent, including in Docker. A storage error or invalid secret file stops startup rather than silently using a temporary secret.
 
-```dotenv
-SESSION_SECRET=replace-with-a-long-random-value
-DEFAULT_ADMIN_PASSWORD=choose-a-strong-admin-password
-DEFAULT_HOST_PASSWORD=choose-a-strong-host-password
-```
+An explicitly configured `SESSION_SECRET` takes precedence over the generated file. Keep an existing deployment's secret unchanged to preserve its sessions. `.env` is loaded only when `python-dotenv` is installed; otherwise use actual environment variables. Never commit or publicly serve `session_secret` or `.env`.
 
-The default passwords are used only during initial setup and are then stored as bcrypt hashes in `auth.json`. Keep `SESSION_SECRET` unchanged between restarts, otherwise existing sessions become invalid.
+Keep all six HTML pages beside `server.py` and put `de.json` and `en.json` in a `locale/` subdirectory. Run `python server.py`, open `http://localhost:8000/`, and sign in using **`CHANGEME!`**. No username is required. Immediately use the Admin panel to set **different passwords for admin and host** before exposing the server. Both roles initially have the same password; because the admin password is checked first, this initial login gives admin access.
+
+The application does **not** read an `ADMIN_PASSWORD_HASH` or any other password hash from `.env`. Password hashes stored in `.env` therefore have no effect, including during initial setup.
+
+The active bcrypt hashes are stored in `auth.json` (`admin_hash` and `host_hash`). If `auth.json` already exists and contains both hashes, it is authoritative; values in `.env` do not override it.
+
+For a fresh installation where `auth.json` does not yet exist, the current implementation creates the initial hashes from `DEFAULT_ADMIN_PASSWORD` and `DEFAULT_HOST_PASSWORD`. If those variables are not set, it falls back to `CHANGEME!` for both roles. After `auth.json` has been created, changing or removing the `.env` password variables has no effect.
+
+Change passwords through the Admin panel. Keep `SESSION_SECRET` unchanged between restarts, otherwise existing sessions become invalid.
 
 ### 3. Start the server
 
@@ -122,11 +153,13 @@ The server listens on `0.0.0.0:8000` by default. Open:
 
 The application creates the following runtime files and directories:
 
+- `session_secret`: automatically generated persistent session-signing secret; **do not commit it**
 - `auth.json`: bcrypt hashes for the admin and host passwords
 - `config.json`: runtime configuration, branding, and cleanup settings
 - `tokens.db`: guest tokens, room registry, and markers
 - `uploads/`: chunks, metadata, and finished recordings
 - `mixdowns/`: generated session MP3 mixdowns
+- `session_secret`: automatically generated persistent session-signing secret; **do not commit it**
 - `.env`: local secrets and initial-setup values; **do not commit it**
 
 Recordings are stored under:
@@ -155,7 +188,7 @@ Cleanup threads can automatically remove old finished recordings, raw chunks, an
 - Login attempts are rate-limited per IP.
 - Room, guest, and session path segments are validated to prevent unsafe paths.
 - For public or production deployment, configure **HTTPS/TLS**, a reverse proxy, secure secrets, backups, a restrictive firewall, and regular updates.
-- Do not allow `SESSION_SECRET` to be regenerated automatically on every start.
+- A missing `SESSION_SECRET` is generated once and persisted in `session_secret`; it is never regenerated on ordinary restarts.
 - Keep `.env`, `auth.json`, `config.json`, `tokens.db`, and `uploads/` outside a public GitHub repository unless they are explicitly required and sanitized.
 
 ## Known limitations
@@ -163,7 +196,7 @@ Cleanup threads can automatically remove old finished recordings, raw chunks, an
 - Part of the room state is held in memory and is lost when the server restarts.
 - Browser device access requires user permission, and device-change behavior varies between browsers.
 - MP4 generation and WebM processing depend on a working FFmpeg installation and available codecs.
-- The current UI and API are primarily German; English localization is still planned.
+- The UI has German source text and an English locale with German fallback; the Admin panel can select the available locale.
 
 ## Project structure
 
@@ -179,9 +212,9 @@ token_error.html  # Invalid or expired guest link
 
 Additional documentation:
 
-- `Open_Podcast_Studio_Dokumentation.md`: Technical documentation
+- `Documentation.md`: Technical documentation
 - `Open_Podcast_Studio_Zusammenfassung.md`: Short project overview
-- `Roadmap_Open_Podcast_Studio.md`: Roadmap, completed work, and open items
+- `Roadmap.md`: Roadmap, completed work, and open items
 
 ## Reverse proxy deployment
 
@@ -329,10 +362,9 @@ docker compose up -d
 
 The example binds the application to `127.0.0.1:8000`, so it can be used behind Nginx or another reverse proxy. For a direct local test, open `http://localhost:8000/`.
 
-The Compose example expects a local `.env` file:
+The Compose example expects a local `.env` file. The following initial passwords are optional overrides; without them both roles start with `CHANGEME!`. `SESSION_SECRET` is optional and is generated and persisted automatically when omitted:
 
 ```dotenv
-SESSION_SECRET=replace-with-a-long-random-value
 DEFAULT_ADMIN_PASSWORD=choose-a-strong-admin-password
 DEFAULT_HOST_PASSWORD=choose-a-strong-host-password
 ```
@@ -400,3 +432,17 @@ For a release tag such as `v0.1.0`, add a version tag in the workflow if desired
 This project is licensed under the **GNU General Public License v3.0 or later** (`GPL-3.0-or-later`). See the [`LICENSE`](LICENSE) file for the complete license text.
 
 The software is provided **as is**, without warranty of any kind. See the warranty disclaimer and limitation of liability in the license for details.
+
+
+## Branding and localization
+
+Branding is configured in the Admin panel. The instance supports a brand name, primary color, background color, general UI text color, button text color, versioned theme presets, managed logo/favicon files, and a light-logo variant. Assets are validated, stored under `DATA_DIR/branding/`, and served through versioned URLs; image bytes are not stored as data URLs in `config.json`.
+
+The interface uses German as the source language and supports English localization with German fallback. A room may optionally select a different locale without changing the global instance theme.
+
+
+### Lobby and branding corrections
+
+- Lobby presence starts at the name gate, before name entry and media permission requests.
+- Token-derived room branding is no longer overwritten by a global branding request; Admin saves/removes room overrides directly.
+- Manual button text colors are authoritative; low contrast warns without replacing the selected color.

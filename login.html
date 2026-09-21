@@ -104,21 +104,21 @@
 </head>
 <body>
 <main class="card" id="main-content" tabindex="-1">
-  <h1 class="logo">DVZ Podcast Studio</h1>
-  <p class="sub">Bitte melde dich an, um fortzufahren.</p>
+  <h1 class="logo" data-i18n="login.heading">DVZ Podcast Studio</h1>
+  <p class="sub" data-i18n="login.intro">Bitte melde dich an, um fortzufahren.</p>
 
   <div id="msg" class="msg" role="alert" aria-live="assertive"></div>
 
   <form id="loginForm" autocomplete="on" novalidate>
     <div style="display:flex;flex-direction:column;gap:16px">
       <div>
-        <label for="pw" class="visually-hidden">Passwort</label>
+        <label for="pw" class="visually-hidden" data-i18n="login.password">Passwort</label>
         <div class="input-wrap">
           <input type="password" id="pw" name="password"
                  autocomplete="current-password"
-                 placeholder="Passwort" required autofocus>
+                 placeholder="Passwort" data-i18n-placeholder="login.password" required autofocus>
           <button type="button" class="toggle-pw" id="togglePw"
-                  aria-label="Passwort anzeigen/verbergen" aria-pressed="false">👁</button>
+                  aria-label="Passwort anzeigen/verbergen" data-i18n-aria-label="login.toggle_password" aria-pressed="false">👁</button>
         </div>
       </div>
       <button type="submit" id="submitBtn">
@@ -130,36 +130,18 @@
 
 <script>
 (() => {
-  // Branding is already applied early in <head> (no second fetch here).
-  // Keep only non-color branding below (name, favicon).
-  (async () => {
-    try {
-      const b = await (await fetch('/branding', { cache: 'no-store' })).json();
-      if (!b.ok) return;
-      if (b.name) document.title = 'Login · ' + b.name;
-      if (b.favicon) {
-        let link = document.querySelector('link[rel="icon"]');
-        if (!link) { link = document.createElement('link'); link.rel = 'icon'; document.head.appendChild(link); }
-        link.href = b.favicon;
-      }
-    } catch {}
-  })();
+  // Embedded branding is authoritative; no second network request.
+  const branding = window.__BRANDING__;
+  if (branding?.name) {
+    document.title = (window.OpenPodcastI18n?.t('login.title', document.title) || document.title)
+      .replace('Podcast Studio', branding.name);
+    document.querySelector('title').removeAttribute('data-i18n');
+  }
 
   const form      = document.getElementById('loginForm');
   const t = (key, fallback) => window.OpenPodcastI18n?.t(key, fallback) || fallback;
-  window.OpenPodcastI18n?.load(window.OpenPodcastI18n.locale || 'en').then(() => {
-    document.documentElement.lang = window.OpenPodcastI18n.locale || 'en';
-    const title = document.querySelector('[data-i18n="login.title"]');
-    if (title) document.title = title.textContent;
-    document.querySelector('.logo').textContent = t('login.heading', 'Podcast Studio');
-    document.querySelector('.sub').textContent = t('login.intro', 'Sign in to continue.');
-    document.querySelector('label[for="pw"]').textContent = t('login.password', 'Password');
-    pwInput.placeholder = t('login.password', 'Password');
-    btnLabel.textContent = t('login.submit', 'Sign in');
-  });
-
-  async function applyLocale(locale) { await window.OpenPodcastI18n?.load(locale); }
-  applyLocale('en').catch(() => {});
+  // The server renders the globally configured locale before first paint.
+  // Do not fetch or force a different language on the login page.
   const pwInput   = document.getElementById('pw');
   const submitBtn = document.getElementById('submitBtn');
   const btnLabel  = document.getElementById('btnLabel');
@@ -171,19 +153,26 @@
     const isText = pwInput.type === 'text';
     pwInput.type = isText ? 'password' : 'text';
     togglePw.textContent = isText ? '👁' : 'X';
+    togglePw.setAttribute('aria-pressed', String(!isText));
     pwInput.focus();
   });
 
   function showMsg(text, type) {
-    msg.textContent = text;
+    msg.textContent = window.OpenPodcastI18n?.translateMessage(text) || text;
     msg.className   = 'msg ' + type;
   }
 
   function setLoading(on) {
     submitBtn.disabled = on;
-    btnLabel.innerHTML = on
-      ? '<span class="spinner"></span> Anmelden…'
-      : 'Anmelden';
+    btnLabel.replaceChildren();
+    if (on) {
+      const spinner = document.createElement('span');
+      spinner.className = 'spinner';
+      spinner.setAttribute('aria-hidden', 'true');
+      btnLabel.append(spinner, ' ');
+    }
+    btnLabel.append(document.createTextNode(on
+      ? t('login.loading', 'Anmelden…') : t('login.submit', 'Anmelden')));
   }
 
   form.addEventListener('submit', async (e) => {

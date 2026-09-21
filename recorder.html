@@ -442,7 +442,7 @@
   .countdown-overlay {
     position: fixed; inset: 0; z-index: 1000;
     display: none; align-items: center; justify-content: center; flex-direction: column;
-    background: rgba(8,10,14,0.92); backdrop-filter: blur(4px);
+    background: color-mix(in srgb, var(--bg) 94%, transparent); backdrop-filter: blur(4px);
     color: var(--text); text-align: center;
   }
   .countdown-overlay.show { display: flex; }
@@ -549,11 +549,10 @@
       </div>
 
       <!-- Bereitschaft: Selbstprüfung + aktive Bereit-Meldung -->
-      <div class="panel ready-panel" id="readyPanel">
+      <div class="panel ready-panel" id="readyPanel" hidden>
         <b>Bereit für die Aufnahme?</b>
-        <ul class="check-list" id="readyChecks"></ul>
         <div class="ready-row" style="margin-top:12px">
-          <button id="readyBtn" class="ready-btn" type="button" aria-pressed="false">
+          <button id="readyBtn" class="ready-btn" type="button" aria-pressed="false" hidden disabled>
             Ich bin bereit
           </button>
           <span class="sub" id="readyHint">Der Host startet erst, wenn du bereit bist.</span>
@@ -800,14 +799,15 @@
     return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
   };
   let consoleBuf = [];
-  function log(msg, cls="") {
+  function log(msg, cls="", showToGuest=true) {
     const el = $("log");
-    if (!el) return;
-    const line = document.createElement("div");
-    line.className = cls;
-    line.textContent = new Date().toLocaleTimeString(window.OpenPodcastI18n?.locale || document.documentElement.lang || 'de') + "  " + msg;
-    el.appendChild(line);
-    el.scrollTop = el.scrollHeight;
+    if (el && showToGuest) {
+      const line = document.createElement("div");
+      line.className = cls;
+      line.textContent = new Date().toLocaleTimeString(window.OpenPodcastI18n?.locale || document.documentElement.lang || 'de') + "  " + msg;
+      el.appendChild(line);
+      el.scrollTop = el.scrollHeight;
+    }
     try {
       consoleBuf.push({ ts: Date.now()/1000, level: cls || 'info', msg: String(msg).slice(0,400) });
       if (consoleBuf.length > 400) consoleBuf = consoleBuf.slice(-300);
@@ -1833,54 +1833,49 @@
     return readyChecks().every(c => c.ok);
   }
 
+  const lastReadyChecks = new Map();
   function renderReadyChecks() {
-    const panel = $("readyPanel");
-    const box = $("readyChecks");
-    if (!panel || !box) return;
-    // Das Panel ist nur relevant, solange nicht aufgenommen wird.
-    const show = !isRecording;
-    panel.classList.toggle("show", show);
-    if (!show) return;
-
     const checks = readyChecks();
-    const sig = checks.map(c => `${c.key}:${c.ok ? 1 : 0}:${c.label}`).join("|");
-    if (box.dataset.sig !== sig) {
-      box.dataset.sig = sig;
-      box.innerHTML = "";
-      for (const c of checks) {
-        const li = document.createElement("li");
-        li.className = c.ok ? "ok" : "bad";
-        li.innerHTML = `<span class="mark">${c.ok ? "✔" : "✖"}</span>` +
-                       `<span></span>`;
-        li.lastElementChild.textContent = c.label;
-        box.appendChild(li);
+    // Diagnostics go to Host/Admin logs only, including when confirmation is off.
+    for (const c of checks) {
+      const sig = `${c.ok ? 1 : 0}:${c.label}`;
+      if (lastReadyChecks.get(c.key) !== sig) {
+        lastReadyChecks.set(c.key, sig);
+        log(`[readiness:${c.key}] ${c.label}`, c.ok ? "ok" : "err", false);
       }
     }
-
-    const btn = $("readyBtn");
-    const hint = $("readyHint");
-    if (!btn) return;
+    for (const key of lastReadyChecks.keys()) {
+      if (!checks.some(c => c.key === key)) lastReadyChecks.delete(key);
+    }
     const ok = checks.every(c => c.ok);
-    // Ohne Admin-Pflicht bleibt der Knopf sichtbar, ist aber optional.
-    btn.disabled = !ok;
+    if ((!ok || !requireGuestReady) && declaredReady) setDeclaredReady(false);
+    const panel = $("readyPanel");
+    const show = requireGuestReady && !isRecording;
+    if (panel) {
+      panel.hidden = !show;
+      panel.classList.toggle("show", show);
+    }
+    const btn = $("readyBtn");
+    if (!btn) return;
+    btn.hidden = !show;
+    btn.disabled = !show || !ok;
     btn.classList.toggle("is-ready", declaredReady && ok);
     btn.setAttribute("aria-pressed", String(!!(declaredReady && ok)));
-    btn.textContent = declaredReady && ok ? "Bereit ✔" : "Ich bin bereit";
+    const text = declaredReady && ok ? "Bereit ✔" : "Ich bin bereit";
+    btn.textContent = window.OpenPodcastI18n?.s(text) || text;
+    const hint = $("readyHint");
     if (hint) {
-      hint.textContent = !ok
-        ? "Erst die offenen Punkte oben lösen."
+      const message = !ok
+        ? "Mikrofon und ggf. Kamera freigeben und ein Gerät auswählen."
         : declaredReady
           ? "Der Host sieht dich als bereit."
-          : requireGuestReady
-            ? "Der Host startet erst, wenn du dich bereit meldest."
-            : "Optional — der Host sieht deine Bereitschaft.";
+          : "Der Host startet erst, wenn du dich bereit meldest.";
+      hint.textContent = window.OpenPodcastI18n?.s(message) || message;
     }
-    // Technische Probleme setzen eine frühere Bereit-Meldung zurück.
-    if (!ok && declaredReady) setDeclaredReady(false);
   }
 
   function setDeclaredReady(v) {
-    const next = !!v;
+    const next = !!v && requireGuestReady && techReady();
     if (next === declaredReady) return;
     declaredReady = next;
     if (ws && wsConnected && ws.readyState === 1) {
@@ -3027,7 +3022,7 @@
   const readyBtnEl = $("readyBtn");
   if (readyBtnEl) {
     readyBtnEl.addEventListener("click", () => {
-      if (!techReady()) { renderReadyChecks(); return; }
+      if (!requireGuestReady || !techReady()) { renderReadyChecks(); return; }
       setDeclaredReady(!declaredReady);
     });
   }
