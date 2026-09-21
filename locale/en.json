@@ -42,7 +42,9 @@
     "password": "Password",
     "submit": "Sign in",
     "invalid": "Incorrect password.",
-    "rate_limited": "Too many login attempts. Please wait a minute."
+    "rate_limited": "Too many login attempts. Please wait a minute.",
+    "loading": "Signing in...",
+    "toggle_password": "Show/hide password"
   },
   "index": {
     "title": "Podcast Studio · Start",
@@ -909,7 +911,8 @@
     "Raumliste konnte nicht erstellt werden": "Could not build room list",
     "Video + Audio": "Video + audio",
     "Gibt Namen ein": "Entering a name",
-    "Nur fuer Admins": "Admins only"
+    "Nur fuer Admins": "Admins only",
+    "Mikrofon und ggf. Kamera freigeben und ein Gerät auswählen.": "Allow microphone and, if needed, camera access and select a device."
   },
   "lobby": {
     "heading": "Waiting in the lobby",
