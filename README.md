@@ -8,29 +8,23 @@ The host opens a room, invites guests through secure token links, and controls s
 
 ## Current status
 
-- ✅ Host and guest control via WebSockets
-- ✅ Token-based guest invitations without exposing the room name in the token
-- ✅ Local browser recording with chunked uploads and server-side WAV merging
-- ✅ Host-to-guest microphone control v1: device inventory, change requests, pending state, and result reporting
-- ✅ Reliable repeated microphone switching with command IDs and active-track verification
-- ✅ Live level display with compact level frames, VU ballistics, peak hold, and clipping indication
-- ✅ Automatic recorder device updates via `devicechange`, with diff-based rendering and stable selections
-- ✅ Server-side branding injected into the `<head>` without visible FOUC; semantic colors remain independent
-- ✅ Emoji-free interface with consistent spacing and top-bar heights
-- ✅ Host guest states: `Connected`, `Connection problems`, and `Offline`
-- ✅ Admin dashboard with recording, room, and storage-usage metrics
-- ✅ Session lifecycle overview with authoritative `/sessions` state fields and cleanup handling
-- ✅ Admin recording history with live, complete, WAV-only, chunks-only, prepared, failed, and archived states
-- ✅ Session-based MP3 mixdowns with Host-panel audio previews
-- ✅ Role-separated audio access: Hosts receive MP3 only; Admins receive WAV and ZIP exports
-- ✅ Admin recording history grouped by session with nested guest tracks
-- ✅ Recording markers, individual WAV downloads, and per-session ZIP export
-- ✅ Persistent human-readable recording names in the host history and marker selector
-- ✅ Shared absolute start/stop timestamps for synchronized guest recording boundaries
-- ✅ Final-track duration normalization and reliable last-chunk/upload finalization
-- ✅ Automatic marker and session-metadata cleanup when recordings are removed
-
-See `Roadmap.md` for the longer-term plan and `Documentation.md` for the technical documentation.
+- Host and guest control via WebSockets
+- Token-based guest invitations without exposing the room name in the token
+- Local browser recording with chunked uploads and server-side WAV merging
+- Host-to-guest microphone control v1: device inventory, change requests, pending state, and result reporting
+- Reliable repeated microphone switching with command IDs and active-track verification
+- Live level display with compact level frames, VU ballistics, peak hold, and clipping indication
+- Automatic recorder device updates via `devicechange`, with diff-based rendering and stable selections
+- Server-side branding injected into the `<head>` without visible FOUC; semantic colors remain independent
+- Host guest states: `Connected`, `Connection problems`, and `Offline`
+- Admin dashboard with recording, room, and storage-usage metrics
+- Session lifecycle overview with authoritative `/sessions` state fields and cleanup handling
+- Admin recording history with live, complete, WAV-only, chunks-only, prepared, failed, and archived states
+- Session-based MP3 mixdowns with Host-panel audio previews
+- Role-separated audio access: Hosts receive MP3 only; Admins receive WAV and ZIP exports
+- Admin recording history grouped by session with nested guest tracks
+- Shared absolute start/stop timestamps for synchronized guest recording boundaries
+- Final-track duration normalization and reliable last-chunk/upload finalization
 
 ## Features
 
