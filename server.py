@@ -397,6 +397,18 @@ def _init_db():
                 revoked     INTEGER NOT NULL DEFAULT 0
             )
         """)
+        # Persistente Aufnahme-Identitaet: UI-Name und gemeinsame Zeitgrenzen.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS recording_sessions (
+                number INTEGER PRIMARY KEY AUTOINCREMENT,
+                room TEXT NOT NULL,
+                session TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                start_at INTEGER,
+                stop_at INTEGER,
+                UNIQUE(room, session)
+            )
+        """)
         # Marker-Tabelle: Zeitmarken die der Host waehrend der Aufnahme setzt.
         conn.execute("""
             CREATE TABLE IF NOT EXISTS markers (
@@ -619,6 +631,82 @@ def _new_session_id() -> str:
     return f"s{out}{rnd}"  # beginnt bewusst mit 's'
 
 
+def _recording_info(room: str, session: str, start_at: int | None = None,
+                    stop_at: int | None = None) -> dict:
+    """Stable public name; legacy timestamps are decoded without renaming paths."""
+    created = time.time()
+    if re.fullmatch(r"s[0-9a-z]+[0-9a-f]{4}", session):
+        try:
+            candidate = int(session[1:-4], 36) / 1000
+            if 1577836800 < candidate < created + 86400:
+                created = candidate
+        except ValueError:
+            pass
+    if start_at is not None:
+        created = start_at / 1000
+    with _DB_LOCK, _db_conn() as conn:
+        row = conn.execute("SELECT * FROM recording_sessions WHERE room=? AND session=?",
+                           (room, session)).fetchone()
+        if row is None:
+            conn.execute("INSERT INTO recording_sessions (room,session,created_at,start_at,stop_at) "
+                         "VALUES (?,?,?,?,?)", (room, session, created, start_at, stop_at))
+        elif start_at is not None or stop_at is not None:
+            conn.execute("UPDATE recording_sessions SET start_at=COALESCE(?,start_at), "
+                         "stop_at=COALESCE(?,stop_at) WHERE room=? AND session=?",
+                         (start_at, stop_at, room, session))
+        conn.commit()
+        data = dict(conn.execute("SELECT * FROM recording_sessions WHERE room=? AND session=?",
+                                 (room, session)).fetchone())
+    stamp = time.strftime("%d.%m.%Y %H:%M:%S UTC", time.gmtime(data["created_at"]))
+    word = "Recording" if _global_locale() == "en" else "Aufnahme"
+    data["label"] = f"{word} {data['number']:03d} · {room} · {stamp}"
+    return data
+
+
+def _session_has_files(room: str, session: str) -> bool:
+    root = UPLOADS / room
+    return root.is_dir() and any((g / session).is_dir() for g in root.iterdir() if g.is_dir())
+
+
+def _session_in_use(room: str, session: str) -> bool:
+    # Caller may already hold _LOCK; do not acquire it recursively.
+    r = ROOMS.get(room, {})
+    if r.get("rec_session") != session:
+        return False
+    cmd = r.get("command", {})
+    if r.get("rec_state") == "recording":
+        return True
+    if cmd.get("action") == "stop" and time.time() * 1000 < (cmd.get("stop_at") or 0) + 120000:
+        return True
+    return any(g.get("session") == session and g.get("state") in ("recording", "uploading")
+               and time.time() - g.get("last_seen", 0) < 120 for g in r.get("guests", {}).values())
+
+
+def _prune_session_metadata(room: str, session: str) -> bool:
+    """Only remove shared markers after the LAST participant track is gone."""
+    if _session_has_files(room, session) or _session_in_use(room, session):
+        return False
+    with _DB_LOCK, _db_conn() as conn:
+        conn.execute("DELETE FROM markers WHERE room=? AND session=?", (room, session))
+        conn.execute("DELETE FROM recording_sessions WHERE room=? AND session=?", (room, session))
+        conn.commit()
+    mix = _mixdown_path(room, session)
+    mix.unlink(missing_ok=True)
+    return True
+
+
+def _recording_catalog(room: str) -> list[dict]:
+    root = UPLOADS / room
+    ids = {s.name for g in (root.iterdir() if root.is_dir() else []) if g.is_dir()
+           for s in g.iterdir() if s.is_dir() and SAFE.fullmatch(s.name)}
+    r = ROOMS.get(room, {})
+    sid = r.get("rec_session")
+    if sid and _session_in_use(room, sid):
+        ids.add(sid)
+    return sorted((_recording_info(room, sid) for sid in ids),
+                  key=lambda x: (x["created_at"], x["number"]), reverse=True)
+
+
 def _marker_create(room: str, session: str, kind: str,
                    offset_ms: int = 0, note: str = "") -> dict:
     marker_id = secrets.token_hex(4)
@@ -654,7 +742,9 @@ def _marker_sessions(room: str) -> list[str]:
             "ORDER BY session DESC",
             (room,),
         ).fetchall()
-    return [str(r["session"]) for r in rows if r["session"]]
+    return [str(r["session"]) for r in rows if r["session"]
+            and (_session_has_files(room, str(r["session"]))
+                 or _session_in_use(room, str(r["session"])))]
 
 
 def _marker_delete(marker_id: str) -> bool:
@@ -822,17 +912,45 @@ def _wav_add_markers(wav_path: Path, markers: list[dict]):
 # Audio-Hilfsfunktionen
 # ---------------------------------------------------------------------------
 
-def _write_wav_from_pcm(chunks, dest_dir, sample_rate, channels):
+def _write_wav_from_pcm(chunks, dest_dir, sample_rate, channels,
+                        target_frames: int | None = None):
     wav_path = dest_dir / "full.wav"
+    frame_bytes = SAMPLE_WIDTH * channels
+    written = 0
     with wave.open(str(wav_path), "wb") as w:
         w.setnchannels(channels)
         w.setsampwidth(SAMPLE_WIDTH)
         w.setframerate(sample_rate)
         for c in chunks:
-            w.writeframes(c.read_bytes())
+            raw = c.read_bytes()
+            if target_frames is not None:
+                remaining = max(0, target_frames - written)
+                raw = raw[:remaining * frame_bytes]
+            if raw:
+                w.writeframes(raw)
+                written += len(raw) // frame_bytes
+            if target_frames is not None and written >= target_frames:
+                break
+        if target_frames is not None and written < target_frames:
+            w.writeframes(b"\x00" * ((target_frames - written) * frame_bytes))
     if not wav_path.exists() or wav_path.stat().st_size <= 44:
         raise HTTPException(500, "WAV-Erzeugung fehlgeschlagen (keine PCM-Daten)")
     return wav_path
+
+
+def _target_recording_frames(room: str, session: str, sample_rate: int) -> int | None:
+    """Gemeinsamer Audio-Endpunkt aus der Server-Zeitachse."""
+    try:
+        with _DB_LOCK, _db_conn() as conn:
+            row = conn.execute(
+                "SELECT start_at, stop_at FROM recording_sessions WHERE room=? AND session=?",
+                (room, session)).fetchone()
+        if not row or row["start_at"] is None or row["stop_at"] is None:
+            return None
+        duration_ms = max(0, int(row["stop_at"]) - int(row["start_at"]))
+        return max(1, int(round(duration_ms * sample_rate / 1000.0)))
+    except Exception:
+        return None
 
 
 def _transcode_webm_to_wav(chunks, dest_dir):
@@ -1577,9 +1695,12 @@ def _build_status(room: str) -> dict:
     # Wir liefern die bekannten Sessions gleich mit, damit der Client nur noch
     # bei einem echten Session-Wechsel nachladen muss.
     try:
-        sessions_known = _marker_sessions(room)
+        catalog = _recording_catalog(room)
+        sessions_known = [entry["session"] for entry in catalog]
+        if cur_session not in sessions_known:
+            cur_session, markers = "", []
     except Exception:
-        sessions_known = []
+        sessions_known, catalog = [], []
     return {
         "ok": True, "room": room, "server_time": int(now_s * 1000),
         "command": cmd, "settings": settings, "guests": guests,
@@ -1591,6 +1712,7 @@ def _build_status(room: str) -> dict:
                            if (g.get("ready") or {}).get("tech_ready")),
         "markers": markers, "session": cur_session,
         "marker_sessions": sessions_known,
+        "recording_sessions": catalog,
         # Roadmap 5: Wer steuert diesen Raum gerade?
         "lock": _lock_public(_lock_get(room)),
         "guardrails": {
@@ -3178,7 +3300,9 @@ async def finish(room, guest, session):
                 channels    = int(m.get("channels", channels))
             except Exception:
                 pass
-        wav_path = _write_wav_from_pcm(pcm_chunks, dest_dir, sample_rate, channels)
+        wav_path = _write_wav_from_pcm(
+            pcm_chunks, dest_dir, sample_rate, channels,
+            _target_recording_frames(room, session, sample_rate))
         n_chunks = len(pcm_chunks)
     elif webm_chunks:
         wav_path, tmp_webm = _transcode_webm_to_wav(webm_chunks, dest_dir)
@@ -3324,7 +3448,9 @@ def host_status(room, _auth=Depends(require_auth)):
 def host_marker_sessions(room: str, _auth=Depends(require_auth)):
     """Liefert alle Sessions, für die es Marker in der DB gibt (absteigend)."""
     check_ident(room)
-    return {"ok": True, "room": room, "sessions": _marker_sessions(room)}
+    catalog = _recording_catalog(room)
+    return {"ok": True, "room": room, "sessions": [s["session"] for s in catalog],
+            "recording_sessions": catalog}
 
 
 @app.post("/host/room/{room}/ensure")
@@ -3364,6 +3490,15 @@ def _apply_trigger(room: str, action: str, issued_at: int | None = None,
         r = _room(room)
         state = r.get("rec_state", "idle")
         cur_session = r.get("rec_session", "")
+        if action in ("start", "clear") and r.get("command", {}).get("action") == "stop":
+            stop_at = int(r["command"].get("stop_at") or 0)
+            busy = any(g.get("state") in ("recording", "uploading")
+                       and now_ms / 1000 - g.get("last_seen", 0) < 120
+                       for g in r["guests"].values())
+            if now_ms < stop_at + 1000 or busy:
+                return {"ok": False, "blocked": True, "duplicate": False,
+                        "reason": "still_finishing", "detail": "Aufnahme wird noch abgeschlossen.",
+                        "command": dict(r["command"])}
 
         # Zustandsbezogene Idempotenz.
         if action == "start" and state == "recording":
@@ -3387,11 +3522,19 @@ def _apply_trigger(room: str, action: str, issued_at: int | None = None,
                             "start_at": now_ms + int(START_LEAD_SECONDS * 1000),
                             "session": sid, "issued_at": now_ms}
             r["rec_started_at"] = now_ms + int(START_LEAD_SECONDS * 1000)
+            info = _recording_info(room, sid, start_at=r["rec_started_at"])
+            r["command"]["label"] = info["label"]
             r["rec_session"]    = sid
             r["rec_state"]      = "recording"
         elif action == "stop":
-            r["command"] = {"action": "stop", "start_at": None,
+            # Same absolute timeline as START, with enough lead for delivery.
+            start_at = int(r.get("rec_started_at") or now_ms)
+            cancelled = now_ms < start_at
+            stop_at = now_ms if cancelled else now_ms + 2000
+            r["command"] = {"action": "stop", "start_at": start_at,
+                            "stop_at": stop_at, "cancelled": cancelled,
                             "session": cur_session, "issued_at": now_ms}
+            _recording_info(room, cur_session, stop_at=stop_at)
             r["rec_state"] = "idle"
             # rec_session bleibt bestehen: Marker und Clip-Events der gerade
             # beendeten Aufnahme brauchen die Session-Bindung weiterhin.
@@ -3898,6 +4041,7 @@ def admin_delete_session(room, guest, session, _role=Depends(require_admin)):
                 mix_path.parent.rmdir()
         except OSError:
             pass
+    _prune_session_metadata(room, session)
     # leere Eltern-Ordner aufraeumen
     for d in (dest_dir.parent, dest_dir.parent.parent):
         try:
@@ -4298,7 +4442,9 @@ async def admin_rebuild_wav(room, guest, session, request: Request,
                     channels = int(m.get("channels", channels))
                 except Exception:
                     pass
-            wav_path = _write_wav_from_pcm(pcm_chunks, dest_dir, sample_rate, channels)
+            wav_path = _write_wav_from_pcm(
+            pcm_chunks, dest_dir, sample_rate, channels,
+            _target_recording_frames(room, session, sample_rate))
             n_chunks, kind = len(pcm_chunks), "pcm"
         else:
             wav_path, tmp_webm = _transcode_webm_to_wav(webm_chunks, dest_dir)
@@ -4561,6 +4707,7 @@ def admin_room_delete(room, _role=Depends(require_admin)):
     with _DB_LOCK, _db_conn() as conn:
         conn.execute("DELETE FROM guest_tokens WHERE room=?", (room,))
         conn.execute("DELETE FROM markers WHERE room=?", (room,))
+        conn.execute("DELETE FROM recording_sessions WHERE room=?", (room,))
         conn.execute("DELETE FROM clip_events WHERE room=?", (room,))
         conn.commit()
     # Persistente Gast-Logs des Raums ebenfalls entfernen (sonst verwaiste Zeilen).
@@ -4712,7 +4859,8 @@ def sessions(role=Depends(require_auth)):
                          "chunks_only" if chunks else "prepared")
                 out.append({
                     "room": room_dir.name, "guest": guest_dir.name,
-                    "session": sess_dir.name, "label": sess_dir.name,
+                    "session": sess_dir.name,
+                    "label": _recording_info(room_dir.name, sess_dir.name)["label"],
                     "chunks": len(chunks), "chunks_count": len(chunks),
                     "merged": has_wav, "has_wav": has_wav,
                     "size_mb": round((full.stat().st_size if has_wav else
@@ -5356,9 +5504,12 @@ def _cleanup_old_recordings():
                             meta_f = sess_dir / "meta.json"
                             if meta_f.exists():
                                 ref_time = min(ref_time, meta_f.stat().st_mtime)
-                            if ref_time < cutoff:
+                            if ref_time < cutoff and not _session_in_use(room_dir.name, sess_dir.name):
                                 try:
                                     shutil.rmtree(sess_dir)
+                                    _prune_session_metadata(room_dir.name, sess_dir.name)
+                                    mix = _mixdown_path(room_dir.name, sess_dir.name)
+                                    mix.unlink(missing_ok=True)  # rebuild from surviving tracks on demand
                                     deleted += 1
                                 except Exception as e:
                                     print(f"[cleanup] Fehler beim Loeschen von {sess_dir}: {e}")
@@ -5376,6 +5527,13 @@ def _cleanup_old_recordings():
                         pass
                 if deleted:
                     print(f"[cleanup] {deleted} alte Aufnahme(n) geloescht (>{days} Tage).")
+            # Repair pre-existing orphan markers too, even when retention is disabled.
+            with _DB_LOCK, _db_conn() as conn:
+                orphan_candidates = conn.execute(
+                    "SELECT room,session FROM markers UNION SELECT room,session FROM recording_sessions").fetchall()
+            for row in orphan_candidates:
+                if SAFE.fullmatch(row["room"]) and SAFE.fullmatch(row["session"]):
+                    _prune_session_metadata(row["room"], row["session"])
         except Exception as e:
             print(f"[cleanup] Unerwarteter Fehler: {e}")
         # Alle 6 Stunden pruefen

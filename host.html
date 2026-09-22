@@ -159,9 +159,12 @@
   .lobby-item { display: flex; align-items: center; gap: 8px; padding: 6px 12px;
                 border: 1px solid var(--border); border-radius: 999px;
                 background: var(--panel); font-size: 14px; }
-  .lobby-item .lobby-avatar { display: inline-flex; align-items: center; justify-content: center;
-                width: 26px; height: 26px; border-radius: 50%; font-weight: 700; font-size: 13px;
+  .lobby-item .lobby-avatar { display: inline-grid; place-items: center;
+                flex: 0 0 26px; width: 26px; height: 26px; padding: 0; margin: 0;
+                border-radius: 50%; font-weight: 700; font-size: 13px;
+                line-height: 1; letter-spacing: 0; text-align: center;
                 background: var(--brand); color: var(--brand-on, #fff); }
+  .lobby-avatar > span { display: block; transform: translate(0.5px, -0.5px); }
   .lobby-item .lobby-stage { color: var(--muted); font-size: 13px; }
   @media (max-width: 720px) { .lobby-list { flex-direction: column; } .lobby-item { width: 100%; } }
   .guest { display: grid; grid-template-columns: 18px 1.4fr 340px 90px 1.1fr;
@@ -1074,7 +1077,7 @@
       li.dataset.lobbyClientId = String(e.client_id);
       const waited = Math.max(0, Math.round(e.waiting_seconds || 0));
       li.innerHTML = `
-        <span class="lobby-avatar" aria-hidden="true">${escapeHtml(e.label)}</span>
+        <span class="lobby-avatar" aria-hidden="true"><span>${escapeHtml(e.label)}</span></span>
         <span>Gast ${escapeHtml(e.label)}</span>
         <span class="lobby-stage">${escapeHtml(LOBBY_STAGE[e.stage] || LOBBY_STAGE.naming)} · <span class="lobby-waiting">wartet ${waited}s</span></span>`;
       li.setAttribute('aria-label',
@@ -1456,6 +1459,22 @@
       // Nachgeladen wird nur noch, wenn im Dropdown eine ANDERE (historische)
       // Session gewaehlt ist, deren Marker wir noch nicht gepuffert haben.
       if (Array.isArray(data.marker_sessions)) {
+        const liveMarkerSessions = new Set(data.marker_sessions.map(s => String(s || '')).filter(Boolean));
+        for (const sid of [...markerStore.bySession.keys()]) {
+          if (!liveMarkerSessions.has(String(sid)) && String(sid) !== String(data.session || '')) {
+            markerStore.bySession.delete(sid);
+            markerStore.sessionMeta.delete(sid);
+            markerFetchDone.delete(String(sid));
+            if (markerSessionUserChoice === String(sid)) markerSessionUserChoice = '';
+          }
+        }
+        for (const entry of (data.recording_sessions || [])) {
+          const sid = String(entry.session || '');
+          if (sid) {
+            markerStore.sessionMeta.set(sid, entry);
+            if (!markerStore.bySession.has(sid)) markerStore.bySession.set(sid, []);
+          }
+        }
         for (const sid of data.marker_sessions) {
           const k = String(sid || '');
           if (k && !markerStore.bySession.has(k)) markerStore.bySession.set(k, []);
@@ -1471,6 +1490,12 @@
         markerStore.bySession.set(String(data.session), data.markers);
       }
 
+      if (Array.isArray(data.recording_sessions)) {
+        for (const entry of data.recording_sessions) {
+          const sid = String(entry.session || '');
+          if (sid) markerStore.sessionMeta.set(sid, entry);
+        }
+      }
       // Session-Dropdown aktualisieren (aktueller Status + bekannte Sessions)
       updateMarkerSessionOptions(data.session);
 
@@ -1844,6 +1869,7 @@
   const markerStore = {
     // sessionId -> markers[]
     bySession: new Map(),
+    sessionMeta: new Map(),
     // sessionId -> lastSeenTs
     seen: new Map(),
   };
@@ -1882,7 +1908,11 @@
     const sessions = new Set();
     if (currentSession) sessions.add(String(currentSession));
     for (const s of markerStore.bySession.keys()) sessions.add(String(s));
-    const list = Array.from(sessions).filter(Boolean).sort().reverse();
+    const list = Array.from(sessions).filter(Boolean).sort((a, b) => {
+      const aa = (markerStore.sessionMeta.get(a) || {}).created_at || 0;
+      const bb = (markerStore.sessionMeta.get(b) || {}).created_at || 0;
+      return bb - aa;
+    });
 
     // Aktuelle Auswahl (vor evtl. Rebuild) – single source of truth ist
     // markerSessionUserChoice, sobald der User einmal gewählt hat.
@@ -1899,7 +1929,8 @@
       for (const s of list) {
         const opt = document.createElement('option');
         opt.value = s;
-        opt.textContent = s;
+        const meta = markerStore.sessionMeta.get(s);
+        opt.textContent = meta && meta.label ? meta.label : `Aufnahme · ${s}`;
         sel.appendChild(opt);
       }
     }
@@ -1938,7 +1969,9 @@
     const applyBtn = $('applyMarkersBtn');
     if (applyBtn) applyBtn.disabled = !sel.value;
 
-    $('markerSessionHint').textContent = sel.value ? `Session: ${sel.value}` : '';
+    $('markerSessionHint').textContent = sel.value
+      ? (markerStore.sessionMeta.get(sel.value)?.label || `Aufnahme · ${sel.value}`)
+      : '';
   }
 
   function _markersForSelectedSession() {

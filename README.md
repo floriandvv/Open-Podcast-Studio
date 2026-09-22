@@ -25,6 +25,10 @@ The host opens a room, invites guests through secure token links, and controls s
 - ✅ Role-separated audio access: Hosts receive MP3 only; Admins receive WAV and ZIP exports
 - ✅ Admin recording history grouped by session with nested guest tracks
 - ✅ Recording markers, individual WAV downloads, and per-session ZIP export
+- ✅ Persistent human-readable recording names in the host history and marker selector
+- ✅ Shared absolute start/stop timestamps for synchronized guest recording boundaries
+- ✅ Final-track duration normalization and reliable last-chunk/upload finalization
+- ✅ Automatic marker and session-metadata cleanup when recordings are removed
 
 See `Roadmap.md` for the longer-term plan and `Documentation.md` for the technical documentation.
 

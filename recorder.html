@@ -805,8 +805,10 @@
       const line = document.createElement("div");
       line.className = cls;
       line.textContent = new Date().toLocaleTimeString(window.OpenPodcastI18n?.locale || document.documentElement.lang || 'de') + "  " + msg;
+      const followTail = el.scrollHeight - el.clientHeight - el.scrollTop <= 30;
+      const previousTop = el.scrollTop;
       el.appendChild(line);
-      el.scrollTop = el.scrollHeight;
+      el.scrollTop = followTail ? el.scrollHeight : previousTop;
     }
     try {
       consoleBuf.push({ ts: Date.now()/1000, level: cls || 'info', msg: String(msg).slice(0,400) });
@@ -970,9 +972,9 @@
         tick();
         setTimeout(() => {
           ov.classList.remove("show");
-          countingDown = false;
-          if (typeof onDone === "function") onDone();
         }, 800);
+        countingDown = false;
+        if (typeof onDone === "function") onDone();
       }
     }, 1000);
   }
@@ -2088,9 +2090,9 @@
   let pcmChannels = 1;
   let pcmBuffer = [];         // gesammelte Int16-Arrays fuer den aktuellen Chunk
   let pcmBufferedSamples = 0; // Anzahl Frames im aktuellen Chunk
-  let pcmFlushTimer = null;
-
-  // Float32 [-1..1] -> Int16 LE
+  let pendingChunkEnqueues = 0; // noch nicht in die Upload-Queue übernommene Chunks
+  let scheduledStop = null;      // absoluter Stop-Termin aus dem Host-Befehl
+  let scheduledStopAt = 0;
   function floatToInt16(float32) {
     const out = new Int16Array(float32.length);
     for (let i = 0; i < float32.length; i++) {
@@ -2102,48 +2104,57 @@
 
   // Sammelt Int16-Samples und schiebt fertige Chunks in die Upload-Queue.
   function pcmCollect(int16) {
+    if (!int16.length) return;
     pcmBuffer.push(int16);
     pcmBufferedSamples += int16.length;
+    // Nach Sample-Anzahl schneiden, nicht nach dem ungenauen Browser-Timer.
+    // So bleibt ein Chunk auch bei Timer-Verzoegerungen genau CHUNK_MS lang.
+    pcmFlush(false);
   }
 
   function pcmFlush(force) {
-    if (!pcmBuffer.length) return;
-    // Ein Chunk ~ CHUNK_MS; bei force (Stop) alles rausschreiben.
-    const targetSamples = Math.round(pcmSampleRate * pcmChannels * (CHUNK_MS / 1000));
-    if (!force && pcmBufferedSamples < targetSamples) return;
-
-    // Alle gepufferten Int16-Arrays zu einem Blob zusammenfuegen.
-    let total = 0;
-    for (const a of pcmBuffer) total += a.length;
-    const merged = new Int16Array(total);
-    let off = 0;
-    for (const a of pcmBuffer) { merged.set(a, off); off += a.length; }
-    pcmBuffer = [];
-    pcmBufferedSamples = 0;
-
-    const blob = new Blob([merged.buffer], { type: "application/octet-stream" });
-    enqueuePcmChunk(blob);
+    const targetSamples = Math.round(pcmSampleRate * (CHUNK_MS / 1000)) * pcmChannels;
+    while (pcmBufferedSamples >= targetSamples || (force && pcmBufferedSamples > 0)) {
+      const count = Math.min(targetSamples, pcmBufferedSamples);
+      const merged = new Int16Array(count);
+      let offset = 0;
+      let consumed = 0;
+      while (offset < count) {
+        const block = pcmBuffer[consumed];
+        const take = Math.min(block.length, count - offset);
+        merged.set(block.subarray(0, take), offset);
+        offset += take;
+        if (take === block.length) consumed++;
+        else pcmBuffer[consumed] = block.subarray(take);
+      }
+      pcmBuffer = pcmBuffer.slice(consumed);
+      pcmBufferedSamples -= count;
+      enqueuePcmChunk(new Blob([merged.buffer], { type: "application/octet-stream" }));
+    }
   }
 
   async function enqueuePcmChunk(blob) {
     if (!blob || blob.size === 0) return;
-    const idx = chunkIndex++;
-    recBytes += blob.size;
-    const cc2 = $("chunkCount"); if (cc2) cc2.textContent = chunkIndex;
-    const rs2 = $("recSize"); if (rs2) rs2.textContent = fmtMB(recBytes);
-    const key = chunkKey(room, guest, sessionId, idx);
+    pendingChunkEnqueues++;
     try {
-      await dbPut({
-        key, sessionKey: sessionKeyOf(room, guest, sessionId),
-        room, guest, sessionId, idx, blob, size: blob.size, ext: "pcm",
-        createdAt: Date.now(), uploaded: false
-      });
-    } catch (err) {
-      log(`DB-Schreibfehler (Chunk ${idx}): ${err.message}`, "err");
-    }
-    uploadQueue.push({ key, idx, size: blob.size, room, guest, sessionId, blob, ext: "pcm" });
-    const ql = $("queueLen"); if (ql) ql.textContent = uploadQueue.length;
-    runUploader();
+      const idx = chunkIndex++;
+      recBytes += blob.size;
+      const cc2 = $("chunkCount"); if (cc2) cc2.textContent = chunkIndex;
+      const rs2 = $("recSize"); if (rs2) rs2.textContent = fmtMB(recBytes);
+      const key = chunkKey(room, guest, sessionId, idx);
+      try {
+        await dbPut({
+          key, sessionKey: sessionKeyOf(room, guest, sessionId),
+          room, guest, sessionId, idx, blob, size: blob.size, ext: "pcm",
+          createdAt: Date.now(), uploaded: false
+        });
+      } catch (err) {
+        log(`DB-Schreibfehler (Chunk ${idx}): ${err.message}`, "err");
+      }
+      uploadQueue.push({ key, idx, size: blob.size, room, guest, sessionId, blob, ext: "pcm" });
+      const ql = $("queueLen"); if (ql) ql.textContent = uploadQueue.length;
+      runUploader();
+    } finally { pendingChunkEnqueues--; }
   }
 
   // Feature 9: Video-/Media-Chunks (WebM bzw. Safari-Fallback) in dieselbe
@@ -2151,23 +2162,26 @@
   // Video erkennt und daraus WAV + H.264-MP4 erzeugt.
   async function enqueueMediaChunk(blob, ext) {
     if (!blob || blob.size === 0) return;
-    const idx = chunkIndex++;
-    recBytes += blob.size;
-    const cc2 = $("chunkCount"); if (cc2) cc2.textContent = chunkIndex;
-    const rs2 = $("recSize"); if (rs2) rs2.textContent = fmtMB(recBytes);
-    const key = chunkKey(room, guest, sessionId, idx);
+    pendingChunkEnqueues++;
     try {
-      await dbPut({
-        key, sessionKey: sessionKeyOf(room, guest, sessionId),
-        room, guest, sessionId, idx, blob, size: blob.size, ext: ext || "webm",
-        createdAt: Date.now(), uploaded: false
-      });
-    } catch (err) {
-      log(`DB-Schreibfehler (Video-Chunk ${idx}): ${err.message}`, "err");
-    }
-    uploadQueue.push({ key, idx, size: blob.size, room, guest, sessionId, blob, ext: ext || "webm" });
-    const ql = $("queueLen"); if (ql) ql.textContent = uploadQueue.length;
-    runUploader();
+      const idx = chunkIndex++;
+      recBytes += blob.size;
+      const cc2 = $("chunkCount"); if (cc2) cc2.textContent = chunkIndex;
+      const rs2 = $("recSize"); if (rs2) rs2.textContent = fmtMB(recBytes);
+      const key = chunkKey(room, guest, sessionId, idx);
+      try {
+        await dbPut({
+          key, sessionKey: sessionKeyOf(room, guest, sessionId),
+          room, guest, sessionId, idx, blob, size: blob.size, ext: ext || "webm",
+          createdAt: Date.now(), uploaded: false
+        });
+      } catch (err) {
+        log(`DB-Schreibfehler (Video-Chunk ${idx}): ${err.message}`, "err");
+      }
+      uploadQueue.push({ key, idx, size: blob.size, room, guest, sessionId, blob, ext: ext || "webm" });
+      const ql = $("queueLen"); if (ql) ql.textContent = uploadQueue.length;
+      runUploader();
+    } finally { pendingChunkEnqueues--; }
   }
 
   // AudioWorklet-Prozessor als Blob-URL (kein separates File noetig).
@@ -2279,14 +2293,26 @@
   async function _startPcmRecording(audioTracks) {
     const AC = window.AudioContext || window.webkitAudioContext;
     try {
-      pcmCtx = new AC();
-      // iOS startet den Context teils "suspended" -> nach User-Geste reaktivieren.
-      if (pcmCtx.state === "suspended") { try { await pcmCtx.resume(); } catch {} }
-      pcmSampleRate = pcmCtx.sampleRate;     // ECHTE Rate (z. B. 44100 auf iOS)
-      pcmChannels = 1;                       // wir mischen auf Mono
-
       const micStream = new MediaStream([audioTracks[0]]);
-      pcmSourceNode = pcmCtx.createMediaStreamSource(micStream);
+      try {
+        pcmCtx = new AC({ sampleRate: AUDIO_SAMPLE_RATE });
+        pcmSourceNode = pcmCtx.createMediaStreamSource(micStream);
+      } catch (rateError) {
+        // Manche Browser unterstuetzen keine abweichende Context-Rate bzw.
+        // keinen Stream mit anderer Rate. Aufnahme vor Format-Zwang schuetzen.
+        try { if (pcmCtx && pcmCtx.state !== "closed") await pcmCtx.close(); } catch {}
+        pcmCtx = new AC();
+        pcmSourceNode = pcmCtx.createMediaStreamSource(micStream);
+        log(`48-kHz-Aufnahme nicht verfügbar (${rateError.message}); nutze Browser-Format.`, "info");
+      }
+      // Immer die wirkliche Rate melden, niemals nur den WAV-Header umetikettieren.
+      if (pcmCtx.state === "suspended") { try { await pcmCtx.resume(); } catch {} }
+      pcmSampleRate = pcmCtx.sampleRate;
+      pcmChannels = 1;
+      if (pcmSampleRate !== AUDIO_SAMPLE_RATE) {
+        log(`Abweichende Aufnahme-Abtastrate: ${pcmSampleRate} Hz statt ${AUDIO_SAMPLE_RATE} Hz.`, "info");
+        showMicToast(`Aufnahme mit ${pcmSampleRate / 1000} kHz statt 48 kHz.`, "info");
+      }
 
       let usedWorklet = false;
       if (pcmCtx.audioWorklet) {
@@ -2358,21 +2384,28 @@
     isRecording = false;
     clearInterval(durationTimer);
 
-    // Video-Pfad (MediaRecorder): sauber stoppen, letzten Chunk anstossen.
+    // Video-Pfad (MediaRecorder): sauber stoppen. ondataavailable bleibt bis
+    // zum letzten Chunk aktiv; erst danach finalisieren wir die Session.
     if (recorder) {
+      const stoppedRecorder = recorder;
       try {
-        if (recorder.state !== "inactive") {
-          // requestData() erzwingt das Ausschreiben des aktuellen Puffers,
-          // bevor wir stoppen -- so geht das letzte Segment nicht verloren.
-          try { recorder.requestData(); } catch {}
-          recorder.stop();
+        if (stoppedRecorder.state !== "inactive") {
+          try { stoppedRecorder.requestData(); } catch {}
+          const stopped = new Promise(resolve => {
+            const previous = stoppedRecorder.onstop;
+            stoppedRecorder.onstop = () => { try { if (previous) previous(); } catch {} resolve(); };
+          });
+          try { stoppedRecorder.stop(); } catch { }
+          await stopped;
         }
       } catch (err) {
         log("MediaRecorder-Stop-Fehler: " + err.message, "err");
       }
-      recorder.ondataavailable = null;
-      recorder.onerror = null;
+      // Handler erst nach onstop entfernen: der letzte ondataavailable-Event
+      // darf noch in enqueueMediaChunk() laufen.
       recorder = null;
+      stoppedRecorder.ondataavailable = null;
+      stoppedRecorder.onerror = null;
     }
 
     // Audio-Pfad (PCM): Graph abbauen + letzten Chunk ausschreiben.
@@ -2391,7 +2424,7 @@
 
     // Auf vollstaendigen Upload warten, dann finalisieren.
     (async () => {
-      while (uploadQueue.length > 0 || uploaderRunning) {
+    while (pendingChunkEnqueues > 0 || uploadQueue.length > 0 || uploaderRunning) {
         await new Promise(r => setTimeout(r, 200));
       }
       try {
@@ -2735,6 +2768,17 @@
     if (typeof g.clip_min_samples === "number") clipMinSamples = Math.max(1, g.clip_min_samples);
   }
 
+  function scheduleAbsoluteStop(stopAtMs) {
+    if (scheduledStop) clearTimeout(scheduledStop);
+    scheduledStopAt = Number(stopAtMs) || 0;
+    if (!scheduledStopAt) return;
+    const wait = Math.max(0, scheduledStopAt - (Date.now() + serverOffset));
+    scheduledStop = setTimeout(() => {
+      scheduledStop = null;
+      if (isRecording) stopRecording();
+    }, wait);
+  }
+
   function handleCommand(cmd) {
     // Best-practice: Idempotenz muss Action (und idealerweise issued_at) berücksichtigen.
     // Der Server nutzt für START und STOP dieselbe session-ID (rec_session).
@@ -2766,6 +2810,7 @@
       runCountdown(secs, () => {
         if (!isRecording) _doStartRecording();
       });
+      scheduleAbsoluteStop(cmd.stop_at ? Number(cmd.stop_at) : 0);
       // Safety: falls Tab gedrosselt wird, zusaetzlich exakter Timer.
       scheduledStart = setTimeout(() => {
         scheduledStart = null;
@@ -2776,13 +2821,19 @@
       if (scheduledStart) { clearTimeout(scheduledStart); scheduledStart = null; }
       cancelCountdown();
 
-      // UI-Feedback IMMER anzeigen, auch wenn wir aus irgendeinem Grund nicht mehr "isRecording" sind.
+      // Alle Gaeste stoppen auf demselben absoluten Serverzeitpunkt.
+      const stopAt = Number(cmd.stop_at || 0);
+      if (stopAt && stopAt > Date.now() + serverOffset + 25) {
+        scheduleAbsoluteStop(stopAt);
+        setStatus("⏹ Aufnahme endet synchron…");
+        log("Host hat synchronen Stopp ausgelöst", "ok");
+        return;
+      }
+      if (scheduledStop) { clearTimeout(scheduledStop); scheduledStop = null; }
+      scheduledStopAt = 0;
       setStatus("⏹ Host hat die Aufnahme beendet — stoppe…");
       log("Host hat Stopp ausgelöst", "ok");
-
-      if (isRecording) {
-        stopRecording();
-      }
+      if (isRecording) stopRecording();
       // Nach dem Stopp gilt die Bereit-Meldung nicht mehr: die naechste
       // Aufnahme braucht eine neue, bewusste Bestaetigung.
       setDeclaredReady(false);
