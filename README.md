@@ -208,12 +208,6 @@ admin.html       # Admin panel
 token_error.html  # Invalid or expired guest link
 ```
 
-Additional documentation:
-
-- `Documentation.md`: Technical documentation
-- `Open_Podcast_Studio_Zusammenfassung.md`: Short project overview
-- `Roadmap.md`: Roadmap, completed work, and open items
-
 ## Reverse proxy deployment
 
 For production or LAN deployment, place the application behind a reverse proxy. The proxy should terminate TLS and forward both regular HTTP requests and WebSocket connections to the Open Podcast Studio server.
