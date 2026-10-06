@@ -256,36 +256,10 @@ Keep the application entry point, shared recording logic, configuration examples
 - `login.html`, `index.html`, `host.html`, `recorder.html`, `admin.html`, and `token_error.html`
 - `recording-media.js`, `audio-profiles.js`, and `ux.js`
 
-### `locale/`
-
-Keep all interface translations in this directory:
-
-```text
-locale/
-├── de.json    # German source/default locale
-└── en.json    # English locale with German fallback
-```
-
-### `jitsi/`
-
-Keep all optional live-call and Jitsi deployment components in this directory:
-
-```text
-jitsi/
-├── jitsi.py                       # Jitsi call orchestration and API routes
-├── call.js                        # Guest/Host Jitsi External API client
-├── admin.js                       # Jitsi configuration UI helpers
-└── mod_openpodcast_lifecycle.lua  # Prosody/MUC lifecycle hook for self-hosting
-```
-
-The `jitsi/` directory is optional when live calls are disabled. The `locale/` directory is required for the German/English interface. Do not place runtime files in either directory.
-
 ### Complete file listing
 
 ```text
 server.py                    # FastAPI/Uvicorn server
-jitsi/jitsi.py                # Optional Jitsi call orchestration
-jitsi/mod_openpodcast_lifecycle.lua # Optional Prosody/MUC room lifecycle hook
 login.html                   # Login page
 index.html                   # Room entry page
 host.html                    # Host studio
@@ -294,10 +268,15 @@ admin.html                   # Admin panel
 token_error.html             # Invalid or expired guest link
 recording-media.js           # Shared media source and upload budget
 audio-profiles.js              # Admin-managed audio profiles and consent text
-jitsi/call.js                 # Jitsi External API integration
-jitsi/admin.js                # Jitsi configuration UI helpers
 ux.js                        # Shared frontend helpers
-locale/de.json / en.json     # Locales
+jitsi/
+├── jitsi.py                       # Jitsi call orchestration and API routes
+├── call.js                        # Guest/Host Jitsi External API client
+├── admin.js                       # Jitsi configuration UI helpers
+└── mod_openpodcast_lifecycle.lua  # Prosody/MUC lifecycle hook for self-hosting
+locale/
+├── de.json    # German source/default locale
+└── en.json    # English locale with German fallback
 example.env                  # Configuration example
 requirements.txt             # Python dependencies
 ```
