@@ -240,6 +240,7 @@ Cleanup threads can automatically remove old finished recordings, raw chunks, gu
 - Browser device access requires user permission, and device-change behavior varies between browsers.
 - MP4 generation and WebM processing depend on a working FFmpeg installation and available codecs.
 - Live calls depend on the configured Jitsi provider and, in self-hosted mode, a correctly configured lifecycle callback.
+- Live calls via public Jitsi API have a session time limit.
 - The UI has German source text and an English locale with German fallback; translations may be incomplete for newly added text.
 - A room has one active Host controller at a time; additional Host instances are read-only until control is available.
 
