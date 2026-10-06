@@ -1,23 +1,10 @@
 <!DOCTYPE html>
 <html lang="de">
 <head>
+<script src="/assets/ux.js"></script>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Admin</title>
-<script>
-// Sprint 3: Branding kommt serverseitig im <head> (siehe BRANDING-Block oben).
-// Beim ersten Paint stimmen --brand/--brand-hover/--brand-on bereits -> kein
-// Aufblitzen der Default-Farbe, kein Verstecken der Seite.
-// Dieses Snippet setzt nur noch Titel + Favicon aus window.__BRANDING__ und
-// dient als Fallback, falls die Seite mal ohne SSR ausgeliefert wird.
-(() => {
-  const b = window.__BRANDING__;
-  if (!b || !b.ok) return;
-  try {
-    if (b.name) document.title = document.title.replace(/Podcast Studio/, b.name);
-  } catch {}
-})();
-</script>
 <style>
   :root {
     --bg: #0f1115; --panel: #181b22; --panel2: #11141a; --border: #2a2f3a;
@@ -560,6 +547,19 @@
   .preset-editor-actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-top:14px}.preset-logo-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:14px;padding-top:14px;border-top:1px solid var(--border)}
   @media(max-width:900px){.preset-editor-grid{grid-template-columns:1fr 1fr}.preset-grid{grid-template-columns:1fr}}
   @media (max-width: 720px) { .brand-preview { min-width:0; width:100%; } #brandPreset{width:100%} .preset-editor-grid{grid-template-columns:1fr 1fr} }
+
+  [hidden]{display:none!important}
+  #jitsi-settings{display:flex;flex-direction:column;gap:8px}
+  #jitsi-settings h2,#jitsi-settings p{margin:0}
+  #jitsi-settings select,#jitsi-settings input{max-width:620px;width:100%;padding:10px;border:1px solid var(--border);background:var(--panel2);color:var(--text);border-radius:8px}
+  .profile-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(220px,100%),1fr));gap:12px}
+  .profile-fields label{display:flex;flex-direction:column;gap:6px;font-size:13px}
+  .profile-fields input,.profile-fields textarea{font:inherit;min-width:0;width:100%;padding:10px;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:8px}
+  .profile-fields input:focus-visible,.profile-fields textarea:focus-visible,#jitsi-settings select:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+  #audio-profiles .preset-card{align-content:start}
+  #audio-profiles .preset-card form{grid-template-columns:1fr}
+  #consent-settings textarea{resize:vertical}
+
 </style>
 <!-- Branding zuletzt: ueberschreibt die :root-Defaults oben. -->
 <!--BRANDING-->
@@ -582,6 +582,10 @@
       </div>
     </div>
   </header>
+
+  <section class="panel" id="jitsi-settings" aria-label="Jitsi"></section>
+  <section class="panel" id="audio-profiles" aria-label="Audio profiles"></section>
+  <section class="panel" id="consent-settings" aria-label="Recording consent"></section>
 
   <!-- Globale Einstellungen -->
   <div class="panel">
@@ -800,7 +804,7 @@
                style="width:220px;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font:inherit">
         <button class="btn btn-primary" id="setHostPwBtn">Setzen</button>
       </div>
-      <span class="cfg-status" id="pwStatus"></span>
+      <p class="cfg-status" id="adminPasswordStatus" role="status"></p><p class="cfg-status" id="hostPasswordStatus" role="status"></p>
     </div>
   </div>
 
@@ -907,6 +911,78 @@
       throw new Error('Nicht authentifiziert');
     }
     return res;
+  }
+
+  // Auto-Refresh darf weder verschachtelte Scrollbereiche noch den Fokus
+  // zuruecksetzen. Log-Zeilen dienen als Anker, wenn oben neue hinzukommen.
+  function replaceLiveContent(root, html) {
+    if (!root || (root._liveHtml === html && root._liveRenderedHtml === root.innerHTML)) return;
+    const scrolls = [];
+    const pathOf = el => {
+      const path = [];
+      while (el && el !== root) {
+        path.unshift(Array.prototype.indexOf.call(el.parentElement.children, el));
+        el = el.parentElement;
+      }
+      return path;
+    };
+    const locate = path => path.reduce((el, i) => el && el.children[i], root);
+    for (const el of [root, ...root.querySelectorAll('*')]) {
+      if (!el.scrollTop && !el.scrollLeft) continue;
+      const section = el.closest('[data-diag-body], .room-group[data-room]');
+      let key = null;
+      if (el.id) key = { id: el.id };
+      else if (section && el.matches('.diag-log, .room-body')) {
+        key = { section: section.getAttribute('data-diag-body'), room: section.dataset.room,
+          selector: el.matches('.diag-log') ? '.diag-log' : '.room-body' };
+      }
+      const rect = el.getBoundingClientRect();
+      const anchor = el.matches('.diag-log')
+        ? [...el.children].find(row => row.getBoundingClientRect().bottom > rect.top) : null;
+      scrolls.push({ path: pathOf(el), key, top: el.scrollTop, left: el.scrollLeft,
+        anchor: anchor && anchor.dataset.scrollKey,
+        offset: anchor ? anchor.getBoundingClientRect().top - rect.top : 0 });
+    }
+    const active = document.activeElement;
+    const focus = root.contains(active) ? {
+      id: active.id, path: pathOf(active), tag: active.tagName,
+      attrs: [...active.attributes].filter(a => a.name.startsWith('data-')).map(a => [a.name, a.value])
+    } : null;
+    const ancestors = [];
+    for (let el = root.parentElement; el; el = el.parentElement) {
+      ancestors.push([el, el.scrollTop, el.scrollLeft]);
+    }
+    root.innerHTML = html;
+    root._liveHtml = html;
+    // Uebersetzungen vor der Messung anwenden; sonst verschieben sie den Anker.
+    if (window.OpenPodcastI18n) window.OpenPodcastI18n.apply(root);
+    root._liveRenderedHtml = root.innerHTML;
+    for (const saved of scrolls) {
+      let el;
+      if (saved.key && saved.key.id) el = document.getElementById(saved.key.id);
+      else if (saved.key) {
+        const section = [...root.querySelectorAll('[data-diag-body], .room-group[data-room]')]
+          .find(node => saved.key.section != null
+            ? node.getAttribute('data-diag-body') === saved.key.section
+            : node.dataset.room === saved.key.room);
+        el = section && section.querySelector(saved.key.selector);
+      } else el = locate(saved.path);
+      if (!el || !root.contains(el)) continue;
+      el.scrollTop = saved.top;
+      el.scrollLeft = saved.left;
+      if (saved.anchor) {
+        const anchor = [...el.children].find(row => row.dataset.scrollKey === saved.anchor);
+        if (anchor) el.scrollTop += anchor.getBoundingClientRect().top - el.getBoundingClientRect().top - saved.offset;
+      }
+    }
+    if (focus) {
+      let target = focus.id ? document.getElementById(focus.id) : null;
+      if (!target && focus.attrs.length) target = [...root.querySelectorAll(focus.tag)]
+        .find(el => focus.attrs.every(([name, value]) => el.getAttribute(name) === value));
+      if (!target && !focus.attrs.length) target = locate(focus.path);
+      if (target && root.contains(target) && target.tagName === focus.tag) target.focus({ preventScroll: true });
+    }
+    for (const [el, top, left] of ancestors) { el.scrollTop = top; el.scrollLeft = left; }
   }
 
   function flash(el, msg, ok = true) {
@@ -1361,17 +1437,14 @@
 
   // ── Passwörter ───────────────────────────────────────────────────────────
   async function setPassword(role, inputEl) {
-    const pw = inputEl.value;
-    if (!pw || pw.length < 4) { flash($('pwStatus'), 'Passwort muss mindestens 4 Zeichen haben.', false); return; }
-    try {
-      const res = await apiFetch(`${SERVER}/admin/password`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ role, new_password: pw }),
-      });
-      if (!res.ok) { const d = await res.json().catch(()=>({})); throw new Error(d.detail || ('HTTP ' + res.status)); }
-      inputEl.value = '';
-      flash($('pwStatus'), `✔ ${role === 'admin' ? 'Admin' : 'Host'}-Passwort gesetzt.`);
-    } catch (err) { flash($('pwStatus'), 'Fehler: ' + err.message, false); }
+    const button=$(role==='admin'?'setAdminPwBtn':'setHostPwBtn');
+    if(button.disabled)return;
+    const status=$(role==='admin'?'adminPasswordStatus':'hostPasswordStatus');
+    button.disabled=true;status.textContent=PodcastUX.t('saving');
+    try{
+      await PodcastUX.request('/admin/password',{method:'POST',body:JSON.stringify({role,new_password:inputEl.value})});
+      inputEl.value='';status.textContent=PodcastUX.t('password_saved');
+    }catch(error){status.textContent=PodcastUX.error(error);}finally{button.disabled=false;}
   }
   $('setAdminPwBtn').addEventListener('click', () => setPassword('admin', $('newAdminPw')));
   $('setHostPwBtn').addEventListener('click', () => setPassword('host', $('newHostPw')));
@@ -1416,7 +1489,7 @@
           </div>
         </div>`;
       }
-      box.innerHTML = html;
+      replaceLiveContent(box, html);
     } catch (err) {
       if (err.message !== 'Nicht authentifiziert') showFetchError(box, err);
     }
@@ -1605,7 +1678,7 @@
     // Serverfehler
     const errs = d.recent_errors || [];
     const errBody = errs.length
-      ? `<div class="diag-log">${errs.map(e => `<div class="ln err">
+      ? `<div class="diag-log">${errs.map(e => `<div class="ln err" data-scroll-key="${esc(JSON.stringify([e.ts, e.source, e.message, e.room, e.detail]))}">
           <span class="t">${esc(fmtTs(e.ts))}</span>
           <span class="s">${esc(e.source)}</span>
           <span class="m">${esc(e.message)}${e.room ? ` <span style="color:var(--muted)">· Raum ${esc(e.room)}</span>` : ''}${e.detail ? `<div style="color:var(--muted)">${esc(e.detail)}</div>` : ''}</span>
@@ -1616,7 +1689,7 @@
 
     // Client-Logs
     const logBody = diagLogLines.length
-      ? `<div class="diag-log" id="diagLogBox">${diagLogLines.slice(0, 200).map(l => `<div class="ln ${esc(l.level || 'info')}">
+      ? `<div class="diag-log" id="diagLogBox">${diagLogLines.slice(0, 200).map(l => `<div class="ln ${esc(l.level || 'info')}" data-scroll-key="${esc(JSON.stringify([l.ts, l.level, l.msg, l.room, l.guest]))}">
           <span class="t">${esc(fmtTs(l.ts))}</span>
           <span class="s">${esc(l.level || 'info')}</span>
           <span class="m">${esc(l.msg || '')}<span style="color:var(--muted)"> · ${esc(l.room || '')}/${esc(l.guest || '')}</span></span>
@@ -1625,7 +1698,7 @@
     html += diagSection('logs', `Client-Logs (${diagLogLines.length})`,
       'Meldungen aus den Gast-Browsern, instanzweit und neueste zuerst.', logBody);
 
-    box.innerHTML = html;
+    replaceLiveContent(box, html);
   }
 
   async function loadDiagnostics() {
@@ -1649,8 +1722,11 @@
       if (err.message === 'Nicht authentifiziert') return;
       $('diagState').className = 'diag-state err';
       $('diagState').textContent = '● Diagnose nicht erreichbar';
-      box.innerHTML = `<div class="diag-problems">Die Diagnose konnte nicht geladen werden: ${esc(err.message)}. ` +
-        `Erneut versuchen oder die Serverprotokolle prüfen.</div>`;
+      if (!box.querySelector('[data-diag-body]')) {
+        box._liveHtml = null;
+        box.innerHTML = `<div class="diag-problems">Die Diagnose konnte nicht geladen werden: ${esc(err.message)}. ` +
+          `Erneut versuchen oder die Serverprotokolle prüfen.</div>`;
+      }
     }
   }
 
@@ -1672,33 +1748,11 @@
     const btn = e.target.closest('button[data-rebuild-wav]');
     if (!btn) return;
     const { room, guest, session } = btn.dataset;
-    if (!confirm(`WAV für „${guest}" in Raum „${room}" aus den vorhandenen Chunks erzeugen?`)) return;
-    const original = btn.textContent;
-    btn.disabled = true;
-    btn.textContent = 'Erzeuge…';
+    if (!confirm(PodcastUX.t('rebuild_confirm'))) return;
+    const original=btn.textContent;btn.disabled=true;btn.textContent=PodcastUX.t('loading');
     try {
-      const res = await apiFetch(
-        `${SERVER}/admin/rebuild-wav/${encodeURIComponent(room)}/${encodeURIComponent(guest)}/${encodeURIComponent(session)}`,
-        { method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ force: false }) });
-      if (res.status === 409) {
-        // Es gibt schon eine WAV -- Überschreiben nur nach ausdrücklicher Zusage.
-        if (!confirm('Es existiert bereits eine WAV. Vorhandene Datei ersetzen?')) {
-          btn.disabled = false; btn.textContent = original; return;
-        }
-        const res2 = await apiFetch(
-          `${SERVER}/admin/rebuild-wav/${encodeURIComponent(room)}/${encodeURIComponent(guest)}/${encodeURIComponent(session)}`,
-          { method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ force: true }) });
-        if (!res2.ok) throw new Error(await errText(res2));
-        const d2 = await res2.json();
-        btn.textContent = `✔ ${d2.size_mb} MB`;
-      } else if (!res.ok) {
-        throw new Error(await errText(res));
-      } else {
-        const d = await res.json();
-        btn.textContent = `✔ ${d.size_mb} MB`;
-      }
+      await PodcastUX.request(`${SERVER}/api/studio/session/${encodeURIComponent(room)}/${encodeURIComponent(session)}/rebuild`,{method:'POST'});
+      btn.textContent=PodcastUX.t('saved');
       // Aufnahmenliste und Diagnose neu laden -- die Session ist jetzt fertig.
       load();
       setTimeout(loadDiagnostics, 600);
@@ -1751,7 +1805,7 @@
           <button class="btn btn-danger" data-room-act="delete" data-room="${esc(r.room)}">Löschen</button>
         </div>`;
       }
-      box.innerHTML = html;
+      replaceLiveContent(box, html);
     } catch (err) {
       if (err.message !== 'Nicht authentifiziert') showFetchError(box, err);
     }
@@ -1838,7 +1892,7 @@
         }
         html += `</div></div>`;
       }
-      box.innerHTML = html;
+      replaceLiveContent(box, html);
     } catch (err) {
       if (err.message !== 'Nicht authentifiziert') showFetchError(box, err);
     }
@@ -1862,6 +1916,8 @@
   let logsRoom = null;
   let logsTimer = null;
   let logsSince = 0;               // letzter gesehener Zeitstempel (Delta-Poll)
+  let logsGeneration = 0;
+  let logsRequest = null;
   const logsExpanded = new Set();  // Gast-IDs, die aktuell aufgeklappt sind
   // Zustand pro Gast: { count, lastTs, lastLine, counts }
   let logsState = new Map();
@@ -1869,6 +1925,7 @@
   const LVL_COL = (lv) => lv === 'err' ? '#e5484d' : lv === 'ok' ? 'var(--ok)' : 'var(--muted)';
 
   function openLogs(room) {
+    logsGeneration++;
     logsRoom = room;
     logsSince = 0;
     logsExpanded.clear();
@@ -1914,11 +1971,17 @@
 
   async function loadLogsInto(room, isFirst) {
     const box = $('logModalGuests');
-    if (!box) return;
+    const generation = logsGeneration;
+    if (!box || room !== logsRoom || (logsRequest && logsRequest.generation === generation)) return;
+    const request = { generation };
+    logsRequest = request;
     try {
       const url = `${SERVER}/admin/room/${encodeURIComponent(room)}/logs?since=${logsSince}`;
       const res  = await apiFetch(url, { cache: 'no-store' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
       const data = await res.json();
+      if (generation !== logsGeneration || room !== logsRoom) return;
+      box.removeAttribute('title');
       const guests = data.guests || [];
 
       // Delta-Cursor: hoechster tatsaechlich gesehener Zeilen-ts (Client-Zeit).
@@ -1946,22 +2009,13 @@
         return;
       }
 
-      // Erst-Render (oder wenn neue Gäste dazukommen): Struktur neu aufbauen.
-      const haveCards = new Set([...box.querySelectorAll('.log-guest')].map(el => el.dataset.guest));
-      const needRebuild = isFirst || ordered.some(g => !haveCards.has(g.guest));
-      if (needRebuild) {
-        box.innerHTML = ordered.map(g => guestCardHtml({
-          guest:g.guest, count:g.count, lastTs:g.lastTs, lastLine:g.lastLine, counts:g.counts
-        })).join('');
-        // Vorhandene Zeilen (bei Erst-Render) einmal komplett füllen.
-        for (const g of ordered) {
-          const bodyLines = box.querySelector(`.log-guest-body[data-guest="${cssEsc(g.guest)}"] .log-lines`);
-          if (bodyLines && g._new && g._new.length) {
-            bodyLines.insertAdjacentHTML('beforeend', g._new.map(lineHtml).join(''));
-          }
-          g._new = [];
+      // Neue Gaeste einzeln ergaenzen: bestehende Karten samt Log-Historie,
+      // Scrollposition und Textauswahl bleiben im DOM erhalten.
+      if (!box.querySelector('.log-guest')) box.replaceChildren();
+      for (const g of ordered) {
+        if (!box.querySelector(`.log-guest[data-guest="${cssEsc(g.guest)}"]`)) {
+          box.insertAdjacentHTML('beforeend', guestCardHtml(g));
         }
-        return;
       }
 
       // Delta-Update: nur Kopf-Infos aktualisieren + neue Zeilen anhängen.
@@ -1980,17 +2034,24 @@
           const bodyLines = card.querySelector('.log-lines');
           const bodyWrap  = card.querySelector('.log-guest-body');
           if (bodyLines) {
-            const nearBottom = bodyWrap && (bodyWrap.scrollTop + bodyWrap.clientHeight) >= (bodyWrap.scrollHeight - 30);
+            const previousTop = bodyWrap ? bodyWrap.scrollTop : 0;
+            const nearBottom = bodyWrap && bodyWrap.clientHeight > 0 && (bodyWrap.scrollTop + bodyWrap.clientHeight) >= (bodyWrap.scrollHeight - 30);
             bodyLines.insertAdjacentHTML('beforeend', g._new.map(lineHtml).join(''));
-            if (nearBottom && bodyWrap) bodyWrap.scrollTop = bodyWrap.scrollHeight;
+            if (bodyWrap) bodyWrap.scrollTop = nearBottom ? bodyWrap.scrollHeight : previousTop;
           }
         }
         g._new = [];
       }
     } catch (err) {
-      if (err.message !== 'Nicht authentifiziert') {
-        box.innerHTML = `<span class="pill err">Fehler: ${esc(err.message)}</span>`;
+      if (generation === logsGeneration && room === logsRoom && err.message !== 'Nicht authentifiziert') {
+        // Ein voruebergehender Netzfehler darf die gelesenen Logs nicht loeschen.
+        box.title = 'Live-Aktualisierung fehlgeschlagen: ' + err.message;
+        if (!box.querySelector('.log-guest')) {
+          box.innerHTML = `<span class="pill err">Fehler: ${esc(err.message)}</span>`;
+        }
       }
+    } finally {
+      if (logsRequest === request) logsRequest = null;
     }
   }
 
@@ -2016,6 +2077,7 @@
   });
 
   function closeLogs() {
+    logsGeneration++;
     $('logModalBg').style.display = 'none';
     logsRoom = null;
     if (logsTimer) { clearInterval(logsTimer); logsTimer = null; }
@@ -2236,7 +2298,7 @@
     if (!shown) {
       html += `<div class="empty">Keine Aufnahme in diesem Zustand. Filter „Alle“ zeigt wieder alles.</div>`;
     }
-    content.innerHTML = html;
+    replaceLiveContent(content, html);
     roomsDefaultApplied = true;
     restoreRoomAccordions();
   }
@@ -2283,16 +2345,16 @@
     if (!btn) return;
     const { room, guest, session } = btn.dataset;
     const label = btn.dataset.label || session;
-    if (!confirm(`Aufnahme „${label}“ endgültig löschen? Chunks, WAV und Marker werden entfernt.`)) return;
+    if (!confirm(PodcastUX.t('delete_session_confirm'))) return;
     btn.disabled = true;
     try {
       const res = await apiFetch(
-        `${SERVER}/admin/session/${encodeURIComponent(room)}/${encodeURIComponent(guest)}/${encodeURIComponent(session)}`,
-        { method: 'DELETE' });
+        `${SERVER}/api/studio/session/${encodeURIComponent(room)}/${encodeURIComponent(session)}/delete`,
+        { method: 'POST' });
       if (!res.ok) throw new Error('HTTP ' + res.status);
       // Zeile sofort entfernen, damit kein Zombie-Eintrag stehen bleibt.
       lastSessions = lastSessions.filter(
-        s => !(s.room === room && s.guest === guest && s.session === session));
+        s => !(s.room === room && s.session === session));
       renderSessions({ force: true });
       load();
     } catch (err) { alert('Fehler: ' + err.message); btn.disabled = false; }
@@ -2324,5 +2386,8 @@
   setInterval(load, 15000);
 })();
 </script>
+
+<script src="/jitsi/admin.js" defer></script>
+<script src="/assets/audio-profiles.js" defer></script>
 </body>
 </html>

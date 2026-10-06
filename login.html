@@ -4,18 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title data-i18n="login.title">Login · Podcast Studio</title>
-<script>
-// Sprint 3: Branding kommt serverseitig im <head> (siehe BRANDING-Block oben).
-// Beim ersten Paint stimmen --brand/--brand-hover/--brand-on bereits -> kein
-// Aufblitzen der Default-Farbe, kein Verstecken der Seite.
-(() => {
-  const b = window.__BRANDING__;
-  if (!b || !b.ok) return;
-  try {
-    if (b.name) document.title = document.title.replace(/Podcast Studio/, b.name);
-  } catch {}
-})();
-</script>
 <style>
   :root {
     --bg:     #0f1115;

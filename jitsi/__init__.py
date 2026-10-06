@@ -1,0 +1,1 @@
+"""Open Podcast Jitsi integration."""

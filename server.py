@@ -28,6 +28,7 @@ ADMIN_PASSWORD_HASH in .env is NOT used. Change passwords in the Admin panel.
 Use HTTPS and review access controls before a public deployment.
 """
 
+import asyncio
 import hmac
 import json
 import os
@@ -57,10 +58,18 @@ from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
 # Optionale Abhaengigkeiten
 # ---------------------------------------------------------------------------
 try:
-    from passlib.hash import bcrypt as _bcrypt
-    _HAVE_BCRYPT = True
+    import bcrypt as _bcrypt_impl
+    class PasswordHash:
+        @staticmethod
+        def hash(value):
+            return _bcrypt_impl.hashpw(value.encode(), _bcrypt_impl.gensalt()).decode()
+        @staticmethod
+        def verify(value, encoded):
+            return _bcrypt_impl.checkpw(value.encode(), encoded.encode())
+    _bcrypt=PasswordHash
+    _HAVE_BCRYPT=True
 except ImportError:
-    _HAVE_BCRYPT = False
+    _HAVE_BCRYPT=False
 
 try:
     from itsdangerous import BadSignature, SignatureExpired, TimestampSigner
@@ -78,7 +87,7 @@ except ImportError:
 def _check_deps():
     missing = []
     if not _HAVE_BCRYPT:
-        missing.append("passlib[bcrypt]")
+        missing.append("bcrypt")
     if not _HAVE_ITSDANGEROUS:
         missing.append("itsdangerous")
     if missing:
@@ -103,7 +112,7 @@ SESSION_MAX_AGE: int     = int(os.environ.get("SESSION_MAX_AGE_HOURS", "12")) * 
 # Defaults gelten nur beim allerersten Start.
 CONFIG_PATH = None  # wird nach BASE-Definition gesetzt
 
-COOKIE_NAME = "ps_session"
+COOKIE_NAME = "ps_session"  # Use a dedicated application origin.
 
 
 # ---------------------------------------------------------------------------
@@ -115,7 +124,7 @@ COOKIE_NAME = "ps_session"
 # Passwoerter werden als bcrypt-Hash in auth.json gespeichert und sind
 # ueber das Admin-Panel zuruecksetzbar -- ohne .env-Edit / Neustart.
 AUTH_PATH = None  # nach BASE gesetzt
-_AUTH_LOCK = threading.Lock()
+_AUTH_LOCK = threading.RLock()
 
 
 def _hash_pw(pw: str) -> str:
@@ -123,27 +132,31 @@ def _hash_pw(pw: str) -> str:
 
 
 def _auth_load() -> dict:
-    try:
+    # Fail closed for a corrupt existing store; never reset credentials silently.
+    with _AUTH_LOCK:
         if AUTH_PATH and AUTH_PATH.exists():
             data = json.loads(AUTH_PATH.read_text())
-            if data.get("admin_hash") and data.get("host_hash"):
-                return data
-    except Exception:
-        pass
-    # Erstinstallation: Standard-Passwoerter (Feature 14: "CHANGEME!")
-    data = {
-        "admin_hash": _hash_pw(DEFAULT_ADMIN_PASSWORD),
-        "host_hash":  _hash_pw(DEFAULT_HOST_PASSWORD),
-    }
-    _auth_save(data)
-    return data
+            if not all(isinstance(data.get(k), str) and data[k] for k in ("admin_hash", "host_hash")):
+                raise RuntimeError("Invalid credential store; restore its backup")
+            return data
+        data = {"admin_hash": _hash_pw(DEFAULT_ADMIN_PASSWORD), "host_hash": _hash_pw(DEFAULT_HOST_PASSWORD)}
+        _auth_save(data)
+        return data
 
 
 def _auth_save(data: dict):
     if AUTH_PATH is None:
         return
     with _AUTH_LOCK:
-        AUTH_PATH.write_text(json.dumps(data, indent=2))
+        fd, temporary = tempfile.mkstemp(prefix=".auth-", dir=AUTH_PATH.parent)
+        try:
+            with os.fdopen(fd, "w") as out:
+                json.dump(data, out, indent=2)
+                out.flush()
+                os.fsync(out.fileno())
+            os.replace(temporary, AUTH_PATH)
+        finally:
+            if os.path.exists(temporary): os.unlink(temporary)
 
 
 def _check_password(pw: str) -> str | None:
@@ -164,12 +177,21 @@ def _check_password(pw: str) -> str | None:
 
 def _set_password(role: str, new_pw: str):
     if role not in ("admin", "host"):
-        raise HTTPException(400, "Rolle muss 'admin' oder 'host' sein")
+        raise HTTPException(400, "Invalid password role")
     if not new_pw or len(new_pw) < 4:
-        raise HTTPException(400, "Passwort muss mindestens 4 Zeichen haben")
-    data = _auth_load()
-    data[f"{role}_hash"] = _hash_pw(new_pw)
-    _auth_save(data)
+        raise HTTPException(400, "Password must contain at least 4 characters")
+    if len(new_pw.encode()) > 72:
+        raise HTTPException(422,"ux.password_too_long")
+    new_hash = _hash_pw(new_pw)
+    # The entire read/modify/atomic-write transaction is serialized, not just write().
+    with _AUTH_LOCK:
+        data = _auth_load()
+        other = "host" if role == "admin" else "admin"
+        if _bcrypt.verify(new_pw, data[other + "_hash"]):
+            raise HTTPException(409, "ux.password_distinct")
+        data[role + "_hash"] = new_hash
+        _auth_save(data)
+
 
 # ---------------------------------------------------------------------------
 # Pfade / Konstanten
@@ -186,8 +208,11 @@ DEFAULT_LOCALE = "de"   # Quellsprache der Oberflaeche
 
 # Keep mutable runtime data separate from the application code. This allows
 # Docker deployments to mount one persistent volume at DATA_DIR.
-DATA_DIR   = Path(os.environ.get("DATA_DIR", str(BASE))).resolve()
-DATA_DIR.mkdir(parents=True, exist_ok=True)
+if not os.environ.get("DATA_DIR"):
+    raise RuntimeError("Set DATA_DIR to the existing persistent data directory before starting")
+DATA_DIR   = Path(os.environ["DATA_DIR"]).resolve()
+if not DATA_DIR.is_dir():
+    raise RuntimeError("DATA_DIR must be an existing directory; create it before starting")
 UPLOADS    = DATA_DIR / "uploads"
 UPLOADS.mkdir(parents=True, exist_ok=True)
 # Verwaltete Branding-Dateien (Logo/Favicon) statt Data-URLs in config.json.
@@ -2000,10 +2025,6 @@ def _branding_asset(kind: str) -> dict | None:
     preset_key = str(cfg.get("brand_preset") or DEFAULT_PRESET)
     per_preset = cfg.get("global_preset_assets") or {}
     meta = (per_preset.get(preset_key) or {}).get(kind)
-    # Einmaliger Legacy-Fallback nur fuer das Default-Preset. Andernfalls
-    # wuerde ein fehlendes Logo versehentlich das Logo eines anderen Presets zeigen.
-    if not isinstance(meta, dict) and not per_preset and preset_key == DEFAULT_PRESET:
-        meta = cfg.get(f"brand_{kind}_asset")
     if not isinstance(meta, dict):
         return None
     fname = str(meta.get("file") or "")
@@ -2144,7 +2165,6 @@ def _room_preset(room: str, cfg: dict | None = None) -> dict | None:
 def _branding_public() -> dict:
     """Was alle Seiten (und das Admin-Panel) ueber das Branding wissen muessen."""
     cfg = _cfg_load()
-    legacy = str(cfg.get("brand_favicon", "") or "")
     logo = _branding_asset("logo")
     fav = _branding_asset("favicon")
     tok = _theme_tokens(cfg)
@@ -2153,7 +2173,7 @@ def _branding_public() -> dict:
         "name":  cfg.get("brand_name", "Podcast Studio"),
         "color": tok["brand"],
         # favicon bleibt aus Kompatibilitaet ein einzelnes URL-Feld.
-        "favicon": _branding_asset_url("favicon") or legacy,
+        "favicon": _branding_asset_url("favicon"),
         "logo":    _branding_asset_url("logo"),
         "theme": tok,
         "presets": [
@@ -2167,7 +2187,6 @@ def _branding_public() -> dict:
             "logo":       {**logo, "url": _branding_asset_url("logo")} if logo else None,
             "favicon":    {**fav, "url": _branding_asset_url("favicon")} if fav else None,
         },
-        "legacy_favicon": bool(legacy and not fav),
     }
 
 
@@ -2181,7 +2200,7 @@ def _branding_head(room: str | None = None) -> str:
     cfg = _cfg_load()
     tok = _theme_tokens(cfg)
     name    = str(cfg.get("brand_name", "Podcast Studio"))
-    favicon = _branding_asset_url("favicon") or str(cfg.get("brand_favicon", ""))
+    favicon = _branding_asset_url("favicon")
     logo    = _branding_asset_url("logo")
 
     # Ein Raum verweist auf ein vom Admin vorbereitetes Preset. Das Preset
@@ -3234,123 +3253,10 @@ def health():
 
 # ── Gast-API (offen) ─────────────────────────────────────────────────────────
 
-@app.put("/upload/{room}/{guest}/{session}/{chunk}")
-async def upload(room, guest, session, chunk, request: Request, ext: str = "pcm"):
-    if not re.match(r"^\d{6}$", chunk):
-        raise HTTPException(400, "Chunk-Name muss 6-stellige Zahl sein")
-    # Feature 9: Audio-Chunks kommen als rohes PCM (.pcm), Video-Chunks als
-    # WebM-Container-Fragmente (.webm). Andere Endungen werden abgelehnt.
-    if ext not in ("pcm", "webm"):
-        raise HTTPException(400, "Unbekannte Chunk-Endung")
-    dest_dir = safe(room, guest, session)
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / ("chunk-" + chunk + "." + ext)
-    data = await request.body()
-    try:
-        dest.write_bytes(data)
-    except OSError as e:
-        # Roadmap 6: Schreibfehler (z. B. volles Volume) muss der Admin sehen.
-        _diag_bump("upload_errors")
-        _error_record("upload", "Chunk konnte nicht geschrieben werden",
-                      room=room, detail=f"{guest}/{session}/{chunk}: {e}")
-        raise HTTPException(507, "Chunk konnte nicht gespeichert werden")
-    _diag_bump("upload_chunks")
-    _diag_bump("upload_bytes", len(data))
-    return {"ok": True, "bytes": len(data), "path": str(dest.relative_to(BASE))}
 
 
-@app.post("/meta/{room}/{guest}/{session}")
-async def meta(room, guest, session, request: Request):
-    dest_dir = safe(room, guest, session)
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
-    try:
-        sr = int(payload.get("sample_rate") or DEFAULT_SAMPLE_RATE)
-    except (TypeError, ValueError):
-        sr = DEFAULT_SAMPLE_RATE
-    try:
-        ch = int(payload.get("channels") or DEFAULT_CHANNELS)
-    except (TypeError, ValueError):
-        ch = DEFAULT_CHANNELS
-    sr = max(8000, min(192000, sr))
-    ch = max(1, min(2, ch))
-    (dest_dir / "meta.json").write_text(json.dumps({"sample_rate": sr, "channels": ch}))
-    return {"ok": True, "sample_rate": sr, "channels": ch}
 
 
-@app.post("/finish/{room}/{guest}/{session}")
-async def finish(room, guest, session):
-    dest_dir = safe(room, guest, session)
-    if not dest_dir.exists():
-        raise HTTPException(404, "Session nicht gefunden")
-
-    pcm_chunks  = sorted(dest_dir.glob("chunk-*.pcm"))
-    webm_chunks = sorted(dest_dir.glob("chunk-*.webm"))
-
-    if pcm_chunks:
-        sample_rate, channels = DEFAULT_SAMPLE_RATE, DEFAULT_CHANNELS
-        meta_file = dest_dir / "meta.json"
-        if meta_file.exists():
-            try:
-                m           = json.loads(meta_file.read_text())
-                sample_rate = int(m.get("sample_rate", sample_rate))
-                channels    = int(m.get("channels", channels))
-            except Exception:
-                pass
-        wav_path = _write_wav_from_pcm(
-            pcm_chunks, dest_dir, sample_rate, channels,
-            _target_recording_frames(room, session, sample_rate))
-        n_chunks = len(pcm_chunks)
-    elif webm_chunks:
-        wav_path, tmp_webm = _transcode_webm_to_wav(webm_chunks, dest_dir)
-        n_chunks = len(webm_chunks)
-        # Feature 9: H.264/MP4-Fallback erzeugen (falls Video vorhanden), dann aufraeumen.
-        try:
-            _maybe_make_mp4(tmp_webm, dest_dir)
-        except Exception as e:
-            print("[video] Fallback-Fehler:", e)
-        try:
-            tmp_webm.unlink()
-        except OSError:
-            pass
-    else:
-        _diag_bump("finish_errors")
-        _error_record("merge", "Finish ohne Chunks angefordert",
-                      room=room, detail=f"{guest}/{session}")
-        raise HTTPException(404, "Keine Chunks vorhanden")
-
-    _diag_bump("finish_ok")
-
-    # Feature 7: Marker in WAV schreiben (nur Marker dieser Session)
-    try:
-        _wav_add_markers(wav_path, _marker_list(room, session))
-    except Exception as e:
-        _error_record("markers", "Marker konnten nicht in die WAV geschrieben werden",
-                      room=room, detail=str(e))
-
-    with _LOCK:
-        r = ROOMS.get(room)
-        if r and guest in r["guests"]:
-            r["guests"][guest]["state"] = "done"
-            r["guests"][guest]["queue"] = 0
-
-    # Host-Panels live ueber den Abschluss informieren.
-    try:
-        await _broadcast_host_status(room)
-    except Exception:
-        pass
-
-    # Nach jedem fertiggestellten Gast die gemeinsame Session-MP3 aktualisieren.
-    # Bereits fertige Gastspuren werden dabei zusammen mit der neuen Spur gemischt.
-    mixdown = _ensure_session_mixdown(room, session, force=True)
-
-    return {"ok": True, "chunks": n_chunks,
-            "merged": str(wav_path.relative_to(BASE)),
-            "mixdown": f"/host/mixdown/{room}/{session}" if mixdown else None,
-            "size_mb": round(wav_path.stat().st_size / 1024 / 1024, 2)}
 
 
 # ── Host-Lock-API (Roadmap 5) ────────────────────────────────────────────────
@@ -3613,6 +3519,8 @@ async def host_settings(room, request: Request, _auth=Depends(require_auth)):
             "server_time": now_ms})
     with _LOCK:
         r = _room(room)
+        if "audio_only" in payload and r.get("rec_state") == "recording":
+            raise HTTPException(409, "ux.recording_busy")
         s = r["settings"]
         if "audio_only" in payload:
             s["audio_only"] = bool(payload.get("audio_only"))
@@ -3829,13 +3737,13 @@ def download_recording(room, guest, session, _role=Depends(require_admin)):
 # ── Admin: Globale Konfig ────────────────────────────────────────────────────
 
 @app.get("/admin/config")
-def admin_config_get(_auth=Depends(require_auth)):
+def admin_config_get(_auth=Depends(require_admin)):
     """Globale Einstellungen lesen."""
     return {"ok": True, "config": _cfg_load()}
 
 
 @app.post("/admin/config")
-async def admin_config_set(request: Request, _auth=Depends(require_auth)):
+async def admin_config_set(request: Request, _auth=Depends(require_admin)):
     """Globale Einstellungen schreiben.
     Body: { token_days?: int, recording_days?: int }
     """
@@ -4010,46 +3918,12 @@ async def admin_set_password(request: Request, _role=Depends(require_admin)):
         payload = {}
     target = str(payload.get("role", ""))
     new_pw = str(payload.get("new_password", ""))
-    _set_password(target, new_pw)
+    await asyncio.to_thread(_set_password, target, new_pw)
     return {"ok": True, "role": target}
 
 
 # ── Admin: Einzelne Aufnahme loeschen (Feature 3) ────────────────────────────
 
-@app.delete("/admin/session/{room}/{guest}/{session}")
-def admin_delete_session(room, guest, session, _role=Depends(require_admin)):
-    """Loescht den kompletten Session-Ordner inkl. Chunks + full.wav."""
-    dest_dir = safe(room, guest, session)
-    uploads_abs = UPLOADS.resolve()
-    try:
-        dest_dir.resolve().relative_to(uploads_abs)
-    except ValueError:
-        raise HTTPException(400, "Ungueltiger Pfad")
-    if not dest_dir.exists():
-        raise HTTPException(404, "Session nicht gefunden")
-    shutil.rmtree(dest_dir)
-    # Mixdown nach dem Loeschen einer Gastspur neu aufbauen bzw. entfernen.
-    remaining = _session_wavs(room, session)
-    mix_path = _mixdown_path(room, session)
-    if remaining:
-        _ensure_session_mixdown(room, session, force=True)
-    else:
-        try:
-            if mix_path.exists():
-                mix_path.unlink()
-            if mix_path.parent.exists() and not any(mix_path.parent.iterdir()):
-                mix_path.parent.rmdir()
-        except OSError:
-            pass
-    _prune_session_metadata(room, session)
-    # leere Eltern-Ordner aufraeumen
-    for d in (dest_dir.parent, dest_dir.parent.parent):
-        try:
-            if d.exists() and d != UPLOADS and not any(d.iterdir()):
-                d.rmdir()
-        except Exception:
-            pass
-    return {"ok": True, "deleted": f"{room}/{guest}/{session}"}
 
 
 # ── Rollengetrennte Audio-Ausgabe ───────────────────────────────────────────
@@ -4076,20 +3950,6 @@ def admin_preview_recording(room, guest, session, _role=Depends(require_admin)):
                         headers={"Content-Disposition": "inline"})
 
 
-@app.get("/admin/session-export/{room}/{session}")
-def admin_export_session_zip(room, session, _role=Depends(require_admin)):
-    """ZIP mit allen Gast-WAVs genau einer Session; nur fuer Admins."""
-    wavs = _session_wavs(room, session)
-    if not wavs:
-        raise HTTPException(404, "Keine fertigen WAVs in dieser Session")
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for guest, wav in wavs:
-            zf.write(str(wav), f"{room}_{session}/{guest}.wav")
-    buf.seek(0)
-    fname = f"{room}_{session}_wavs.zip"
-    return StreamingResponse(buf, media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 
 # ── ZIP-Export aller Spuren eines Raums (Feature 4) ──────────────────────────
@@ -4386,140 +4246,6 @@ def admin_diagnostics_logs(_role=Depends(require_admin),
             "newest_ts": rows[0]["ts"] if rows else since}
 
 
-@app.post("/admin/rebuild-wav/{room}/{guest}/{session}")
-async def admin_rebuild_wav(room, guest, session, request: Request,
-                            _role=Depends(require_admin)):
-    """Baut `full.wav` aus den vorhandenen Chunks neu.
-
-    Anwendungsfall: der Gast hat die Verbindung verloren, bevor `/finish` lief,
-    oder die Zusammenfuehrung ist fehlgeschlagen. Die Chunks liegen aber noch
-    auf der Platte.
-
-    Body (optional): { "force": bool }
-      force=false (Standard): eine vorhandene, gueltige WAV wird NICHT
-      ueberschrieben -- der Aufruf meldet stattdessen 409.
-    """
-    check_ident(room, guest, session)
-    dest_dir = safe(room, guest, session)
-    if not dest_dir.exists():
-        raise HTTPException(404, "Session nicht gefunden")
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
-    force = bool(payload.get("force"))
-
-    wav_path = dest_dir / "full.wav"
-    existed = wav_path.exists() and wav_path.stat().st_size > 44
-    if existed and not force:
-        raise HTTPException(409, "Es existiert bereits eine WAV. "
-                                 "Zum Ueberschreiben force=true senden.")
-
-    pcm_chunks = sorted(dest_dir.glob("chunk-*.pcm"))
-    webm_chunks = sorted(dest_dir.glob("chunk-*.webm"))
-    if not pcm_chunks and not webm_chunks:
-        raise HTTPException(404, "Keine Chunks vorhanden -- Neuaufbau nicht moeglich")
-
-    # Vor dem Ueberschreiben sichern, damit ein Fehlschlag nichts vernichtet.
-    backup = None
-    if existed:
-        backup = dest_dir / "full.wav.bak"
-        try:
-            shutil.copy2(wav_path, backup)
-        except OSError as e:
-            _error_record("rebuild", "Sicherungskopie fehlgeschlagen",
-                          room=room, detail=str(e))
-            backup = None
-
-    try:
-        if pcm_chunks:
-            sample_rate, channels = DEFAULT_SAMPLE_RATE, DEFAULT_CHANNELS
-            meta_file = dest_dir / "meta.json"
-            if meta_file.exists():
-                try:
-                    m = json.loads(meta_file.read_text())
-                    sample_rate = int(m.get("sample_rate", sample_rate))
-                    channels = int(m.get("channels", channels))
-                except Exception:
-                    pass
-            wav_path = _write_wav_from_pcm(
-            pcm_chunks, dest_dir, sample_rate, channels,
-            _target_recording_frames(room, session, sample_rate))
-            n_chunks, kind = len(pcm_chunks), "pcm"
-        else:
-            wav_path, tmp_webm = _transcode_webm_to_wav(webm_chunks, dest_dir)
-            n_chunks, kind = len(webm_chunks), "webm"
-            try:
-                _maybe_make_mp4(tmp_webm, dest_dir)
-            except Exception as e:
-                _error_record("rebuild", "MP4-Fallback fehlgeschlagen",
-                              room=room, detail=str(e))
-            try:
-                tmp_webm.unlink()
-            except OSError:
-                pass
-    except HTTPException:
-        # Rueckrollen: der alte Stand ist besser als eine kaputte Datei.
-        if backup and backup.exists():
-            try:
-                shutil.move(str(backup), str(wav_path))
-            except OSError:
-                pass
-        _diag_bump("finish_errors")
-        _error_record("rebuild", "WAV-Neuaufbau fehlgeschlagen",
-                      room=room, detail=f"{guest}/{session}")
-        raise
-    except Exception as e:
-        if backup and backup.exists():
-            try:
-                shutil.move(str(backup), str(wav_path))
-            except OSError:
-                pass
-        _diag_bump("finish_errors")
-        _error_record("rebuild", "WAV-Neuaufbau fehlgeschlagen",
-                      room=room, detail=f"{guest}/{session}: {e}")
-        raise HTTPException(500, f"WAV-Neuaufbau fehlgeschlagen: {e}")
-
-    # Marker dieser Session wieder einbetten.
-    try:
-        _wav_add_markers(wav_path, _marker_list(room, session))
-    except Exception as e:
-        _error_record("rebuild", "Marker konnten nicht eingebettet werden",
-                      room=room, detail=str(e))
-
-    if backup and backup.exists():
-        try:
-            backup.unlink()
-        except OSError:
-            pass
-
-    with _LOCK:
-        r = ROOMS.get(room)
-        if r and guest in r.get("guests", {}):
-            r["guests"][guest]["state"] = "done"
-            r["guests"][guest]["queue"] = 0
-
-    try:
-        await _broadcast_host_status(room)
-    except Exception:
-        pass
-
-    # Session-Mixdown neu erzeugen, damit die Vorschau zur neuen Spur passt.
-    mixdown = None
-    try:
-        mixdown = _ensure_session_mixdown(room, session, force=True)
-    except Exception as e:
-        _error_record("rebuild", "Mixdown-Aktualisierung fehlgeschlagen",
-                      room=room, detail=str(e))
-
-    _diag_bump("wav_rebuilds")
-    size_mb = round(wav_path.stat().st_size / 1024 / 1024, 2)
-    _error_record("rebuild", f"WAV neu aufgebaut ({n_chunks} Chunks, {size_mb} MB)",
-                  room=room, detail=f"{guest}/{session}")
-    return {"ok": True, "room": room, "guest": guest, "session": session,
-            "chunks": n_chunks, "kind": kind, "replaced": existed,
-            "size_mb": size_mb,
-            "mixdown": f"/host/mixdown/{room}/{session}" if mixdown else None}
 
 
 # ── Raum-Management: Liste / Archivieren / Loeschen (Feature 6) ───────────────
@@ -5468,139 +5194,19 @@ def protected_upload(asset_path: str, _auth=Depends(require_auth)):
 
 # ── Auto-Lösch-Task ───────────────────────────────────────────────────────────
 
-def _cleanup_old_recordings():
-    """
-    Loescht Aufnahme-Ordner (uploads/<room>/<guest>/<session>/) die aelter
-    als recording_days Tage sind. Laeuft als Hintergrund-Thread alle 6 Stunden.
-
-    Sicherheit:
-    - Pfade werden mit UPLOADS.resolve() abgeglichen (kein Path-Traversal).
-    - Leere Gast- und Raum-Ordner werden ebenfalls aufgeraeumt.
-    - Bei recording_days=0 wird NICHT geloescht.
-    """
-    while True:
-        try:
-            days = int(_cfg_get("recording_days"))
-            if days > 0 and UPLOADS.exists():
-                cutoff = time.time() - days * 86400
-                uploads_abs = UPLOADS.resolve()
-                deleted = 0
-                for room_dir in list(UPLOADS.iterdir()):
-                    if not room_dir.is_dir():
-                        continue
-                    for guest_dir in list(room_dir.iterdir()):
-                        if not guest_dir.is_dir():
-                            continue
-                        for sess_dir in list(guest_dir.iterdir()):
-                            if not sess_dir.is_dir():
-                                continue
-                            # Sicherheitscheck: Pfad muss unter UPLOADS liegen
-                            try:
-                                sess_dir.resolve().relative_to(uploads_abs)
-                            except ValueError:
-                                continue
-                            # Zeitstempel: meta.json created_at oder Ordner-mtime
-                            ref_time = sess_dir.stat().st_mtime
-                            meta_f = sess_dir / "meta.json"
-                            if meta_f.exists():
-                                ref_time = min(ref_time, meta_f.stat().st_mtime)
-                            if ref_time < cutoff and not _session_in_use(room_dir.name, sess_dir.name):
-                                try:
-                                    shutil.rmtree(sess_dir)
-                                    _prune_session_metadata(room_dir.name, sess_dir.name)
-                                    mix = _mixdown_path(room_dir.name, sess_dir.name)
-                                    mix.unlink(missing_ok=True)  # rebuild from surviving tracks on demand
-                                    deleted += 1
-                                except Exception as e:
-                                    print(f"[cleanup] Fehler beim Loeschen von {sess_dir}: {e}")
-                        # Leere Gast-Ordner entfernen
-                        try:
-                            if guest_dir.exists() and not any(guest_dir.iterdir()):
-                                guest_dir.rmdir()
-                        except Exception:
-                            pass
-                    # Leere Raum-Ordner entfernen
-                    try:
-                        if room_dir.exists() and not any(room_dir.iterdir()):
-                            room_dir.rmdir()
-                    except Exception:
-                        pass
-                if deleted:
-                    print(f"[cleanup] {deleted} alte Aufnahme(n) geloescht (>{days} Tage).")
-            # Repair pre-existing orphan markers too, even when retention is disabled.
-            with _DB_LOCK, _db_conn() as conn:
-                orphan_candidates = conn.execute(
-                    "SELECT room,session FROM markers UNION SELECT room,session FROM recording_sessions").fetchall()
-            for row in orphan_candidates:
-                if SAFE.fullmatch(row["room"]) and SAFE.fullmatch(row["session"]):
-                    _prune_session_metadata(row["room"], row["session"])
-        except Exception as e:
-            print(f"[cleanup] Unerwarteter Fehler: {e}")
-        # Alle 6 Stunden pruefen
-        time.sleep(6 * 3600)
 
 
-def _cleanup_old_chunks():
-    """Feature 10: Loescht rohe Chunk-Dateien (chunk-*.pcm / chunk-*.webm) die
-    aelter als chunk_hours Stunden sind. full.wav bleibt unberuehrt. So werden
-    abgebrochene/halbe Sessions, deren Chunks nie zu WAV zusammengefuegt wurden,
-    nach der eingestellten Frist (Standard 72h) aufgeraeumt.
-    Im Admin-Panel einstellbar. Laeuft alle Stunde.
-    """
-    while True:
-        try:
-            hours = int(_cfg_get("chunk_hours") or 72)
-            if hours > 0 and UPLOADS.exists():
-                cutoff = time.time() - hours * 3600
-                deleted = 0
-                for chunk in UPLOADS.rglob("chunk-*"):
-                    if not chunk.is_file():
-                        continue
-                    if chunk.suffix not in (".pcm", ".webm"):
-                        continue
-                    try:
-                        if chunk.stat().st_mtime < cutoff:
-                            chunk.unlink()
-                            deleted += 1
-                    except Exception:
-                        pass
-                if deleted:
-                    print(f"[chunk-cleanup] {deleted} alte Chunk-Datei(en) geloescht (>{hours}h).")
-        except Exception as e:
-            print(f"[chunk-cleanup] Fehler: {e}")
-        time.sleep(3600)
 
 
-def _cleanup_old_logs():
-    """Loescht persistente Gast-Console-Logs (Tabelle guest_logs) die aelter
-    als log_days Tage sind. Im Admin-Panel einstellbar. Bei log_days=0 wird
-    NICHT geloescht. Laeuft alle 6 Stunden.
-    """
-    while True:
-        try:
-            days = int(_cfg_get("log_days") or 0)
-            if days > 0:
-                cutoff = time.time() - days * 86400
-                with _DB_LOCK, _db_conn() as conn:
-                    cur = conn.execute(
-                        "DELETE FROM guest_logs WHERE ts < ?", (cutoff,))
-                    # Clipping-Ereignisse folgen derselben Aufbewahrungsfrist.
-                    conn.execute("DELETE FROM clip_events WHERE ts < ?", (cutoff,))
-                    conn.commit()
-                    if cur.rowcount:
-                        print(f"[log-cleanup] {cur.rowcount} alte Log-Zeile(n) geloescht (>{days} Tage).")
-        except Exception as e:
-            print(f"[log-cleanup] Fehler: {e}")
-        time.sleep(6 * 3600)
 
 
-def _start_cleanup_thread():
-    threading.Thread(target=_cleanup_old_recordings, daemon=True, name="cleanup").start()
-    threading.Thread(target=_cleanup_old_chunks, daemon=True, name="chunk-cleanup").start()
-    threading.Thread(target=_cleanup_old_logs, daemon=True, name="log-cleanup").start()
 
 
-_start_cleanup_thread()
+# Recording integrity and call orchestration.
+from studio_core import install as _install_studio
+STUDIO = _install_studio(globals())
+from jitsi.jitsi import install as install_jitsi
+JITSI = install_jitsi(globals(), STUDIO)
 
 
 # ── Presence tick (host status push even without guest heartbeats) ───────────

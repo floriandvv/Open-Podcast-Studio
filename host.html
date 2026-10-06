@@ -8,22 +8,10 @@
 <html lang="de">
 <head>
 <meta charset="UTF-8">
+<script src="/assets/ux.js"></script>
+<script src="/jitsi/call.js"></script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Podcast Host-Studio</title>
-<script>
-// Sprint 3: Branding kommt serverseitig im <head> (siehe BRANDING-Block oben).
-// Beim ersten Paint stimmen --brand/--brand-hover/--brand-on bereits -> kein
-// Aufblitzen der Default-Farbe, kein Verstecken der Seite.
-// Dieses Snippet setzt nur noch Titel + Favicon aus window.__BRANDING__ und
-// dient als Fallback, falls die Seite mal ohne SSR ausgeliefert wird.
-(() => {
-  const b = window.__BRANDING__;
-  if (!b || !b.ok) return;
-  try {
-    if (b.name) document.title = document.title.replace(/Podcast Studio/, b.name);
-  } catch {}
-})();
-</script>
 <style>
   :root {
     --bg: #0f1115; --panel: #181b22; --panel2: #11141a; --border: #2a2f3a;
@@ -661,6 +649,9 @@
     return id;
   })();
 
+  window.openPodcastHostCall = PodcastJitsi.mountHost({
+    room, clientId: () => CLIENT_ID, canControl: () => lockMode === 'control'
+  });
   let lockMode = 'unknown';   // 'unknown' | 'control' | 'readonly'
   let lockInfo = null;        // letzter Lock-Zustand vom Server
   let isAdmin = false;
@@ -815,9 +806,7 @@
   })();
 
   // ── Token / Invite ────────────────────────────────────────────────────────
-  $('inviteBtn').addEventListener('click', () => {
-    $('modalBg').classList.add('show');
-  });
+
   $('closeModal').addEventListener('click', () => $('modalBg').classList.remove('show'));
   $('modalBg').addEventListener('click', e => {
     if (e.target === $('modalBg')) $('modalBg').classList.remove('show');
@@ -1420,7 +1409,7 @@
     });
   })();
 
-  // Gemeinsame Render-Funktion fuer WebSocket-Push UND HTTP-Poll-Fallback.
+  // Gemeinsame Render-Funktion fuer WebSocket-Push.
   // Erwartet das Status-Objekt (server_time, guests, markers, settings, command).
   async function renderStatus(data) {
     if (!data) return;
@@ -2364,5 +2353,6 @@
   setInterval(loadHistory, 15000);
 })();
 </script>
+
 </body>
 </html>

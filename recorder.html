@@ -1,23 +1,12 @@
 <!doctype html>
 <html lang="de">
 <head>
+<script src="/assets/ux.js"></script>
 <meta charset="utf-8" />
+<script src="/assets/recording-media.js"></script>
+<script src="/jitsi/call.js"></script>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title id="pageTitle">Podcast Recorder</title>
-<script>
-// Sprint 3: Branding kommt serverseitig im <head> (siehe BRANDING-Block oben).
-// Beim ersten Paint stimmen --brand/--brand-hover/--brand-on bereits -> kein
-// Aufblitzen der Default-Farbe, kein Verstecken der Seite.
-// Dieses Snippet setzt nur noch Titel + Favicon aus window.__BRANDING__ und
-// dient als Fallback, falls die Seite mal ohne SSR ausgeliefert wird.
-(() => {
-  const b = window.__BRANDING__;
-  if (!b || !b.ok) return;
-  try {
-    if (b.name) document.title = document.title.replace(/Podcast Studio/, b.name);
-  } catch {}
-})();
-</script>
 <style>
   :root {
     --bg: #0f1115;
@@ -458,6 +447,21 @@
     100% { transform: scale(1); opacity: 1; }
   }
   .countdown-overlay .cd-num.pop { animation: cdPop 0.9s ease-out; }
+
+  :root{--guest-gap:16px}
+  [hidden]{display:none!important}
+  body[data-guest-phase="consent"] .wrap > :not(#consentGate){display:none!important}
+  body[data-guest-phase="name"] .wrap > :not(#nameGate){display:none!important}
+  #consentGate{display:flex;flex-direction:column;gap:16px}
+  #consentGate h1,#consentGate p{margin:0}
+  #consentGate input[type=checkbox]{width:auto;margin-right:6px}
+  #topGrid,#bottomStack{display:grid;gap:var(--guest-gap);min-width:0}
+  #recorderUI{gap:var(--guest-gap)!important}
+  #topGrid>.panel,#bottomStack>.panel,#bottomStack>.call-panel{margin:0!important;min-width:0}
+  #bottomStack{width:100%!important;max-width:100%}
+  #durationPanel,#vuWrap{box-sizing:border-box}
+  @media(max-width:759px){body.portrait #topGrid{display:grid;grid-template-columns:minmax(0,1fr)}body.portrait #vuWrap{margin:0!important}}
+
 </style>
 <style>
   .lobby-brand-name{display:block;margin-top:8px;color:var(--text);font-weight:700;font-size:18px}
@@ -466,8 +470,9 @@
 <!-- Branding zuletzt: ueberschreibt die :root-Defaults oben. -->
 <!--BRANDING-->
 </head>
-<body class="audio-only">
+<body class="audio-only" data-guest-phase="consent">
 <main class="wrap" id="main-content" tabindex="-1">
+  <section class="panel" id="consentGate" aria-label="Recording and privacy"><p id="consentLoading" role="status"></p></section>
   <div class="guest-brand-head">
     <div class="lobby-brand" id="lobbyBrand" aria-label="Marke des Aufnahmestudios">
       <img id="lobbyBrandImg" alt="" />
@@ -615,6 +620,7 @@
       </div>
     </div>
 
+    <p id="recordingSafety" class="sub" role="status" hidden></p>
     </div> <!-- /#bottomStack -->
 
   </div>
@@ -629,10 +635,73 @@
 <script>
 (() => {
   // ---------- Config ----------
-  const CHUNK_MS = 5000;                 // 5s pro Chunk
-  const VIDEO_BITRATE = 5_000_000;       // 5 Mbit/s Video
-  const AUDIO_BITRATE = 192_000;         // 192 kbit/s Audio
-  const AUDIO_SAMPLE_RATE = 48000;       // 48 kHz
+  const mediaOwner = new PodcastMedia.MediaOwner();
+  const uploadBudget = new PodcastMedia.UploadBudget();
+  let guestCall = null, recordingStarting = false;
+  let consentPromise = null, recordingOutput = null;
+  let pendingUploadController = null;
+  let CHUNK_MS = 5000;
+  let VIDEO_BITRATE = 5_000_000;
+  let AUDIO_BITRATE = 192_000;
+  let AUDIO_SAMPLE_RATE = 48000;
+  let captureProfile = null, studioPolicy = null, studioGuest = null;
+  let consentGranted = false, diagnosticsConsent = false, storageFault = false;
+  let trackManifest = null, persistChain = Promise.resolve(), finalizing = false;
+  let uploadRate = 0, uploadRetries = 0;
+  let studioEvents = [], lastMonitorTick = Date.now(), maxDurationTimer = null;
+  let releaseRecorderLease = null;
+  const studioEvent = type => { studioEvents.push({type, at: Date.now()}); studioEvents = studioEvents.slice(-200); };
+  const tokenFingerprint = async () => sha256(new TextEncoder().encode(guestToken));
+  async function sha256(data) {
+    const bytes = data instanceof Blob ? await data.arrayBuffer() : data;
+    return [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map(x=>x.toString(16).padStart(2,'0')).join('');
+  }
+  async function studioFetch(url, options = {}) {
+    const controller = new AbortController();
+    const timer = setTimeout(()=>controller.abort(), url.includes('/finish/') ? 1800000 : 60000);
+    try {
+      const response = await fetch(url, {...options, signal:controller.signal,
+        headers:{...options.headers, Authorization:'Bearer '+guestToken}});
+      const data = await response.json().catch(()=>({}));
+      if (!response.ok || data.ok === false) {
+        const error = new Error(typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail || response.status));
+        error.status=response.status; throw error;
+      }
+      return data;
+    } finally { clearTimeout(timer); }
+  }
+  async function loadCaptureProfile() {
+    const value = await studioFetch(`${SERVER}/api/studio/bootstrap/${room}`);
+    captureProfile=value.profile;studioPolicy=value.policy;studioGuest=value.guest;
+    CHUNK_MS=captureProfile.chunk_ms;VIDEO_BITRATE=captureProfile.video_bitrate;
+    AUDIO_BITRATE=captureProfile.audio_bitrate;AUDIO_SAMPLE_RATE=captureProfile.sample_rate;
+    audioOnly=!captureProfile.video;
+    return value;
+  }
+  async function askRecordingConsent() {
+    if (consentGranted) return;
+    if (consentPromise) return consentPromise;
+    consentPromise = showRecordingConsent(); return consentPromise;
+  }
+  async function showRecordingConsent() {
+    document.body.dataset.guestPhase='consent';
+    const {el,t,error}=PodcastUX,panel=$('consentGate');panel.hidden=false;
+    const title=el('h1',t('consent_settings')),text=el('p',studioPolicy.consent_text);
+    text.style.whiteSpace='pre-wrap';
+    const checkbox=el('input',undefined,{type:'checkbox',id:'recordingConsent'}),label=el('label',undefined,{for:'recordingConsent'});
+    label.append(checkbox,document.createTextNode(' '+t('consent_checkbox')));
+    const diag=el('input',undefined,{type:'checkbox',id:'diagnosticConsent'}),diagnostics=el('label',undefined,{for:'diagnosticConsent'});
+    diagnostics.append(diag,document.createTextNode(' '+t('diagnostics_optin')));diagnostics.hidden=!studioPolicy.collect_device_metadata;
+    const button=el('button',t('consent_accept'),{type:'button'}),status=el('p','',{role:'status'});button.disabled=true;
+    checkbox.onchange=()=>button.disabled=!checkbox.checked;
+    panel.replaceChildren(title,text,label,diagnostics,button,status);
+    await new Promise(resolve=>button.onclick=async()=>{
+      if(!checkbox.checked)return;button.disabled=true;
+      try{await studioFetch(`${SERVER}/api/studio/consent/${room}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({accepted:true,digest:studioPolicy.consent_digest})});
+        consentGranted=true;diagnosticsConsent=diag.checked;panel.hidden=true;document.body.dataset.guestPhase='name';$('nameInput').focus();resolve();
+      }catch(e){status.textContent=error(e);button.disabled=false;}
+    });
+  }
   const SERVER = location.origin;        // gleicher Host wie Server
 
   // ---------- Video-Codec-Auswahl (Feature 9) ----------
@@ -650,9 +719,9 @@
       { mime: "video/webm;codecs=vp9,opus", ext: "webm", label: "VP9 / Opus (WebM)" },
       { mime: "video/webm;codecs=vp8,opus", ext: "webm", label: "VP8 / Opus (WebM)" },
       { mime: "video/webm",                 ext: "webm", label: "WebM (Browser-Default)" },
-      // Safari-Fallback: H.264 (teils als MP4-Container).
-      { mime: "video/mp4;codecs=h264,aac",  ext: "webm", label: "H.264 / AAC (Safari-Fallback)" },
-      { mime: "video/mp4",                  ext: "webm", label: "MP4 (Safari-Fallback)" },
+      // Safari-Unterstützung: H.264 (teils als MP4-Container).
+      { mime: "video/mp4;codecs=h264,aac",  ext: "webm", label: "H.264 / AAC" },
+      { mime: "video/mp4",                  ext: "webm", label: "MP4" },
     ];
     for (const c of candidates) {
       if (MediaRecorder.isTypeSupported(c.mime)) return c;
@@ -729,6 +798,8 @@
       const data = await res.json();
       if (!data.ok) { location.href = "/token_error.html"; return false; }
       room = data.room;
+      await loadCaptureProfile();
+      await askRecordingConsent();
       // Sofort in der Lobby anmelden -- noch vor der Namenseingabe.
       lobbyStage = guest ? "named" : "naming";
       startLobbyPresence();
@@ -1169,7 +1240,6 @@
   let micLastResult = null;
   // ID eines aufgeschobenen Wechsels (waehrend laufender Aufnahme, Option A).
   let deferredMicCmd = null;
-  let lastMicCmdIssued = 0;   // Fallback fuer alte Server ohne command_id
   let lastMicCmdId = "";      // Idempotenz fuer eindeutig adressierte Befehle
 
   // Kleiner, unaufdringlicher Toast fuer den Gast.
@@ -1249,15 +1319,8 @@
   function handleMicCommand(mic) {
     if (!mic || !mic.deviceId) return;
     const commandId = String(mic.command_id || "");
-    const issued = (typeof mic.issued_at === "number") ? mic.issued_at : 0;
-    if (commandId) {
-      if (commandId === lastMicCmdId) return;          // exakt dieser Befehl lief schon
-      lastMicCmdId = commandId;
-    } else {
-      if (issued && issued === lastMicCmdIssued) return; // Legacy-Fallback
-      lastMicCmdIssued = issued;
-    }
-
+    if(!commandId || commandId===lastMicCmdId)return;
+    lastMicCmdId=commandId;
     // Eine alte Bestaetigung darf niemals zusammen mit einem neuen Kommando
     // gesendet werden. Sonst koennte sie serverseitig den neuen Befehl loeschen.
     micLastResult = null;
@@ -1289,131 +1352,27 @@
       t.addEventListener("ended", () => {
         if (generation !== previewGeneration) return;   // alter Stream, ignorieren
         if (t.kind === "audio") onMicDisappeared(t.label || currentMicLabel());
+        else {studioEvent("camera_lost");if(isRecording){storageFault=true;stopRecording();}guestCall?.report("source_changed");}
       }, { once: true });
     });
   }
 
   async function startPreview(requestedMicId = "") {
-    const generation = ++previewGeneration;
-    previewRebuilding = true;
-
-    // Auswahl fuer genau diesen Rebind einfrieren. Ein paralleles devicechange-
-    // Event darf einem Host-Kommando nicht nachtraeglich eine andere ID geben.
-    const camId = $("camSel").value;
-    const micId = requestedMicId || $("micSel").value;
-    const oldStream = stream;
-    let candidateStream = null;
-
+    const generation=++previewGeneration;previewRebuilding=true;
     try {
-      // Nur den Stream freigeben, den dieser Aufruf beim Start vorgefunden hat.
-      // Parallel gestartete Rebinds duerfen sich nicht gegenseitig stoppen.
-      if (oldStream && stream === oldStream) {
-        stopVuMeter();
-        oldStream.getTracks().forEach(t => { try { t.stop(); } catch {} });
-        stream = null;
-        $("preview").srcObject = null;
-        await new Promise(r => setTimeout(r, 200));
-      }
-
-      const buildConstraints = (useExact) => ({
-        video: audioOnly ? false : {
-          deviceId: camId ? (useExact ? { exact: camId } : { ideal: camId }) : undefined,
-          width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 }
-        },
-        audio: {
-          deviceId: micId ? (useExact ? { exact: micId } : { ideal: micId }) : undefined,
-          sampleRate: AUDIO_SAMPLE_RATE,
-          channelCount: 2,
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false
-        }
-      });
-
-      try {
-        candidateStream = await navigator.mediaDevices.getUserMedia(buildConstraints(true));
-      } catch (err) {
-        log(`Stream-Start fehlgeschlagen (${err.name}: ${err.message}) — versuche Fallback…`, "err");
-        await new Promise(r => setTimeout(r, 400));
-        try {
-          candidateStream = await navigator.mediaDevices.getUserMedia(buildConstraints(false));
-        } catch (err2) {
-          log(`Zweiter Versuch fehlgeschlagen (${err2.name}). Versuche generisches Gerät…`, "err");
-          await new Promise(r => setTimeout(r, 400));
-          candidateStream = await navigator.mediaDevices.getUserMedia({
-            video: audioOnly ? false : true,
-            audio: { deviceId: micId ? { ideal: micId } : undefined }
-          });
-        }
-      }
-
-      // Ein neuerer Rebind hat uns ueberholt: ausschliesslich den eigenen
-      // Kandidaten stoppen. Niemals den inzwischen global aktiven Stream.
-      if (generation !== previewGeneration) {
-        candidateStream.getTracks().forEach(t => { try { t.stop(); } catch {} });
-        candidateStream = null;
-        throw new Error("Mikrofon-Wechsel wurde durch einen neueren Gerätewechsel ersetzt");
-      }
-
-      const audioTrack = candidateStream.getAudioTracks()[0];
-      if (!audioTrack || audioTrack.readyState !== "live") {
-        throw new Error("kein aktiver Audio-Track im neu angeforderten Stream");
-      }
-      const gotId = (audioTrack.getSettings && audioTrack.getSettings().deviceId) || "";
-
-      // Erst nach erfolgreicher, lokaler Validierung atomar aktivieren.
-      stream = candidateStream;
-      candidateStream = null;
-
-      if (micId && gotId && gotId !== micId) {
-        const wanted = micLabelFor(micId) || "gewähltes Mikrofon";
-        const gotLabel = micLabelFor(gotId) || audioTrack.label || "anderes Mikrofon";
-        log(`Browser lieferte „${gotLabel}“ statt „${wanted}“ — Auswahl wird angeglichen.`, "err");
-        setMicAlert("warn", `Aktiv ist „${gotLabel}“, nicht „${wanted}“.`);
-        showMicToast(`Aufnahme läuft über „${gotLabel}“.`, "info");
-        const sel = $("micSel");
-        if (sel && Array.from(sel.options).some(o => o.value === gotId)) sel.value = gotId;
-      } else if (micId && gotId === micId) {
-        setMicAlert(null, "");
-      }
-
-      $("preview").srcObject = audioOnly ? null : stream;
-      const at = audioTrack.getSettings ? audioTrack.getSettings() : {};
-      const vt = stream.getVideoTracks()[0]?.getSettings();
-      if (audioOnly) {
-        log(`Stream (Audio-only): Audio ${at?.sampleRate}Hz ${at?.channelCount}ch`, "ok");
-      } else {
-        log(`Stream: ${vt?.width}x${vt?.height}@${vt?.frameRate}fps · Audio ${at?.sampleRate}Hz ${at?.channelCount}ch`, "ok");
-        applyPortraitLayout();
-      }
-
-      try {
-        const v = $("preview");
-        const spkId = $("spkSel").value;
-        if (v && typeof v.setSinkId === "function" && spkId && spkId !== "default") {
-          await v.setSinkId(spkId);
-        }
-      } catch {}
-
-      watchTrackEnd(stream, generation);
-      if (!isRecording) micLostDuringRec = false;
-      startVuMeter(stream);
-
-      if (isRecording) {
-        try { await rebindRecordingSource(); }
-        catch (err) { log("Aufnahme-Graph konnte nicht umgehängt werden: " + err.message, "err"); }
-      }
-
-      return gotId;
-    } catch (err) {
-      if (candidateStream) {
-        candidateStream.getTracks().forEach(t => { try { t.stop(); } catch {} });
-      }
-      throw err;
-    } finally {
-      if (generation === previewGeneration) previewRebuilding = false;
-    }
+      const p=captureProfile||{};
+      const candidate=await mediaOwner.configure({mic:requestedMicId||$("micSel").value,camera:$("camSel").value,
+        video:!audioOnly,sampleRate:AUDIO_SAMPLE_RATE,channels:p.channels||1,
+        width:p.width||1920,height:p.height||1080,fps:p.fps||30});
+      stream=candidate;
+      $("preview").srcObject=(!audioOnly)?stream:null;
+      document.body.classList.toggle('audio-only',audioOnly);
+      watchTrackEnd(stream,generation);startVuMeter(stream);
+      if(isRecording&&pcmCtx)await rebindRecordingSource();
+      renderReadyChecks();return stream.getAudioTracks()[0].getSettings().deviceId||'';
+    } finally {previewRebuilding=false;}
   }
+
 
   // Hängt den laufenden PCM-Aufnahmegraphen auf den aktuellen Stream um,
   // ohne die Session oder den Chunk-Zähler zu unterbrechen.
@@ -1897,7 +1856,7 @@
     const AC = window.AudioContext || window.webkitAudioContext;
     const hasAudioWorklet = !!(AC && AC.prototype && "audioWorklet" in AC.prototype);
 
-    if (!hasUserMedia || !AC) {
+    if (!hasUserMedia || !AC || !hasAudioWorklet) {
       document.body.innerHTML = `
         <div style="max-width:560px;margin:80px auto;padding:32px;
                     background:var(--panel);border:1px solid #e5484d;border-radius:12px;
@@ -1909,11 +1868,6 @@
         </div>`;
       return false;
     }
-    if (!hasAudioWorklet) {
-      // AudioWorklet fehlt (sehr alter Browser) -> ScriptProcessor-Fallback
-      // greift automatisch. Nur ein Log, kein harter Block.
-      console.warn("AudioWorklet nicht verfügbar — nutze ScriptProcessor-Fallback.");
-    }
     return true;
   }
 
@@ -1921,7 +1875,7 @@
 
   // ---------- IndexedDB-Persistenz fuer Chunks ----------
   const DB_NAME = "podcast-recorder";
-  const DB_VERSION = 1;
+  const DB_VERSION = 2;
   const STORE = "chunks";
   let db = null;
 
@@ -1930,6 +1884,7 @@
       const req = indexedDB.open(DB_NAME, DB_VERSION);
       req.onupgradeneeded = () => {
         const d = req.result;
+        if (!d.objectStoreNames.contains('manifests')) d.createObjectStore('manifests', {keyPath:'sessionKey'});
         if (!d.objectStoreNames.contains(STORE)) {
           const os = d.createObjectStore(STORE, { keyPath: "key" });
           os.createIndex("bySession", "sessionKey", { unique: false });
@@ -1943,10 +1898,18 @@
   function tx(mode) { return db.transaction(STORE, mode).objectStore(STORE); }
   function dbPut(record) {
     return new Promise((res, rej) => {
-      const r = tx("readwrite").put(record);
-      r.onsuccess = () => res(); r.onerror = () => rej(r.error);
+      const transaction=db.transaction(STORE,'readwrite');
+      transaction.objectStore(STORE).put(record);
+      transaction.oncomplete=()=>res();
+      transaction.onerror=transaction.onabort=()=>rej(transaction.error || new Error('Speicherung abgebrochen'));
     });
   }
+  async function dbMarkUploaded(item) {
+    const rec=await dbGet(item.key);if(!rec)throw new Error('Lokaler Chunk fehlt');
+    rec.uploaded=true;rec.uploadedAt=Date.now();await dbPut(rec);
+  }
+
+
   function dbGet(key) {
     return new Promise((res, rej) => {
       const r = tx("readonly").get(key);
@@ -1960,23 +1923,113 @@
     });
   }
   function dbGetAll() {
-    return new Promise((res, rej) => {
-      const r = tx("readonly").getAll();
-      r.onsuccess = () => res(r.result || []); r.onerror = () => rej(r.error);
+    return new Promise((res,rej)=>{
+      const rows=[], transaction=db.transaction(STORE,'readonly');
+      const cursor=transaction.objectStore(STORE).openCursor();
+      cursor.onsuccess=()=>{const c=cursor.result;if(c){const {blob,...meta}=c.value;rows.push(meta);c.continue();}};
+      transaction.oncomplete=()=>res(rows);transaction.onerror=()=>rej(transaction.error);
     });
   }
-  function dbDeleteBySession(sessionKey) {
-    return new Promise((res, rej) => {
-      const store = tx("readwrite");
-      const idx = store.index("bySession");
-      const req = idx.openCursor(IDBKeyRange.only(sessionKey));
-      req.onsuccess = (e) => {
-        const cur = e.target.result;
-        if (cur) { cur.delete(); cur.continue(); } else res();
-      };
-      req.onerror = () => rej(req.error);
+  function manifestOp(method, value) {
+    return new Promise((resolve,reject)=>{
+      const transaction=db.transaction('manifests',method==='get'||method==='getAll'?'readonly':'readwrite');
+      const req=transaction.objectStore('manifests')[method](value);
+      transaction.oncomplete=()=>resolve(req.result);
+      transaction.onerror=transaction.onabort=()=>reject(transaction.error||new Error('Manifest nicht gespeichert'));
     });
   }
+  async function persistChunk(blob, ext) {
+    if (!blob || !blob.size || !trackManifest) return;
+    const m=trackManifest, idx=chunkIndex++;
+    pendingChunkEnqueues++;
+    const job=persistChain.then(async()=>{
+      if (storageFault) throw new Error('Lokaler Speicher ausgefallen');
+      const key=chunkKey(m.room,m.guest,m.sessionId,idx), sha=await sha256(blob);
+      const rec={key,sessionKey:m.sessionKey,room:m.room,guest:m.guest,sessionId:m.sessionId,idx,blob,size:blob.size,ext,sha,createdAt:Date.now(),uploaded:false};
+      // Chunk + manifest count commit in ONE transaction; request success is not durability.
+      await new Promise((resolve,reject)=>{
+        const transaction=db.transaction([STORE,'manifests'],'readwrite');
+        transaction.objectStore(STORE).put(rec);
+        transaction.objectStore('manifests').put({...m,count:idx+1,localBytes:m.localBytes+blob.size});
+        transaction.oncomplete=resolve;transaction.onerror=transaction.onabort=()=>reject(transaction.error||new Error('IndexedDB commit fehlgeschlagen'));
+      });
+      m.count=idx+1;m.localBytes+=blob.size;recBytes=m.localBytes;
+      if($('chunkCount'))$('chunkCount').textContent=m.count;
+      if($('recSize'))$('recSize').textContent=fmtMB(recBytes);
+      uploadQueue.push({key,idx,size:blob.size,room:m.room,guest:m.guest,sessionId:m.sessionId,ext,sha});
+      runUploader();
+    }).catch(async error=>{
+      storageFault=true;m.interrupted=true;studioEvent('local_storage_failure');
+      log('Aufnahme angehalten: '+error.message+'. Bereits gespeicherte Chunks bleiben erhalten. Nicht gespeicherte Daten können fehlen.','err');
+      setStatus('Speicherfehler — Aufnahme unvollständig. Host informieren.');
+      if(isRecording)stopRecording();
+    }).finally(()=>pendingChunkEnqueues--);
+    persistChain=job;
+    return job;
+  }
+  function updateManifest(key,fn){return new Promise((resolve,reject)=>{const t=db.transaction('manifests','readwrite'),store=t.objectStore('manifests'),r=store.get(key);r.onsuccess=()=>{if(r.result)store.put(fn(r.result));};t.oncomplete=resolve;t.onerror=t.onabort=()=>reject(t.error);});}
+  async function ensureRemoteMetadata(m) {
+    if(m.remoteMeta) return;
+    await studioFetch(`${SERVER}/meta/${m.room}/${m.guest}/${m.sessionId}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(m.meta)});
+    await updateManifest(m.sessionKey, current=>({...current,remoteMeta:true}));
+    if(trackManifest?.sessionKey===m.sessionKey)trackManifest.remoteMeta=true;
+  }
+  async function prepareManifest(sampleRate,channels) {
+    if(await manifestOp('get',sessionKeyOf(room,guest,sessionId))) throw new Error('Diese Session wurde bereits lokal aufgenommen. Für eine neue Aufnahme muss der Host eine neue Session starten.');
+    const m={sessionKey:sessionKeyOf(room,guest,sessionId),room,guest,sessionId,owner:await tokenFingerprint(),
+      count:0,localBytes:0,uploadedBytes:0,closed:false,finalized:false,interrupted:false,createdAt:Date.now(),
+      meta:{sample_rate:sampleRate,channels,consent:consentGranted,started_at:Date.now()+serverOffset,
+        diagnostics_consent:diagnosticsConsent,browser:diagnosticsConsent?navigator.userAgent:'not collected',os:diagnosticsConsent?(navigator.userAgentData?.platform||navigator.platform):'not collected'}};
+    await manifestOp('put',m);trackManifest=m;
+    studioEvents=[];uploadRetries=0;storageFault=false;
+    clearTimeout(maxDurationTimer);
+    maxDurationTimer=setTimeout(()=>{studioEvent('maximum_duration');stopRecording();},Math.min(captureProfile.max_duration_s,studioPolicy.max_duration_s)*1000);
+  }
+  async function finalizeManifest(m) {
+    if(!m.closed || m.finalized || !m.count) return;
+    await ensureRemoteMetadata(m);
+    const records=(await dbGetAll()).filter(r=>r.sessionKey===m.sessionKey);
+    if(records.length!==m.count || records.some(r=>!r.uploaded))return;
+    const result=await studioFetch(`${SERVER}/finish/${m.room}/${m.guest}/${m.sessionId}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({expected_chunks:m.count,interrupted:!!m.interrupted})});
+    if(!result.finalized || !result.report?.files?.['full.wav']?.sha256) throw new Error('Server-Finalisierung nicht bestätigt');
+    m.finalized=true;m.report=result.report;await manifestOp('put',m);
+    await dbDeleteBySession(m.sessionKey);
+    log('Server bestätigt: '+result.report.status+'. Lokale Chunks freigegeben.','ok');
+  }
+  let finalizerBusy=false;
+  async function finishPending() {
+    if(!db || finalizerBusy || uploaderRunning || isRecording || recordingStarting || !navigator.onLine)return;
+    finalizerBusy=true;
+    try {
+      const owner=await tokenFingerprint();
+      for(const m of await manifestOp('getAll')) {
+        if(m.owner!==owner || !m.closed || m.finalized)continue;
+        try { await finalizeManifest(m); if(trackManifest?.sessionKey===m.sessionKey)trackManifest=m; }
+        catch(e){log('Finalisierung ausstehend; lokale Daten bleiben erhalten: '+e.message,'err');}
+      }
+    } finally {finalizerBusy=false;}
+  }
+  async function monitorStorage() {
+    if(!db)return;
+    if(isRecording && Date.now()-lastMonitorTick>15000)studioEvent('sleep_or_timer_interruption');
+    lastMonitorTick=Date.now();
+    if(!trackManifest)return;
+    const rows=(await dbGetAll()).filter(r=>r.sessionKey===trackManifest.sessionKey);
+    const local=rows.reduce((s,r)=>s+r.size,0),uploaded=rows.filter(r=>r.uploaded).reduce((s,r)=>s+r.size,0);
+    const backlog=local-uploaded, eta=uploadRate>0?Math.ceil(backlog/uploadRate):null;
+    const m=await manifestOp('get',trackManifest.sessionKey);
+    const state=storageFault?'data_loss_possible':m?.finalized?'finalized':!navigator.onLine?'recoverable_offline':isRecording?'recording':backlog?'uploading':'finalizing';
+    const text=m?.finalized ? 'Server-Finalisierung bestätigt: '+m.report.status : `${isRecording?'AUFNAHME LÄUFT · ':''}${uploadBudget.call&&!uploadBudget.maxDuringCall?'CALL HAT VORRANG / UPLOAD PAUSIERT · ':''}Lokal gesichert: ${fmtMB(local)} · serverbestätigt: ${fmtMB(uploaded)} · ausstehend: ${fmtMB(backlog)} · Wiederholungen: ${uploadRetries} · Restzeit: ${eta===null?'unbekannt':eta+' s'} · ${state}`;
+    const el=$('recordingSafety');if(el){el.hidden=false;el.textContent=text;}
+    if(navigator.onLine && m?.remoteMeta) {
+      studioFetch(`${SERVER}/api/studio/telemetry/${m.room}/${m.guest}/${m.sessionId}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({local_bytes:local,uploaded_bytes:uploaded,backlog_bytes:backlog,retry_count:uploadRetries,eta_s:eta,state,events:studioEvents,peak_dbfs:20*Math.log10(currentPeak||1e-7),clip_count:studioEvents.filter(e=>e.type==='clipping').length})}).catch(()=>{});
+    }
+  }
+  async function dbDeleteBySession(sessionKey) {
+    const manifest=await manifestOp('get',sessionKey);if(!manifest?.finalized)throw new Error('Keine Server-Finalisierungsbestätigung');
+    return new Promise((resolve,reject)=>{const t=db.transaction(STORE,'readwrite'),r=t.objectStore(STORE).index('bySession').openCursor(IDBKeyRange.only(sessionKey));r.onsuccess=()=>{const c=r.result;if(c){c.delete();c.continue();}};t.oncomplete=resolve;t.onerror=t.onabort=()=>reject(t.error);});
+  }
+
 
   async function requestPersistence() {
     if (navigator.storage && navigator.storage.persist) {
@@ -2001,58 +2054,26 @@
   function sessionKeyOf(r, g, s) { return `${r}/${g}/${s}`; }
 
   async function gcOldChunks() {
-    const all = await dbGetAll();
-    const cutoff = Date.now() - 7 * 24 * 3600 * 1000;
-    for (const rec of all) {
-      if (rec.createdAt < cutoff) {
-        try { await dbDelete(rec.key); } catch {}
-      }
-    }
+    for(const m of await manifestOp('getAll'))if(m.finalized)await dbDeleteBySession(m.sessionKey);
   }
-
   async function recoverPendingUploads() {
-    const all = await dbGetAll();
-    if (all.length === 0) return;
-
-    const bySession = new Map();
-    for (const rec of all) {
-      if (!bySession.has(rec.sessionKey)) bySession.set(rec.sessionKey, []);
-      bySession.get(rec.sessionKey).push(rec);
-    }
-
-    for (const [sk, recs] of bySession) {
-      const totalMb = (recs.reduce((s, r) => s + (r.size || 0), 0) / 1024 / 1024).toFixed(1);
-      const oldest = new Date(Math.min(...recs.map(r => r.createdAt))).toLocaleString();
-      const ok = confirm(
-        `Unvollständige Aufnahme im lokalen Speicher gefunden:\n\n` +
-        `  Session: ${sk}\n` +
-        `  Begonnen: ${oldest}\n` +
-        `  Offene Chunks: ${recs.length} (${totalMb} MB)\n\n` +
-        `Jetzt hochladen?\n\n` +
-        `OK = Hochladen   ·   Abbrechen = Verwerfen`
-      );
-      if (ok) {
-        recs.sort((a, b) => a.idx - b.idx);
-        for (const rec of recs) {
-          uploadQueue.push({ key: rec.key, idx: rec.idx, size: rec.size,
-                             room: rec.room, guest: rec.guest, sessionId: rec.sessionId,
-                             ext: rec.ext || "pcm" });
-        }
-        const ql = $("queueLen"); if (ql) ql.textContent = uploadQueue.length;
-        log(`Recovery: ${recs.length} Chunks aus vorheriger Session werden hochgeladen`, "ok");
-        const [r, g, s] = sk.split("/");
-        runUploader().then(async () => {
-          try {
-            await fetch(`${SERVER}/finish/${r}/${g}/${s}`, { method: "POST" });
-            log(`Recovery-Session ${sk} abgeschlossen ✔`, "ok");
-          } catch (e) { log("Recovery-Finish fehlgeschlagen: " + e.message, "err"); }
-        });
-      } else {
-        await dbDeleteBySession(sk);
-        log(`Verworfene Session: ${sk}`);
+    const owner=await tokenFingerprint(),records=await dbGetAll();
+    for(const m of await manifestOp('getAll')){
+      if(m.owner!==owner||m.finalized)continue;
+      if(!m.closed){m.closed=true;m.interrupted=true;await manifestOp('put',m);}
+      // Revalidate server receipts after a restart; acknowledged bytes can be lost in bad server backups.
+      let received=new Map();
+      try {const r=await studioFetch(`${SERVER}/api/studio/manifest/${m.room}/${m.guest}/${m.sessionId}`);received=new Map(r.chunks.map(c=>[c.idx,c.sha]));}catch{}
+      for(const r of records.filter(r=>r.sessionKey===m.sessionKey).sort((a,b)=>a.idx-b.idx)){
+        if(received.get(r.idx)===r.sha)continue;
+        const full=await dbGet(r.key);full.uploaded=false;await dbPut(full);
+        uploadQueue.push(r);
       }
+      log('Recovery: gespeicherte Chunks bleiben erhalten. Unterbrochene Aufnahme wird als unvollständig gekennzeichnet.','info');
     }
+    runUploader();finishPending();
   }
+
 
   // ---------- Wake Lock ----------
   let wakeLock = null;
@@ -2083,7 +2104,7 @@
   // direkt als rohe Int16-PCM-Samples ab. Diese werden in ~CHUNK_MS-Bloecke
   // gepuffert und als .pcm hochgeladen. Der Server baut daraus ein WAV.
   let pcmCtx = null;          // AudioContext fuer die Aufnahme
-  let pcmNode = null;         // AudioWorkletNode oder ScriptProcessorNode
+  let pcmNode = null;         // AudioWorkletNode
   let pcmSourceNode = null;   // MediaStreamSource
   let pcmSilent = null;       // stiller Sink (haelt den Graphen am Laufen)
   let pcmSampleRate = AUDIO_SAMPLE_RATE;
@@ -2135,86 +2156,43 @@
 
   async function enqueuePcmChunk(blob) {
     if (!blob || blob.size === 0) return;
-    pendingChunkEnqueues++;
-    try {
-      const idx = chunkIndex++;
-      recBytes += blob.size;
-      const cc2 = $("chunkCount"); if (cc2) cc2.textContent = chunkIndex;
-      const rs2 = $("recSize"); if (rs2) rs2.textContent = fmtMB(recBytes);
-      const key = chunkKey(room, guest, sessionId, idx);
-      try {
-        await dbPut({
-          key, sessionKey: sessionKeyOf(room, guest, sessionId),
-          room, guest, sessionId, idx, blob, size: blob.size, ext: "pcm",
-          createdAt: Date.now(), uploaded: false
-        });
-      } catch (err) {
-        log(`DB-Schreibfehler (Chunk ${idx}): ${err.message}`, "err");
-      }
-      uploadQueue.push({ key, idx, size: blob.size, room, guest, sessionId, blob, ext: "pcm" });
-      const ql = $("queueLen"); if (ql) ql.textContent = uploadQueue.length;
-      runUploader();
-    } finally { pendingChunkEnqueues--; }
+    await persistChunk(blob, "pcm");
   }
 
-  // Feature 9: Video-/Media-Chunks (WebM bzw. Safari-Fallback) in dieselbe
+  // Feature 9: Video-/Media-Chunks (WebM bzw. Safari-Unterstützung) in dieselbe
   // Upload-Queue einreihen -- mit eigener Endung, damit der Server sie als
   // Video erkennt und daraus WAV + H.264-MP4 erzeugt.
   async function enqueueMediaChunk(blob, ext) {
     if (!blob || blob.size === 0) return;
-    pendingChunkEnqueues++;
-    try {
-      const idx = chunkIndex++;
-      recBytes += blob.size;
-      const cc2 = $("chunkCount"); if (cc2) cc2.textContent = chunkIndex;
-      const rs2 = $("recSize"); if (rs2) rs2.textContent = fmtMB(recBytes);
-      const key = chunkKey(room, guest, sessionId, idx);
-      try {
-        await dbPut({
-          key, sessionKey: sessionKeyOf(room, guest, sessionId),
-          room, guest, sessionId, idx, blob, size: blob.size, ext: ext || "webm",
-          createdAt: Date.now(), uploaded: false
-        });
-      } catch (err) {
-        log(`DB-Schreibfehler (Video-Chunk ${idx}): ${err.message}`, "err");
-      }
-      uploadQueue.push({ key, idx, size: blob.size, room, guest, sessionId, blob, ext: ext || "webm" });
-      const ql = $("queueLen"); if (ql) ql.textContent = uploadQueue.length;
-      runUploader();
-    } finally { pendingChunkEnqueues--; }
+    await persistChunk(blob, ext || "webm");
   }
 
   // AudioWorklet-Prozessor als Blob-URL (kein separates File noetig).
   const WORKLET_SRC = `
     class PcmTap extends AudioWorkletProcessor {
-      process(inputs) {
-        const input = inputs[0];
-        if (input && input[0]) {
-          // Auf Mono mischen (Mittelwert der Kanaele), kopieren ist Pflicht.
-          const ch0 = input[0];
-          const ch1 = input[1];
-          const out = new Float32Array(ch0.length);
-          if (ch1) {
-            for (let i = 0; i < ch0.length; i++) out[i] = (ch0[i] + ch1[i]) * 0.5;
-          } else {
-            out.set(ch0);
-          }
-          this.port.postMessage(out, [out.buffer]);
-        }
-        return true;
-      }
+      constructor(options){super();this.channels=options.processorOptions.channels||1;}
+      process(inputs){const input=inputs[0];if(input&&input[0]){const a=input[0],b=input[1]||a,out=new Float32Array(a.length*this.channels);for(let i=0;i<a.length;i++){if(this.channels===2){out[i*2]=a[i];out[i*2+1]=b[i];}else out[i]=(a[i]+b[i])*0.5;}this.port.postMessage(out,[out.buffer]);}return true;}
     }
-    registerProcessor("pcm-tap", PcmTap);
+    registerProcessor('pcm-tap',PcmTap);
   `;
 
+
   async function _doStartRecording() {
-    if (!stream) return;
+    if(recordingStarting||isRecording||!consentGranted||!db)return;
+    recordingStarting=true;
+    try { await startCapture(); }
+    catch(e){log('Aufnahmestart blockiert: '+PodcastUX.error(e),'err');setStatus('Aufnahmestart fehlgeschlagen. Call bleibt verbunden.');guestCall?.report('recording_error');await mediaOwner.releaseRecording();try{if(pcmCtx&&pcmCtx.state!=='closed')await pcmCtx.close();}catch{}pcmCtx=null;}
+    finally {recordingStarting=false;}
+  }
+  async function startCapture() {
+    if (!stream) throw new Error('Keine Medienquelle');
     const audioTracks = stream.getAudioTracks();
     if (!audioTracks.length) { log("Kein Audio-Track verfügbar!", "err"); return; }
 
-    // Gemeinsame Session-ID: kommt vom Host (command.session). Falls der Host
-    // extrem alt ist und keine Session liefert, fallback auf lokale ID.
-    if (!sessionId) sessionId = pendingSessionId || Date.now().toString(36);
+    // Recording session identity is always supplied by the server.
+    if (!pendingSessionId) throw new Error("Keine neue Session vom Host");
+    sessionId = pendingSessionId;
+    if(await manifestOp("get",sessionKeyOf(room,guest,sessionId))) throw new Error("Diese Session ist bereits lokal vorhanden. Recovery statt neuer Aufnahme.");
     pendingSessionId = null;
     const sInfo = $("sessionInfo");
     if (sInfo && guest) sInfo.textContent =
@@ -2228,28 +2206,30 @@
 
     // Video-Modus (host-gesteuert) + vorhandener Video-Track -> MediaRecorder.
     // Sonst der bewaehrte Audio-only-PCM-Pfad (Safari/iOS-sicher).
-    if (!audioOnly && stream.getVideoTracks().length) {
+    if (!audioOnly) {
+      if(!stream.getVideoTracks().length)throw new Error("ux.camera_required");
       const okVideo = await _startVideoRecording();
       if (okVideo) return;
-      log("Video-Aufnahme nicht möglich — falle auf Audio-Only zurück.", "err");
+      throw new Error("Videoaufnahme konnte nicht vorbereitet werden; kein stiller Formatwechsel");
     }
     await _startPcmRecording(audioTracks);
   }
 
-  // ---------- Video-Aufnahme via MediaRecorder (VP8/9, Safari-Fallback H.264) ----------
+  // ---------- Video-Aufnahme via MediaRecorder (VP8/9, Safari-Unterstützung H.264) ----------
   function _startVideoRecording() {
-    return new Promise((resolve) => {
+    return new Promise(async (resolve) => {
       try {
         const pick = pickVideoMime();
         mediaExt = pick.ext;
         const opts = { videoBitsPerSecond: VIDEO_BITRATE, audioBitsPerSecond: AUDIO_BITRATE };
         if (pick.mime) opts.mimeType = pick.mime;
 
+        recordingOutput = await mediaOwner.recordingStream({...captureProfile,video:true});
         try {
-          recorder = new MediaRecorder(stream, opts);
+          recorder = new MediaRecorder(recordingOutput, opts);
         } catch (e) {
           // Letzter Versuch ohne explizite Optionen.
-          recorder = new MediaRecorder(stream);
+          recorder = new MediaRecorder(recordingOutput);
           mediaExt = "webm";
         }
 
@@ -2258,16 +2238,12 @@
         };
         recorder.onerror = (e) => {
           log("MediaRecorder-Fehler: " + (e.error && e.error.name || "unbekannt"), "err");
+          storageFault=true;studioEvent("media_recorder_failed");stopRecording();guestCall?.report("recording_error");
         };
 
+        await prepareManifest(AUDIO_SAMPLE_RATE, captureProfile.channels);
         isRecording = true;
         startTs = Date.now();
-
-        // Format-Meta (Audio-Teil) an den Server.
-        fetch(`${SERVER}/meta/${room}/${guest}/${sessionId}`, {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sample_rate: AUDIO_SAMPLE_RATE, channels: 2 })
-        }).catch(() => {});
 
         recorder.start(CHUNK_MS);   // ein Chunk pro CHUNK_MS
 
@@ -2285,6 +2261,7 @@
       } catch (err) {
         log("Video-Aufnahme-Setup fehlgeschlagen: " + err.message, "err");
         recorder = null;
+        await mediaOwner.releaseRecording(); recordingOutput=null;
         resolve(false);
       }
     });
@@ -2294,54 +2271,18 @@
     const AC = window.AudioContext || window.webkitAudioContext;
     try {
       const micStream = new MediaStream([audioTracks[0]]);
-      try {
-        pcmCtx = new AC({ sampleRate: AUDIO_SAMPLE_RATE });
-        pcmSourceNode = pcmCtx.createMediaStreamSource(micStream);
-      } catch (rateError) {
-        // Manche Browser unterstuetzen keine abweichende Context-Rate bzw.
-        // keinen Stream mit anderer Rate. Aufnahme vor Format-Zwang schuetzen.
-        try { if (pcmCtx && pcmCtx.state !== "closed") await pcmCtx.close(); } catch {}
-        pcmCtx = new AC();
-        pcmSourceNode = pcmCtx.createMediaStreamSource(micStream);
-        log(`48-kHz-Aufnahme nicht verfügbar (${rateError.message}); nutze Browser-Format.`, "info");
-      }
+      pcmCtx = new AC({sampleRate:AUDIO_SAMPLE_RATE});
+      pcmSourceNode = pcmCtx.createMediaStreamSource(micStream);
       // Immer die wirkliche Rate melden, niemals nur den WAV-Header umetikettieren.
       if (pcmCtx.state === "suspended") { try { await pcmCtx.resume(); } catch {} }
       pcmSampleRate = pcmCtx.sampleRate;
-      pcmChannels = 1;
-      if (pcmSampleRate !== AUDIO_SAMPLE_RATE) {
-        log(`Abweichende Aufnahme-Abtastrate: ${pcmSampleRate} Hz statt ${AUDIO_SAMPLE_RATE} Hz.`, "info");
-        showMicToast(`Aufnahme mit ${pcmSampleRate / 1000} kHz statt 48 kHz.`, "info");
-      }
-
-      let usedWorklet = false;
-      if (pcmCtx.audioWorklet) {
-        try {
-          const blobUrl = URL.createObjectURL(
-            new Blob([WORKLET_SRC], { type: "application/javascript" }));
-          await pcmCtx.audioWorklet.addModule(blobUrl);
-          URL.revokeObjectURL(blobUrl);
-          pcmNode = new AudioWorkletNode(pcmCtx, "pcm-tap");
-          pcmNode.port.onmessage = (e) => {
-            if (!isRecording) return;
-            pcmCollect(floatToInt16(e.data));
-          };
-          usedWorklet = true;
-        } catch (err) {
-          log("AudioWorklet fehlgeschlagen, nutze Fallback: " + err.message, "err");
-        }
-      }
-
-      if (!usedWorklet) {
-        // ScriptProcessor-Fallback (deprecated, aber breit verfuegbar).
-        const bufSize = 4096;
-        pcmNode = pcmCtx.createScriptProcessor(bufSize, 1, 1);
-        pcmNode.onaudioprocess = (e) => {
-          if (!isRecording) return;
-          pcmCollect(floatToInt16(e.inputBuffer.getChannelData(0)));
-        };
-      }
-
+      pcmChannels = captureProfile.channels || 1;
+      if(pcmSampleRate!==AUDIO_SAMPLE_RATE)throw new Error('ux.unsupported_sample_rate');
+      if(!pcmCtx.audioWorklet)throw new Error('ux.audio_worklet_required');
+      const blobUrl=URL.createObjectURL(new Blob([WORKLET_SRC],{type:'application/javascript'}));
+      try{await pcmCtx.audioWorklet.addModule(blobUrl);}finally{URL.revokeObjectURL(blobUrl);}
+      pcmNode=new AudioWorkletNode(pcmCtx,'pcm-tap',{processorOptions:{channels:pcmChannels}});
+      pcmNode.port.onmessage=e=>{if(isRecording)pcmCollect(floatToInt16(e.data));};
       pcmSourceNode.connect(pcmNode);
       // Stiller Sink, damit der Graph in allen Browsern zuverlaessig laeuft.
       pcmSilent = pcmCtx.createGain();
@@ -2349,19 +2290,13 @@
       pcmNode.connect(pcmSilent);
       pcmSilent.connect(pcmCtx.destination);
     } catch (err) {
-      log("Aufnahme-Setup fehlgeschlagen: " + err.message, "err");
-      return;
+      throw err;
     }
 
+    await prepareManifest(pcmSampleRate, pcmChannels);
     isRecording = true;
     micLostDuringRec = false;
     startTs = Date.now();
-
-    // Format-Meta vorab an den Server (fuer korrekten WAV-Header).
-    fetch(`${SERVER}/meta/${room}/${guest}/${sessionId}`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sample_rate: pcmSampleRate, channels: pcmChannels })
-    }).catch(() => {});
 
     // Regelmaessig Chunks ausschreiben.
     clearInterval(pcmFlushTimer);
@@ -2382,6 +2317,7 @@
   async function stopRecording() {
     if (!isRecording) return;
     isRecording = false;
+    clearTimeout(maxDurationTimer);
     clearInterval(durationTimer);
 
     // Video-Pfad (MediaRecorder): sauber stoppen. ondataavailable bleibt bis
@@ -2418,36 +2354,34 @@
     try { if (pcmCtx && pcmCtx.state !== "closed") await pcmCtx.close(); } catch {}
     pcmCtx = null;
     pcmFlush(true);
+    await persistChain; // Final media event and manifest count committed before sealing.
+    await mediaOwner.releaseRecording();recordingOutput=null;
 
+    if (trackManifest) {
+      trackManifest.closed = true;
+      trackManifest.interrupted = !!(micLostDuringRec || storageFault);
+      await manifestOp('put', trackManifest);
+    }
     setStatus("Stoppe, lade restliche Chunks hoch…");
-    log("Aufnahme gestoppt, warte auf Upload-Queue…");
-
-    // Auf vollstaendigen Upload warten, dann finalisieren.
+    log("Aufnahme gestoppt, lokale Speicherung und Upload-Manifest bleiben bis zur Serverbestätigung erhalten.");
     (async () => {
-    while (pendingChunkEnqueues > 0 || uploadQueue.length > 0 || uploaderRunning) {
-        await new Promise(r => setTimeout(r, 200));
-      }
+      while (pendingChunkEnqueues > 0 || uploadQueue.length > 0 || uploaderRunning) await new Promise(r => setTimeout(r, 200));
       try {
-        await fetch(`${SERVER}/finish/${room}/${guest}/${sessionId}`, { method: "POST" });
-        log("Session abgeschlossen ✔ (full.wav erstellt)", "ok");
-        setStatus("Fertig. Alles hochgeladen.");
-        $("warnBanner").classList.remove("show");
-        releaseWakeLock();
-        try { await dbDeleteBySession(sessionKeyOf(room, guest, sessionId)); } catch {}
-      } catch (err) {
-        log("Finish-Call fehlgeschlagen: " + err.message, "err");
-      }
-      // Ging waehrend der Aufnahme ein Geraet verloren, bleibt der Hinweis
-      // nach dem Stopp stehen -- der Gast soll die Aufnahme pruefen.
+        await finishPending();
+        if (trackManifest?.finalized) {
+          setStatus("Fertig. Server-Finalisierung bestätigt.");
+          $("warnBanner").classList.remove("show");
+          releaseWakeLock();
+        } else {
+          setStatus("Upload unvollständig — lokale Daten bleiben zur Wiederaufnahme erhalten.");
+        }
+      } catch (err) { log("Finalisierung ausstehend: " + err.message, "err"); }
       if (micLostDuringRec) {
-        log("Hinweis: Während dieser Aufnahme wurde das Mikrofon getrennt. Bitte die Datei prüfen.", "err");
+        log("Hinweis: Während dieser Aufnahme wurde das Mikrofon getrennt. Bitte die Qualitätsprüfung ansehen.", "err");
         showMicToast("Mikrofon war während der Aufnahme getrennt — bitte prüfen.", "err");
       }
-      // Sprint 2 (Option A): aufgeschobenen Mic-Wechsel jetzt nachholen.
       if (deferredMicCmd) {
-        const d = deferredMicCmd;
-        deferredMicCmd = null;
-        log("Wende aufgeschobenen Mikrofon-Wechsel an…", "info");
+        const d = deferredMicCmd; deferredMicCmd = null;
         try { await applyMicChange(d.deviceId, d.label, d.command_id || ""); } catch {}
       }
     })();
@@ -2526,13 +2460,17 @@
       const ok = await uploadChunk(item);
 
       if (ok) {
+        try { await dbMarkUploaded(item); } catch(e) {
+          log("Lokale Upload-Quittung konnte nicht gespeichert werden; Daten bleiben erhalten", "err");
+          await sleepInterruptible(2000);continue;
+        }
         uploadQueue.shift();
-        if (item.key) { try { await dbDelete(item.key); } catch {} }
         upBytes += (item.size || item.blob.size);
         const us = $("upSize"); if (us) us.textContent = fmtMB(upBytes);
         const ql = $("queueLen"); if (ql) ql.textContent = uploadQueue.length;
         backoff = MIN_BACKOFF;
         updateConnectionStatus();
+        finishPending();
       } else {
         log(`Chunk ${item.idx} fehlgeschlagen — neuer Versuch in ${(backoff/1000).toFixed(0)}s`, "err");
         setStatus(`⚠ Upload-Fehler — neuer Versuch in ${(backoff/1000).toFixed(0)}s (Queue: ${uploadQueue.length})`);
@@ -2549,31 +2487,34 @@
     }
     uploaderRunning = false;
     updateConnectionStatus();
+    finishPending();
   }
 
   async function uploadChunk(item) {
+    if(!navigator.onLine)return false;
+    let timer;
     try {
-      const r = item.room || room;
-      const g = item.guest || guest;
-      const s = item.sessionId || sessionId;
-      const url = `${SERVER}/upload/${r}/${g}/${s}/${String(item.idx).padStart(6, "0")}?ext=${encodeURIComponent(item.ext || "pcm")}`;
-      const res = await fetch(url, {
-        method: "PUT",
-        headers: { "Content-Type": "application/octet-stream" },
-        body: item.blob
-      });
-      if (!res.ok) throw new Error("HTTP " + res.status);
-      return true;
-    } catch (err) {
-      return false;
-    }
+      const m=await manifestOp('get',sessionKeyOf(item.room,item.guest,item.sessionId));
+      if(!m)throw new Error('Upload-Manifest fehlt');
+      await uploadBudget.wait(item.size);await ensureRemoteMetadata(m);
+      const rec=await dbGet(item.key);if(!rec)throw new Error('Lokaler Chunk fehlt');
+      item.blob=rec.blob;item.sha=rec.sha||await sha256(rec.blob);
+      const signal=uploadBudget.start();timer=setTimeout(()=>uploadBudget.abort?.abort(),60000);
+      const start=performance.now();
+      const response=await fetch(`${SERVER}/upload/${item.room}/${item.guest}/${item.sessionId}/${String(item.idx).padStart(6,'0')}?ext=${encodeURIComponent(item.ext||'pcm')}`,{method:'PUT',headers:{'Content-Type':'application/octet-stream',Authorization:'Bearer '+guestToken,'X-Chunk-SHA256':item.sha},body:item.blob,signal});
+      const receipt=await response.json();
+      if(!response.ok||receipt.idx!==item.idx||receipt.bytes!==item.blob.size||receipt.sha256!==item.sha)throw new Error('Upload-Quittung ungültig: '+response.status);
+      uploadRate=item.blob.size/Math.max(0.1,(performance.now()-start)/1000);return true;
+    } catch(e){uploadRetries++;return false;}
+    finally{clearTimeout(timer);uploadBudget.done();}
   }
+
 
   // ---------- Warn on unload ----------
   window.addEventListener("beforeunload", (e) => {
-    if (isRecording || uploadQueue.length > 0 || uploaderRunning) {
+    if (isRecording || uploadQueue.length > 0 || uploaderRunning || trackManifest && !trackManifest.finalized) {
       e.preventDefault();
-      e.returnValue = "Aufnahme laeuft oder Upload nicht fertig. Wirklich schliessen? Nicht hochgeladene Chunks gehen verloren.";
+      e.returnValue = "Aufnahme läuft oder Upload/Finalisierung ist nicht fertig. Wirklich schliessen? Bereits lokal persistierte Chunks bleiben zur Wiederaufnahme erhalten.";
       return e.returnValue;
     }
   });
@@ -2903,22 +2844,49 @@
 
       try {
         db = await openDb();
-        await requestPersistence();
-        await gcOldChunks();
+        if(!navigator.locks)throw new Error('Dieser Browser bietet keinen sicheren Mehrtab-Aufnahmeschutz');
+        await new Promise((resolve,reject)=>{
+          navigator.locks.request('openpodcast-recorder-'+studioGuest,{ifAvailable:true},async lock=>{
+            if(!lock){reject(new Error('Ein anderer Tab verwendet diese Einladung bereits'));return;}
+            try {
+              await requestPersistence();
+              await gcOldChunks();
+              resolve();
+            } catch(e) { reject(e); }
+            await new Promise(done=>{releaseRecorderLease=done;});
+          }).catch(reject);
+        });
       } catch (err) {
-        log("IndexedDB nicht verfügbar: " + err.message + " — fahre im RAM-Modus fort", "err");
+        log("IndexedDB nicht verfügbar: " + err.message + " — Aufnahme wird aus Datensicherheitsgründen nicht gestartet", "err");
+        setStatus("Lokaler Speicher nicht verfügbar — Aufnahme blockiert.");
+        return;
       }
       if (db) {
         try { await recoverPendingUploads(); }
         catch (err) { log("Recovery-Fehler: " + err.message, "err"); }
+        setInterval(() => monitorStorage().catch(()=>{}), 5000);
+        setInterval(()=>finishPending(),10000);
+        window.addEventListener('online', () => { studioEvent('network_recovered'); finishPending(); runUploader(); });
+        window.addEventListener('offline', () => { studioEvent('network_lost'); monitorStorage().catch(()=>{}); });
       }
 
       setStatus("Frage Berechtigungen ab…");
       // Im Default (Audio-Only) reicht Audio. Bei Video-Modus holen wir Video beim Rebuild.
-      const tmp = await navigator.mediaDevices.getUserMedia({ video: audioOnly ? false : true, audio: true });
-      tmp.getTracks().forEach(t => t.stop());
+      if (!guestCall) {
+        guestCall=PodcastJitsi.mountGuest({budget:uploadBudget,room,token:guestToken,
+          name:()=>displayName,parent:$('bottomStack'),onState:async value=>{
+            if(!isRecording&&!recordingStarting){
+              const p=value.profile;const changed=captureProfile&&JSON.stringify(captureProfile)!==JSON.stringify(p);
+              captureProfile=p;AUDIO_SAMPLE_RATE=p.sample_rate;CHUNK_MS=p.chunk_ms;VIDEO_BITRATE=p.video_bitrate;AUDIO_BITRATE=p.audio_bitrate;
+              audioOnly=!p.video;
+              if(changed&&stream){try{await startPreview();}catch(e){log(e.message,'err');}}
+            }
+          }});
+        mediaOwner.addEventListener('lost',event=>{studioEvent('device_'+event.detail.kind+'_lost');});
+      }
       await listDevices();
       await startPreview();
+      await listDevices(); // Labels are now available, without a second GUM request.
 
       // Log initial device choices once we have labels (after permissions + enumerateDevices).
       try {
@@ -3010,11 +2978,15 @@
     });
   } catch {}
 
+  let nameSubmitting=false;
   async function submitName() {
+    if(nameSubmitting || !consentGranted)return;
+    nameSubmitting=true;
+    try {
     try { log('submitName(): Klick/Enter empfangen', 'ok'); } catch {}
 
     // Ensure token was resolved (room is needed for WS + uploads).
-    if (!room) {
+    if (!consentGranted || !room) {
       try { console.log('[submitName] room fehlt — resolveToken() nachholen…'); } catch {}
       const ok = await resolveToken();
       if (!ok) return;
@@ -3027,7 +2999,7 @@
       $("nameHint").style.color = "var(--accent)";
       return;
     }
-    guest = slug;
+    guest = studioGuest; // Stable token-bound track identity; display name remains independent.
     displayName = raw;
     // Der Gast ist jetzt eine echte Gastspur -- die Lobby-Karte entfaellt.
     lobbyStage = "named";
@@ -3046,12 +3018,13 @@
       sessionInfo.textContent = `Gast: ${displayName} (${guest})`;
     }
 
+    document.body.dataset.guestPhase="recording";
     $("nameGate").style.display = "none";
     $("recorderUI").style.display = "flex";
 
     // Recorder richtig initialisieren (Permissions, enumerateDevices, Preview, Heartbeat-Loop)
     // nachdem der Name feststeht.
-    init();
+    await init();
 
     // Berechtigungen pruefen und die Bereitschafts-Checkliste laufend
     // aktualisieren (Geraetewechsel, entzogene Freigaben, Modewechsel).
@@ -3068,6 +3041,7 @@
     // Sofort Heartbeat senden, damit UI/Host direkt den Namen sieht
     try { heartbeat(); } catch {}
 
+    } finally {nameSubmitting=false;}
   }
 
   const readyBtnEl = $("readyBtn");
@@ -3094,11 +3068,14 @@
   const preset = params.get("guest");
   if (preset) { $("nameInput").value = preset; }
   // Lobby-Anmeldung startet sofort am Name-Gate, vor Name und Medienfreigabe.
+  $("consentLoading").textContent=PodcastUX.t("guest_loading");
   resolveToken().then(ok => {
     if (ok && !guest) { lobbyStage = "naming"; startLobbyPresence(); }
+    if(!ok && $("consentLoading"))$("consentLoading").textContent=PodcastUX.t("guest_error");
   });
-  $("nameInput").focus();
+  if(consentGranted)$("nameInput").focus();
 })();
 </script>
 </body>
+<!-- local-first recording and integrity pipeline -->
 </html>
