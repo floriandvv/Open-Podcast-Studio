@@ -49,7 +49,7 @@ The host opens a room, invites guests through secure token links, and controls r
 - **Jitsi integration:** Hosts can enable or disable a live call and switch between audio and video modes. Guests join through the Jitsi External API with a prejoin screen; the Host does not join the call.
 - **Deployment modes:** Use a public Jitsi provider, a self-hosted Jitsi deployment with signed JWTs and an authenticated lifecycle callback, or **Jitsi as a Service (JaaS / 8x8)** with server-issued RS256 JWTs and a server-side DESTROY command. JaaS App ID and deployment mode are configured in Admin; private key, API key ID and token lifetime are configured only through `.env`.
 - **Independent lifecycle:** Call state, participants, deadlines, and provider errors are persisted independently from recording sessions.
-- 
+
 ### Administration and access
 
 - **Session catalog:** `/sessions` is the authoritative recording inventory, with lifecycle states, persistent recording numbers, readable labels, filters, cleanup, archiving, and room grouping.
