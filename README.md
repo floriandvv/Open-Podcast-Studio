@@ -47,9 +47,9 @@ The host opens a room, invites guests through secure token links, and controls r
 ### Optional live calls
 
 - **Jitsi integration:** Hosts can enable or disable a live call and switch between audio and video modes. Guests join through the Jitsi External API with a prejoin screen; the Host does not join the call.
-- **Deployment modes:** Use a public Jitsi provider or a self-hosted Jitsi deployment with signed JWTs and an authenticated lifecycle callback for verified room closure.
+- **Deployment modes:** Use a public Jitsi provider, a self-hosted Jitsi deployment with signed JWTs and an authenticated lifecycle callback, or **Jitsi as a Service (JaaS / 8x8)** with server-issued RS256 JWTs and a server-side DESTROY command. JaaS App ID and deployment mode are configured in Admin; private key, API key ID and token lifetime are configured only through `.env`.
 - **Independent lifecycle:** Call state, participants, deadlines, and provider errors are persisted independently from recording sessions.
-
+- 
 ### Administration and access
 
 - **Session catalog:** `/sessions` is the authoritative recording inventory, with lifecycle states, persistent recording numbers, readable labels, filters, cleanup, archiving, and room grouping.
@@ -163,6 +163,26 @@ JITSI_CONTROL_URL=https://meet.example.org/openpodcast/close
 ```
 
 Self-hosted mode requires a configured Jitsi JWT secret and an HTTPS lifecycle endpoint that confirms room closure. Install `mod_openpodcast_lifecycle.lua` in the Prosody/MUC setup and configure the endpoint according to your deployment. Both modes use Jitsi `external_api.js` and the provider's prejoin flow; the application does not use a native local Jitsi SDK.
+
+#### Jitsi as a Service (JaaS / 8x8)
+
+1. Generate/upload an RSA API key in your JaaS console. Keep the private key **outside** the web/application directory, readable only by the service account. Do not upload a private key through the Admin UI.
+2. Configure security settings in `.env`:
+
+   ```dotenv
+   JAAS_API_KEY_ID=your-full-app-id/your-key-id
+   JAAS_PRIVATE_KEY_FILE=/run/secrets/jaas-private-key.pem
+   JAAS_TOKEN_TTL_SECONDS=120
+   ```
+
+   The key ID must be the full value from JaaS. RSA keys must be at least 2048 bits. Use either `JAAS_PRIVATE_KEY_FILE` or `JAAS_PRIVATE_KEY` (PEM with literal `\n` escapes), never both. Token lifetime must be 30–300 seconds. Changes require a server restart; the Admin refresh button checks the loaded configuration, not the `.env` file.
+3. In **Admin → Jitsi**, select **Jitsi as a Service (JaaS / 8x8)** and enter the public App ID starting with `vpaas-magic-cookie-`. The App ID must match the tenant prefix of the server-side API key ID. These non-secret values persist in `studio.sqlite3`; no private keys or credentials are stored in settings or returned by the settings API.
+4. End active calls/recordings before switching deployment. Reload already-open guest pages after a provider or App ID change to refresh their CSP.
+5. Review both localized consent texts and any JaaS account-level settings before production use. Guests receive no moderator, provider-recording, streaming, transcription or telephony permissions. If a JaaS provisioning webhook enables a moderator-only lobby, non-moderator guests cannot bypass it; this studio deliberately does not join a moderator.
+
+Guest grants use RS256, `iss=chat`, `aud=jitsi`, the tenant as `sub`, and a **literal single room**, never `*`. The SDK loads from `https://8x8.vc/<AppID>/external_api.js`; the embedded room name is `<AppID>/<conference>`. The key and signing operation remain server-side; only the short-lived guest token reaches the guest.
+
+Calls are ended by a server-side JaaS `DESTROY` command. Outstanding guest grants are drained before reuse; calls stay in `closing` and are retried on provider errors. Signed `ROOM_DESTROYED` webhooks can record provider confirmation. Recording stop does not directly end the call; feedback remains possible.
 
 ### 4. Start the server
 
