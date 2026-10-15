@@ -39,7 +39,7 @@ DEFAULTS = dict(profiles=PROFILES, default_profile="audio-standard",
                 marker_categories=[dict(id="ad", label="Werbung", color="#f59e0b"),
                                    dict(id="cut_in", label="Schnitt Anfang", color="#e5484d"),
                                    dict(id="cut_out", label="Schnitt Ende", color="#30a46c")],
-                consent_text="Ich stimme der Aufnahme, lokalen Zwischenspeicherung und Übertragung meiner Audio-/Videodaten für diese Produktion zu.",
+                consent_text="Ich stimme der Aufnahme, lokalen Zwischenspeicherung und Übertragung meiner Audio-/Videodaten für diese Produktion zu. Live-Call-Daten werden durch den gewählten Jitsi-Anbieter verarbeitet.",
                 consent_text_en="I consent to recording, local storage and transfer of my audio/video data for this production. Live-call data is processed by the selected Jitsi provider.", privacy_policy="", retention_days=30, diagnostic_days=14,
                 storage_region="Nicht konfiguriert", backup_policy="Nicht konfiguriert",
                 collect_device_metadata=False, automatic_chapters=False,
@@ -100,12 +100,15 @@ class Studio:
         self.path = self.root / "studio.sqlite3"
         self.lock = threading.RLock()
         self.limit_lock = threading.Lock()
+        self.guest_sockets = {}
+        self.guest_socket_rooms = {}
         self.rate = OrderedDict()
         self.jobs = asyncio.Semaphore(2)
         self.production = os.getenv("STUDIO_PRODUCTION", "0") == "1"
         self.origins = set(filter(None, os.getenv("STUDIO_ALLOWED_ORIGINS", "").split(",")))
         self.init_db()
         self.config = self.load_config()
+        self.repair_deleted_room_data()
         self.restore_rooms()
 
     @contextmanager
@@ -148,6 +151,13 @@ class Studio:
               kind TEXT, state TEXT DEFAULT 'open', created REAL);
             CREATE TABLE IF NOT EXISTS guest_consents(owner TEXT PRIMARY KEY, room TEXT NOT NULL, digest TEXT NOT NULL, accepted REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS admissions (owner TEXT PRIMARY KEY, first_seen REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS guest_claims (owner TEXT PRIMARY KEY, client_hash TEXT NOT NULL,
+              parent_owner TEXT, created REAL NOT NULL);
+            CREATE INDEX IF NOT EXISTS guest_claim_parent ON guest_claims(parent_owner);
+            CREATE TABLE IF NOT EXISTS guest_sessions(owner TEXT PRIMARY KEY,room TEXT NOT NULL,
+              credential_hash TEXT NOT NULL UNIQUE,client_hash TEXT NOT NULL,invitation_id TEXT NOT NULL,
+              created REAL NOT NULL,expires REAL NOT NULL,revoked INTEGER NOT NULL DEFAULT 0);
+            CREATE UNIQUE INDEX IF NOT EXISTS guest_session_browser ON guest_sessions(room,client_hash) WHERE revoked=0;
             """)
             c.execute("INSERT OR IGNORE INTO security VALUES (1,?)", (secrets.token_hex(16),))
 
@@ -159,6 +169,11 @@ class Studio:
             raise RuntimeError("Stored configuration contains unsupported settings; use a new DATA_DIR")
         config = copy.deepcopy(DEFAULTS)
         config.update(copy.deepcopy(stored))
+        # Default consent wording is a localized resource, not a second editor.
+        for code,key in [('de','consent_text'),('en','consent_text_en')]:
+            if key not in stored:
+                wording=self.a.get('_load_locale',lambda _: {})(code).get('ux',{}).get('consent_default_text')
+                if isinstance(wording,str) and wording.strip():config[key]=wording
         # Global audio-quality presets; historical takes keep their snapshots.
         for profile in config["profiles"]:
             profile.update(video=False, container="pcm", codec="pcm_s16le")
@@ -189,12 +204,122 @@ class Studio:
             raise HTTPException(403, "Admin required")
         return role
 
+    def derived_token(self, owner):
+        with self.db() as c:
+            row = c.execute("SELECT parent_owner FROM guest_claims WHERE owner=?", (owner,)).fetchone()
+        return bool(row and row[0])
+
+    def token_parent_valid(self, token):
+        """Derived credentials never survive revocation/deletion/expiry of the invitation."""
+        with self.db() as c:
+            row = c.execute("SELECT parent_owner FROM guest_claims WHERE owner=?", (token["id"],)).fetchone()
+        parent_id = token.get("parent_id") or (row[0] if row else None)
+        visited={token['id']}
+        with self.a['_DB_LOCK'],self.a['_db_conn']() as c:
+            while parent_id:
+                if parent_id in visited or len(visited)>32:return False
+                visited.add(parent_id)
+                parent=c.execute('SELECT room,expires_at,revoked,parent_id FROM guest_tokens WHERE id=?',(parent_id,)).fetchone()
+                if not parent or parent['revoked'] or parent['expires_at']<=time.time() or parent['room']!=token['room']:return False
+                parent_id=parent['parent_id']
+        return True
+
+    def resolve_guest(self, value):
+        if not isinstance(value,str) or len(value)>256:return None
+        if not value.startswith('gs_'):
+            # Recovery-only compatibility: legacy claims still need their browser proof.
+            return self.a['_token_resolve'](value)
+        digest=hashlib.sha256(value.encode()).hexdigest()
+        with self.db() as c:
+            row=c.execute('SELECT * FROM guest_sessions WHERE credential_hash=? AND revoked=0',(digest,)).fetchone()
+        if not row or row['expires']<=time.time():return None
+        with self.a['_DB_LOCK'],self.a['_db_conn']() as c:
+            invitation=c.execute('SELECT revoked,expires_at FROM guest_tokens WHERE id=?',(row['invitation_id'],)).fetchone()
+        if not invitation or invitation['revoked'] or invitation['expires_at']<=time.time():return None
+        return dict(id=row['owner'],room=row['room'],token=value,expires_at=row['expires'],client_hash=row['client_hash'],session_kind='guest')
+
+    def check_guest_client(self, token, client):
+        if not isinstance(client,str) or not re.fullmatch(r'[0-9a-f]{64}',client):
+            raise HTTPException(403,'ux.guest_identity_required')
+        if token.get('session_kind')=='guest':expected=token['client_hash']
+        else:
+            with self.db() as c:row=c.execute('SELECT client_hash FROM guest_claims WHERE owner=?',(token['id'],)).fetchone()
+            expected=row[0] if row else ''
+        if not expected or not hmac.compare_digest(expected,hashlib.sha256(client.encode()).hexdigest()):
+            raise HTTPException(403,'ux.guest_identity_required')
+
+    async def join_guest(self, room, request: Request):
+        """Invitation authorizes admission only; the server owns independent guest sessions."""
+        self.ident(room)
+        value=request.headers.get('authorization','')
+        invitation=self.a['_token_resolve'](value[7:]) if value.startswith('Bearer ') else None
+        client=request.headers.get('x-guest-client','')
+        if not re.fullmatch(r'[0-9a-f]{64}',client):raise HTTPException(422,'ux.guest_identity_required')
+        p=await self.payload(request)
+        if set(p)-{'resume_token'}:raise HTTPException(422,'ux.invalid_settings')
+        if not invitation or invitation['room']!=room:raise HTTPException(403,'ux.guest_invitation_invalid')
+        cfg=self.a['_cfg_load']()
+        if room in set(cfg.get('archived_rooms',[])):raise HTTPException(403,'ux.guest_invitation_invalid')
+        self.rate_check('join:'+invitation['id'],60)
+        with self.lock:
+            canonical=self.a['_canonical_invitation'](room,create=False)
+            if not canonical:raise HTTPException(403,'ux.guest_invitation_invalid')
+            resume=p.get('resume_token','')
+            current=self.resolve_guest(resume) if isinstance(resume,str) else None
+            if current and current['room']==room:
+                try:self.check_guest_client(current,client)
+                except HTTPException:current=None
+            if current and current.get('session_kind')!='guest':
+                with self.db() as c:pending=c.execute('SELECT 1 FROM tracks WHERE owner=? AND finalized=0 LIMIT 1',(current['id'],)).fetchone()
+                if not pending:current=None
+            if current and current.get('session_kind')!='guest':
+                # Keep historical owner and bearer fingerprint for pending pre-update chunks.
+                return dict(ok=True,token=resume,guest='g_'+current['id'],invitation_token=canonical['token'],legacy=True)
+            digest=hashlib.sha256(client.encode()).hexdigest()
+            expires=time.time()+max(1,min(365,int(cfg.get('token_days',7))))*86400
+            with self.db() as c:
+                row=c.execute('SELECT * FROM guest_sessions WHERE room=? AND client_hash=? AND revoked=0',(room,digest)).fetchone()
+                if row:
+                    owner=row['owner']
+                    if current and current['id']==owner:credential=resume
+                    else:
+                        if owner in self.guest_sockets:raise HTTPException(409,'ux.guest_identity_busy')
+                        credential='gs_'+secrets.token_urlsafe(32)
+                    c.execute('UPDATE guest_sessions SET credential_hash=?,expires=?,invitation_id=? WHERE owner=?',
+                              (hashlib.sha256(credential.encode()).hexdigest(),expires,canonical['id'],owner))
+                else:
+                    owner=secrets.token_hex(16);credential='gs_'+secrets.token_urlsafe(32)
+                    c.execute('INSERT INTO guest_sessions VALUES(?,?,?,?,?,?,?,0)',
+                              (owner,room,hashlib.sha256(credential.encode()).hexdigest(),digest,canonical['id'],time.time(),expires))
+                c.execute('INSERT OR REPLACE INTO admissions VALUES(?,?)',(owner,time.time()))
+            self.audit('guest','session.admit',room,{'owner':owner})
+        return dict(ok=True,token=credential,guest='g_'+owner,invitation_token=canonical['token'],expires_at=expires,legacy=False)
+
+    def revoke_guest_owner(self, owner):
+        with self.db() as c:c.execute('UPDATE guest_sessions SET revoked=1 WHERE owner=?',(owner,))
+        self.a['_token_revoke'](owner)
+
+    def reserve_guest_socket(self, token, socket):
+        with self.lock:
+            if token["id"] in self.guest_sockets:
+                return False
+            self.guest_sockets[token["id"]] = socket
+            self.guest_socket_rooms[token["id"]] = token["room"]
+        return True
+
+    def release_guest_socket(self, token, socket):
+        with self.lock:
+            if self.guest_sockets.get(token["id"]) is socket:
+                del self.guest_sockets[token["id"]]
+                self.guest_socket_rooms.pop(token["id"],None)
+
     def guest(self, request, room, guest=None, admission=False):
         header = request.headers.get("authorization", "")
         value = header[7:] if header.startswith("Bearer ") else ""
-        t = self.a["_token_resolve"](value) if value else None
+        t = self.resolve_guest(value) if value else None
         if not t or t["room"] != room:
             raise HTTPException(403, "Invalid or revoked invitation")
+        self.check_guest_client(t, request.headers.get("x-guest-client", ""))
         if guest and guest != "g_" + t["id"]:
             raise HTTPException(403, "Track identity does not belong to invitation")
         if admission:
@@ -243,6 +368,57 @@ class Studio:
             raise HTTPException(404, "Unknown recording session")
         return self.take(room, session, create=True)
 
+    def purge_room_data(self, room):
+        """Delete the local incarnation, not pending provider-cleanup conferences."""
+        with self.lock:
+            with self.a['_DB_LOCK'],self.a['_db_conn']() as c:
+                owners={r[0] for r in c.execute('SELECT id FROM guest_tokens WHERE room=?',(room,))}
+                markers=[r[0] for r in c.execute('SELECT id FROM markers WHERE room=?',(room,))]
+                for table in ('room_invitations','guest_tokens','markers','recording_sessions','clip_events','guest_logs','rooms'):
+                    c.execute('DELETE FROM '+table+' WHERE room=?',(room,))
+                c.commit()
+            with self.db() as c:
+                for table in ('guest_sessions','guest_consents','tracks'):
+                    owners.update(r[0] for r in c.execute('SELECT owner FROM '+table+' WHERE room=?',(room,)))
+                for owner in owners:
+                    for table in ('admissions','guest_claims'):
+                        c.execute('DELETE FROM '+table+' WHERE owner=?',(owner,))
+                for marker in markers:c.execute('DELETE FROM marker_extra WHERE id=?',(marker,))
+                for table in ('guest_sessions','guest_consents','privacy_requests','chunks','tracks','takes','room_state'):
+                    c.execute('DELETE FROM '+table+' WHERE room=?',(room,))
+            for owner in owners:
+                self.guest_sockets.pop(owner,None)
+                self.guest_socket_rooms.pop(owner,None)
+
+    def repair_deleted_room_data(self):
+        """Repair only demonstrably orphaned pre-fix data; keep current takes/files."""
+        with self.a['_DB_LOCK'],self.a['_db_conn']() as c:
+            registry={r['room']:r['created_at'] for r in c.execute('SELECT room,created_at FROM rooms')}
+            sessions={(r['room'],r['session']) for r in c.execute('SELECT room,session FROM recording_sessions')}
+            token_ids={r['id'] for r in c.execute('SELECT id FROM guest_tokens')}
+            marker_ids={r['id'] for r in c.execute('SELECT id FROM markers')}
+        with self.lock,self.db() as c:
+            orphan_takes=[(r['room'],r['session']) for r in c.execute('SELECT room,session FROM takes') if (r['room'],r['session']) not in sessions]
+            for room,session in orphan_takes:
+                # Missing registry/session alone must not delete recoverable physical media.
+                physical=self.uploads/room
+                if physical.exists() and any((g/session).exists() for g in physical.iterdir()):continue
+                for table in ('chunks','tracks','takes'):c.execute('DELETE FROM '+table+' WHERE room=? AND session=?',(room,session))
+            stale_owners=[r['owner'] for r in c.execute('SELECT owner,invitation_id FROM guest_sessions') if r['invitation_id'] not in token_ids]
+            for owner in stale_owners:
+                for table in ('guest_sessions','guest_consents','admissions','guest_claims'):c.execute('DELETE FROM '+table+' WHERE owner=?',(owner,))
+            for row in c.execute('SELECT id FROM marker_extra').fetchall():
+                if row['id'] not in marker_ids:c.execute('DELETE FROM marker_extra WHERE id=?',(row['id'],))
+            for row in c.execute('SELECT room,value FROM room_state').fetchall():
+                room=row['room'];value=json.loads(row['value']);session=value.get('rec_session') or value.get('command',{}).get('session')
+                gone=room not in registry and not (self.uploads/room).exists()
+                stale=session and (room,session) not in sessions and not (self.uploads/room).exists()
+                if gone or stale:c.execute('DELETE FROM room_state WHERE room=?',(room,))
+        # An orphaned canonical invitation must never appear in the management UI.
+        with self.a['_DB_LOCK'],self.a['_db_conn']() as c:
+            c.execute('DELETE FROM room_invitations WHERE token_id NOT IN (SELECT id FROM guest_tokens)')
+            c.commit()
+
     def restore_rooms(self):
         with self.db() as c:
             rows = c.execute("SELECT * FROM room_state").fetchall()
@@ -252,7 +428,8 @@ class Studio:
             r.update(value)
 
     def persist_room(self, room):
-        r = self.a["ROOMS"].get(room, {})
+        r = self.a["ROOMS"].get(room)
+        if r is None:return
         value = {k: r[k] for k in ("command", "settings", "rec_state", "rec_session", "rec_started_at") if k in r}
         with self.db() as c:
             c.execute("INSERT OR REPLACE INTO room_state VALUES(?,?)", (room, json.dumps(value)))
@@ -729,7 +906,8 @@ class Studio:
             if not isinstance(cfg[k],bool):raise HTTPException(422,f"{k}: boolean required")
         for k in ("consent_text","consent_text_en","privacy_policy","storage_region","backup_policy"):
             if not isinstance(cfg[k],str) or len(cfg[k])>12000:raise HTTPException(422,f"Invalid {k}")
-        if not cfg["consent_text"].strip() or not cfg["consent_text_en"].strip():raise HTTPException(422,"Consent text must not be empty")
+        if not cfg["consent_text"].strip() or not cfg["consent_text_en"].strip():raise HTTPException(422,"ux.consent_empty")
+        for k in ("consent_text","consent_text_en"):cfg[k]=cfg[k].strip()
         if not isinstance(cfg["profiles"],list) or not 1<=len(cfg["profiles"])<=20:raise HTTPException(422,"1..20 profiles required")
         ids=set()
         for pro in cfg["profiles"]:
@@ -764,20 +942,27 @@ class Studio:
             self.config=cfg
             self.a["MARKER_KINDS"]=set(x["id"] for x in cats)
         self.audit(role,"settings.update",detail={"fields":list(p)})
-        return {"ok":True}
+        return {"ok":True,"config":cfg}
 
+    def consent_policy(self,room):
+        """A single authoritative localized text/digest snapshot for display and receipt."""
+        config=self.config
+        locale="en" if self.a["_room_locale"](room)=="en" else "de"
+        text=config["consent_text_en" if locale=="en" else "consent_text"]
+        return dict(consent_text=text,consent_locale=locale,consent_digest=hashlib.sha256(text.encode()).hexdigest())
 
     async def consent(self, room, request: Request):
         token = self.guest(request, room, admission=True)
         p = await self.payload(request)
         if p.get("accepted") is not True:
             raise HTTPException(422, "ux.consent_required")
-        text=self.config["consent_text_en" if self.a["_room_locale"](room)=="en" else "consent_text"]
-        if p.get("digest")!=hashlib.sha256(text.encode()).hexdigest():
-            raise HTTPException(409,"ux.consent_changed")
-        with self.db() as c:
+        with self.lock,self.db() as c:
+            policy=self.consent_policy(room)
+            supplied=p.get("digest")
+            if not isinstance(supplied,str) or not HASH.fullmatch(supplied) or not hmac.compare_digest(supplied,policy["consent_digest"]):
+                raise HTTPException(409,"ux.consent_changed")
             c.execute("INSERT OR REPLACE INTO guest_consents VALUES(?,?,?,?)",
-                      (token["id"], room, hashlib.sha256(self.config["consent_text_en" if self.a["_room_locale"](room)=="en" else "consent_text"].encode()).hexdigest(), time.time()))
+                      (token["id"], room, policy["consent_digest"], time.time()))
         return {"ok": True}
 
     def bootstrap(self,room,request: Request):
@@ -787,9 +972,9 @@ class Studio:
         if r.get("rec_session") and r.get("rec_state")=="recording":
             t=self.take(room,r["rec_session"])
             if t:pro=json.loads(t["profile"])
-        policy={k:self.config[k] for k in ("consent_text","privacy_policy","retention_days","storage_region","backup_policy","collect_device_metadata","upload_kbps","pause_uploads_during_recording","max_duration_s")}
-        if self.a["_room_locale"](room)=="en":policy["consent_text"]=self.config["consent_text_en"]
-        policy["consent_digest"]=hashlib.sha256(policy["consent_text"].encode()).hexdigest()
+        with self.lock:
+            policy={k:self.config[k] for k in ("privacy_policy","retention_days","storage_region","backup_policy","collect_device_metadata","upload_kbps","pause_uploads_during_recording","max_duration_s")}
+            policy.update(self.consent_policy(room))
         return dict(ok=True,guest="g_"+token["id"],profile=pro,policy=policy)
 
 
@@ -812,7 +997,7 @@ class Studio:
             sessions=sorted({(t["room"],t["session"]) for t in tracks})
             if any(self.a["_session_in_use"](*s) for s in sessions):raise HTTPException(409,"A recording is active")
             for room,s in sessions:await asyncio.to_thread(self.delete_take,room,s,role)
-            self.a["_token_revoke"](r["owner"])
+            self.revoke_guest_owner(r["owner"])
         else:
             # Admin downloads identified session packages and supplies them securely to requester.
             if p.get("delivered") is not True:
@@ -889,14 +1074,14 @@ class SecurityMiddleware:
         host=headers.get(b"host",b"").decode()
         origin=headers.get(b"origin",b"").decode()
         allowed=s.origins or {("https" if scope.get("scheme") in ("https","wss") else "http")+"://"+host}
-        if origin and origin not in allowed:return await deny(403,"Origin denied")
+        if origin and origin not in allowed and path!='/api/jitsi/webhook':return await deny(403,"Origin denied")
         if s.production and not s.origins:return await deny(503,"Configure STUDIO_ALLOWED_ORIGINS")
         if scope.get("method") in ("POST","PUT","PATCH","DELETE") and not origin and b"cookie" in headers and headers.get(b"sec-fetch-site")==b"cross-site":
             return await deny(403,"Cross-site write denied")
         try:
             s.rate_check("ip:"+str(scope.get("client",("unknown",))[0]),s.config["requests_per_minute"])
         except HTTPException as e:return await deny(e.status_code,e.detail)
-        auth_role=None;token=None
+        auth_role=None;token=None;value=""
         if ws:
             from http.cookies import SimpleCookie
             jar=SimpleCookie();jar.load(headers.get(b"cookie",b"").decode())
@@ -906,10 +1091,11 @@ class SecurityMiddleware:
                 if not auth_role:return await deny(401,"Authentication required")
             elif path.startswith("/ws/guest/"):
                 q=parse_qs(scope.get("query_string",b"").decode());value=q.get("token",[""])[0]
-                token=s.a["_token_resolve"](value)
+                token=s.resolve_guest(value)
                 parts=path.split("/")
-                if not token or token["room"]!=parts[-2] or parts[-1]!="g_"+token["id"]:return await deny(403,"Invalid guest identity")
-                guests=s.a["ROOMS"].get(token["room"],{}).get("guests",{})
+                if value and (not token or token["room"]!=parts[-2] or parts[-1]!="g_"+token["id"]):return await deny(403,"Invalid guest identity")
+                if not IDENT.fullmatch(parts[-2]) or not IDENT.fullmatch(parts[-1]):return await deny(403,"Invalid guest identity")
+                guests=s.a["ROOMS"].get(parts[-2],{}).get("guests",{})
                 active=sum(time.time()-g.get("last_seen",0)<120 for g in guests.values())
                 if parts[-1] not in guests and active>=s.config["max_guests"]:return await deny(429,"Room full")
         # Deny legacy writes to immutable approved markers and destructive bypasses.
@@ -932,7 +1118,7 @@ class SecurityMiddleware:
         original_receive=receive
         count=0;window=time.monotonic();body_bytes=0
         async def guarded_receive():
-            nonlocal count,window,body_bytes
+            nonlocal count,window,body_bytes,token,value
             msg=await original_receive()
             if msg["type"]=="http.request":
                 body_bytes+=len(msg.get("body",b""))
@@ -942,7 +1128,19 @@ class SecurityMiddleware:
                 size=len(msg.get("text","") or "")+len(msg.get("bytes",b"") or b"")
                 if time.monotonic()-window>=1:window=time.monotonic();count=0
                 count+=1
-                revoked=token and not s.a["_token_resolve"](value)
+                if size>65536:
+                    from starlette.websockets import WebSocketDisconnect
+                    await send({'type':'websocket.close','code':4403});raise WebSocketDisconnect(4403)
+                if path.startswith('/ws/guest/') and token is None:
+                    try:
+                        frame=json.loads(msg.get('text') or msg.get('bytes') or b'{}')
+                        value=frame.get('token','') if frame.get('type')=='hello' else ''
+                        token=s.resolve_guest(value)
+                    except (ValueError,TypeError,AttributeError):token=None
+                    if not token or token['room']!=path.split('/')[-2] or 'g_'+token['id']!=path.split('/')[-1]:
+                        from starlette.websockets import WebSocketDisconnect
+                        await send({'type':'websocket.close','code':4403});raise WebSocketDisconnect(4403)
+                revoked=token and not s.resolve_guest(value)
                 expired=auth_role and not s.a["_session_role"](cookie.value if cookie else "")
                 if size>65536 or count>40 or revoked or expired:
                     from starlette.websockets import WebSocketDisconnect
@@ -958,8 +1156,9 @@ class SecurityMiddleware:
                 permissions = "camera=(self), microphone=(self), geolocation=()"
                 # Delegate only to the selected HTTPS origin on call pages; never on Admin.
                 public_origin = getattr(s, "jitsi_embed_origin", lambda: "")()
-                if public_origin and path in ("/host", "/host.html", "/recorder.html"):
-                    policy = policy.replace("script-src 'self'", "script-src 'self' " + public_origin + "/external_api.js")
+                sdk_url = getattr(s, "jitsi_sdk_url", lambda: public_origin + "/external_api.js")()
+                if public_origin and sdk_url and path in ("/host", "/host.html", "/recorder.html"):
+                    policy = policy.replace("script-src 'self'", "script-src 'self' " + sdk_url)
                     policy += "; frame-src " + public_origin
                     permissions = 'camera=(self "' + public_origin + '"), microphone=(self "' + public_origin + '"), geolocation=()'
                 else:
@@ -977,6 +1176,11 @@ class SecurityMiddleware:
 
 def install(api):
     s=Studio(api);app=api["app"]
+    resolve_token = api["_token_resolve"]
+    def resolve_with_parent(value):
+        token = resolve_token(value)
+        return token if token and s.token_parent_valid(token) else None
+    api["_token_resolve"] = resolve_with_parent
     # Epoch-based cookie invalidation also covers already-open host sockets.
     def make_cookie(role="admin"):
         with s.db() as c:epoch=c.execute("SELECT epoch FROM security WHERE id=1").fetchone()[0]
@@ -1011,7 +1215,7 @@ def install(api):
     app.add_api_route("/finish/{room}/{guest}/{session}",s.finish,methods=["POST"])
     app.add_api_route("/admin/session-export/{room}/{session}",s.export_session,methods=["GET"])
     prefix="/api/studio"
-    routes=[("/consent/{room}",s.consent,["POST"]),("/bootstrap/{room}",s.bootstrap,["GET"]),("/manifest/{room}/{guest}/{session}",s.manifest,["GET"]),
+    routes=[("/join/{room}",s.join_guest,["POST"]),("/consent/{room}",s.consent,["POST"]),("/bootstrap/{room}",s.bootstrap,["GET"]),("/manifest/{room}/{guest}/{session}",s.manifest,["GET"]),
             ("/telemetry/{room}/{guest}/{session}",s.telemetry,["POST"]),("/sessions",s.overview,["GET"]),
             ("/session/{room}/{session}",s.session_edit,["PATCH"]),("/session/{room}/{session}/{action}",s.action,["POST"]),
             ("/markers/{room}/{session}/export",s.export_markers,["GET"]),("/marker/{id_}",s.marker_edit,["PATCH"]),

@@ -558,7 +558,21 @@
   .profile-fields input:focus-visible,.profile-fields textarea:focus-visible,#jitsi-settings select:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
   #audio-profiles .preset-card{align-content:start}
   #audio-profiles .preset-card form{grid-template-columns:1fr}
+  .jitsi-settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:start}
+  .jitsi-field{display:flex;flex-direction:column;gap:6px;min-width:0}
+  .jitsi-field input,.jitsi-field select{width:100%;box-sizing:border-box;min-width:0}
+  .jitsi-field input{height:40px}
+  .jitsi-field small{color:var(--muted);font-size:12px;line-height:1.5}
+  .jitsi-field input[aria-invalid="true"]{border-color:#e5484d}
+  .jitsi-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:16px}
+  .jitsi-usage{margin-top:20px;padding-top:16px;border-top:1px solid var(--border);min-width:0}
+  .jitsi-usage .overview-dashboard{margin:10px 0}
+  .jitsi-usage .overview-card{min-width:0}
+  #jaas-mau-period,#jaas-webhook-status{font-size:clamp(18px,2.2vw,24px);line-height:1.25;overflow-wrap:anywhere}
+  .jitsi-usage .detail{overflow-wrap:anywhere}
+  @media(max-width:640px){.jitsi-settings-grid{grid-template-columns:1fr}}
   #consent-settings textarea{resize:vertical}
+  #consent-settings .consent-editor{grid-column:1/-1}
 
 </style>
 <!-- Branding zuletzt: ueberschreibt die :root-Defaults oben. -->
@@ -583,9 +597,9 @@
     </div>
   </header>
 
-  <section class="panel" id="jitsi-settings" aria-label="Jitsi"></section>
-  <section class="panel" id="audio-profiles" aria-label="Audio profiles"></section>
-  <section class="panel" id="consent-settings" aria-label="Recording consent"></section>
+  <section class="panel" id="jitsi-settings" data-i18n-aria-label="ux.jitsi_settings" aria-label="Jitsi"></section>
+  <section class="panel" id="audio-profiles" data-i18n-aria-label="ux.audio_profiles" aria-label="Audioprofile"></section>
+  <section class="panel" id="consent-settings" data-i18n-aria-label="ux.consent_settings" aria-label="Aufnahme und Datenschutz"></section>
 
   <!-- Globale Einstellungen -->
   <div class="panel">
@@ -593,8 +607,8 @@
     <div style="margin-top:14px">
       <div class="cfg-row cfg-row-num">
         <div>
-          <label>Gast-Token-Laufzeit</label>
-          <div class="desc">Wie viele Tage ist ein neu generierter Einladungslink gültig?</div>
+          <label data-i18n="ux.guest_session_lifetime">Gast-Anmeldungsdauer</label>
+          <div class="desc" data-i18n="ux.guest_session_lifetime_hint">Raumlinks bleiben gleich. Diese Dauer gilt nur für persönliche Gastanmeldungen.</div>
         </div>
         <div class="num-wrap">
           <input type="number" id="cfgTokenDays" min="1" max="365" value="7">
@@ -637,7 +651,7 @@
           <div class="desc">Gilt für Host-Studio, Recorder und dieses Panel. Fehlende Texte fallen auf Deutsch zurück.</div>
         </div>
         <select id="cfgLocale" style="min-width:180px;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font:inherit">
-          <option value="de">Deutsch</option>
+          <option value="de" data-i18n="ux.language_de">Deutsch</option>
         </select>
       </div>
       <div class="cfg-row">
@@ -1021,7 +1035,7 @@
       for (const l of data.locales) {
         const opt = document.createElement('option');
         opt.value = l.code;
-        opt.textContent = l.native_name || l.name || l.code;
+        opt.textContent = ['de','en'].includes(l.code) ? PodcastUX.t('language_'+l.code) : (l.native_name || l.name || l.code);
         sel.appendChild(opt);
       }
     } catch {}
@@ -1481,7 +1495,7 @@
             ${t.label && t.label !== t.room ? `<div style="color:var(--muted);font-size:13px">${esc(t.label)}</div>` : ''}</div>
           <div class="prev">${esc(t.token_preview)}</div>
           <div class="when">${fmtDate(t.created_at)}</div>
-          <div class="when">${fmtDate(t.expires_at)}</div>
+          <div class="when">${t.permanent?esc(PodcastUX.t('room_link_permanent')):fmtDate(t.expires_at)}</div>
           <div class="tok-actions">
             <span class="pill ${st.cls}">${st.label}</span>
             ${t.active ? `<button class="btn btn-warn" data-act="revoke" data-id="${esc(t.id)}">Widerrufen</button>` : ''}
@@ -1832,9 +1846,9 @@
       if (!confirm(`Raum "${room}" komplett löschen (alle Aufnahmen + Token)? Das kann nicht rückgängig gemacht werden.`)) return;
       try {
         const res = await apiFetch(`${SERVER}/admin/room/${encodeURIComponent(room)}`, { method: 'DELETE' });
-        if (!res.ok) throw new Error('HTTP ' + res.status);
+        if (!res.ok) {const data=await res.json().catch(()=>({}));throw new Error(typeof data.detail==='string'?data.detail:'ux.http_error');}
         loadRooms(); load(); loadTokens();
-      } catch (err) { alert('Fehler: ' + err.message); }
+      } catch (err) { PodcastUX.toast(PodcastUX.error(err),'error'); }
     }
   });
   $('refreshRoomsBtn').addEventListener('click', loadRooms);

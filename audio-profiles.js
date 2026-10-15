@@ -20,9 +20,35 @@ function render(){list.replaceChildren();for(const p of config.profiles){const a
  card.dataset.profile=p.id;actions.append(select,edit,remove);card.append(actions);list.append(card);}
 }
 add.onclick=()=>{if(busy||!config)return;render();const p={...config.profiles.find(p=>p.id===config.default_profile),id:'audio-'+crypto.randomUUID(),name:t('new_profile')};const card=el('article',undefined,{class:'preset-card'});list.append(card);editor(card,p,true);};
-const consent=document.getElementById('consent-settings'),consentForm=el('form',undefined,{class:'profile-fields'}),consentInputs={};consent.append(el('h2',t('consent_settings')),el('p',t('consent_help'),{class:'sub'}));
-for(const [key,title] of [['consent_text','consent_de'],['consent_text_en','consent_en']]){const label=el('label',t(title),{for:key});const input=el('textarea',undefined,{id:key,required:'',maxlength:'12000',rows:'5'});consentInputs[key]=input;label.append(input);consentForm.append(label);}
-const consentSave=el('button',t('save'),{type:'submit',class:'btn btn-primary'}),consentStatus=el('p','',{role:'status'});consentForm.append(consentSave,consentStatus);consent.append(consentForm);
-consentForm.onsubmit=async e=>{e.preventDefault();consentSave.disabled=true;try{await request('/api/studio/settings',{method:'PUT',body:JSON.stringify(Object.fromEntries(Object.entries(consentInputs).map(([k,n])=>[k,n.value.trim()])))});consentStatus.textContent=t('saved');}catch(e){consentStatus.textContent=error(e);}finally{consentSave.disabled=false;}};
-request('/api/studio/settings').then(d=>{config=d.config;render();for(const [k,n] of Object.entries(consentInputs))n.value=config[k];add.disabled=false;status.textContent='';}).catch(e=>{status.textContent=error(e);consentSave.disabled=true;});
+const consent=document.getElementById('consent-settings'),consentForm=el('form',undefined,{class:'profile-fields'});
+consent.append(el('h2',t('consent_settings')),el('p',t('consent_help'),{class:'sub'}));
+const globalLanguage=document.getElementById('cfgLocale');
+let consentLocale=window.OpenPodcastI18n.locale==='en'?'en':'de',consentBusy=false;
+const consentDrafts={de:'',en:''},consentSaved={de:'',en:''};
+const languageHint=el('small',t('consent_global_language'));
+// One editor, independent drafts per locale; never overwrite the other translation.
+const consentInput=el('textarea',undefined,{id:'consent-text',required:'',maxlength:'12000',rows:'6',disabled:'',translate:'no','data-i18n-ignore':''});
+const consentLabel=el('label',t('consent_text_label'),{for:'consent-text',class:'consent-editor'});consentLabel.append(consentInput);
+const consentSave=el('button',t('save'),{type:'submit',class:'btn btn-primary',disabled:''}),consentStatus=el('p','',{role:'status','aria-live':'polite'});
+consentForm.append(consentLabel,languageHint,consentSave,consentStatus);consent.append(consentForm);
+function consentKey(code){return code==='en'?'consent_text_en':'consent_text';}
+function showConsentDraft(){consentInput.value=consentDrafts[consentLocale];consentInput.lang=consentLocale;languageHint.textContent=t('consent_global_language')+' '+t('language_'+consentLocale);consentStatus.textContent=consentDrafts[consentLocale]!==consentSaved[consentLocale]?t('unsaved_changes'):'';}
+consentInput.oninput=()=>{consentDrafts[consentLocale]=consentInput.value;consentStatus.textContent=t('unsaved_changes');};
+function useConsentLocale(code){
+ const next=code==='en'?'en':'de';if(next===consentLocale)return;
+ consentDrafts[consentLocale]=consentInput.value;consentLocale=next;if(config)showConsentDraft();
+}
+globalLanguage?.addEventListener('change',()=>useConsentLocale(globalLanguage.value));
+document.addEventListener('i18n:applied',e=>useConsentLocale(e.detail.locale));
+consentForm.onsubmit=async e=>{
+ e.preventDefault();if(consentBusy||!config||!consentForm.reportValidity())return;
+ const code=consentLocale,key=consentKey(code),value=consentInput.value.trim();
+ if(!value){consentStatus.textContent=t('consent_empty');return;}
+ consentBusy=true;for(const n of [consentInput,consentSave])n.disabled=true;consentStatus.textContent=t('saving');
+ try{const result=await request('/api/studio/settings',{method:'PUT',body:JSON.stringify({[key]:value})});
+   const stored=result.config?.[key]??value;config[key]=stored;consentSaved[code]=stored;consentDrafts[code]=stored;if(consentLocale===code){consentInput.value=stored;consentStatus.textContent=t('saved');}
+ }catch(e){consentStatus.textContent=error(e);}finally{consentBusy=false;for(const n of [consentInput,consentSave])n.disabled=false;}
+};
+window.addEventListener('beforeunload',e=>{consentDrafts[consentLocale]=consentInput.value;if(config&&['de','en'].some(code=>consentDrafts[code]!==consentSaved[code])){e.preventDefault();e.returnValue='';}});
+request('/api/studio/settings').then(d=>{config=d.config;render();for(const code of ['de','en'])consentSaved[code]=consentDrafts[code]=config[consentKey(code)];showConsentDraft();for(const n of [consentInput,consentSave])n.disabled=false;add.disabled=false;status.textContent='';}).catch(e=>{status.textContent=error(e);consentStatus.textContent=error(e);});
 })();

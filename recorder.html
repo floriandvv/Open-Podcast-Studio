@@ -472,7 +472,7 @@
 </head>
 <body class="audio-only" data-guest-phase="consent">
 <main class="wrap" id="main-content" tabindex="-1">
-  <section class="panel" id="consentGate" aria-label="Recording and privacy"><p id="consentLoading" role="status"></p></section>
+  <section class="panel" id="consentGate" data-i18n-aria-label="ux.consent_settings" aria-label="Aufnahme und Datenschutz"><p id="consentLoading" role="status"></p></section>
   <div class="guest-brand-head">
     <div class="lobby-brand" id="lobbyBrand" aria-label="Marke des Aufnahmestudios">
       <img id="lobbyBrandImg" alt="" />
@@ -651,7 +651,7 @@
   let studioEvents = [], lastMonitorTick = Date.now(), maxDurationTimer = null;
   let releaseRecorderLease = null;
   const studioEvent = type => { studioEvents.push({type, at: Date.now()}); studioEvents = studioEvents.slice(-200); };
-  const tokenFingerprint = async () => sha256(new TextEncoder().encode(guestToken));
+  const tokenFingerprint = async () => sha256(new TextEncoder().encode(legacyGuest ? guestToken : 'guest-session\0'+guestClientSecret+'\0'+studioGuest));
   async function sha256(data) {
     const bytes = data instanceof Blob ? await data.arrayBuffer() : data;
     return [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map(x=>x.toString(16).padStart(2,'0')).join('');
@@ -661,7 +661,7 @@
     const timer = setTimeout(()=>controller.abort(), url.includes('/finish/') ? 1800000 : 60000);
     try {
       const response = await fetch(url, {...options, signal:controller.signal,
-        headers:{...options.headers, Authorization:'Bearer '+guestToken}});
+        headers:{...options.headers, Authorization:'Bearer '+guestToken, 'X-Guest-Client':guestClientSecret}});
       const data = await response.json().catch(()=>({}));
       if (!response.ok || data.ok === false) {
         const error = new Error(typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail || response.status));
@@ -683,10 +683,14 @@
     if (consentPromise) return consentPromise;
     consentPromise = showRecordingConsent(); return consentPromise;
   }
+  async function saveConsentReceipt(room, displayedDigest) {
+    return studioFetch(`${SERVER}/api/studio/consent/${room}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({accepted:true,digest:displayedDigest})});
+  }
   async function showRecordingConsent() {
     document.body.dataset.guestPhase='consent';
     const {el,t,error}=PodcastUX,panel=$('consentGate');panel.hidden=false;
-    const title=el('h1',t('consent_settings')),text=el('p',studioPolicy.consent_text);
+    let displayedDigest=studioPolicy.consent_digest;
+    const title=el('h1',t('consent_settings')),text=el('p',studioPolicy.consent_text,{translate:'no','data-i18n-ignore':'',lang:studioPolicy.consent_locale||window.OpenPodcastI18n.locale});
     text.style.whiteSpace='pre-wrap';
     const checkbox=el('input',undefined,{type:'checkbox',id:'recordingConsent'}),label=el('label',undefined,{for:'recordingConsent'});
     label.append(checkbox,document.createTextNode(' '+t('consent_checkbox')));
@@ -697,9 +701,16 @@
     panel.replaceChildren(title,text,label,diagnostics,button,status);
     await new Promise(resolve=>button.onclick=async()=>{
       if(!checkbox.checked)return;button.disabled=true;
-      try{await studioFetch(`${SERVER}/api/studio/consent/${room}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({accepted:true,digest:studioPolicy.consent_digest})});
+      try{await saveConsentReceipt(room,displayedDigest);
         consentGranted=true;diagnosticsConsent=diag.checked;panel.hidden=true;document.body.dataset.guestPhase='name';$('nameInput').focus();resolve();
-      }catch(e){status.textContent=error(e);button.disabled=false;}
+      }catch(e){
+        status.textContent=error(e);
+        if(e.status===409){
+          checkbox.checked=false;button.disabled=true;
+          try{await loadCaptureProfile();text.textContent=studioPolicy.consent_text;text.lang=studioPolicy.consent_locale;displayedDigest=studioPolicy.consent_digest;}
+          catch(refreshError){status.textContent=error(refreshError);}
+        }else button.disabled=!checkbox.checked;
+      }
     });
   }
   const SERVER = location.origin;        // gleicher Host wie Server
@@ -733,7 +744,40 @@
   // Der Raum steckt im Token – nicht in der URL.
   // Wir lesen room erst nach erfolgreicher Token-Aufloesung.
   const params = new URLSearchParams(location.search);
-  const guestToken = params.get("token") || "";
+  let invitationToken = params.get("token") || '';
+  let guestToken = invitationToken, guestClientSecret='', identityReady=false, legacyGuest=false;
+  let resumeGuestToken='';
+  function randomClientSecret(){const b=new Uint8Array(32);crypto.getRandomValues(b);return [...b].map(v=>v.toString(16).padStart(2,'0')).join('');}
+  function loadGuestSecret(){
+    try{
+      const saved=JSON.parse(localStorage.getItem('openpodcast-guest-session:'+room)||'null');
+      if(saved){guestClientSecret=saved.client||'';resumeGuestToken=saved.credential||'';}
+      if(!guestClientSecret){guestClientSecret=localStorage.getItem('openpodcast-guest-client:'+invitationToken)||'';resumeGuestToken=invitationToken;}
+    }catch{}
+    if(!/^[0-9a-f]{64}$/.test(guestClientSecret))guestClientSecret=randomClientSecret();
+    // Preserve the browser proof even when the admission response is lost.
+    try{localStorage.setItem('openpodcast-guest-session:'+room,JSON.stringify({client:guestClientSecret,credential:resumeGuestToken}));}catch{}
+  }
+  async function claimGuestIdentity(){
+    const value=await PodcastUX.request(`${SERVER}/api/studio/join/${encodeURIComponent(room)}`,{
+      method:'POST',headers:{Authorization:'Bearer '+invitationToken,'X-Guest-Client':guestClientSecret},body:JSON.stringify({resume_token:resumeGuestToken})});
+    guestToken=value.token;studioGuest=value.guest;legacyGuest=!!value.legacy;invitationToken=value.invitation_token;
+    try{localStorage.setItem('openpodcast-guest-session:'+room,JSON.stringify({client:guestClientSecret,credential:guestToken}));}catch{}
+    const url=new URL(location.href);url.searchParams.set('token',invitationToken);url.searchParams.delete('guest');history.replaceState(null,'',url.toString());
+    return value;
+  }
+  async function lockGuestIdentity(){
+    if(!navigator.locks)throw new Error('ux.guest_multitab_unsupported');
+    const acquired=await new Promise((resolve,reject)=>{
+      navigator.locks.request('openpodcast-recorder-'+studioGuest,{ifAvailable:true},async lock=>{
+        if(!lock){resolve(false);return;}const held=new Promise(done=>{releaseRecorderLease=done;});resolve(true);await held;
+      }).catch(reject);
+    });
+    if(!acquired)throw new Error('ux.guest_identity_busy');
+    identityReady=true;
+  }
+  window.addEventListener('pagehide',()=>{releaseRecorderLease?.();releaseRecorderLease=null;});
+  window.addEventListener('pageshow',e=>{if(e.persisted&&identityReady)location.reload();});
 
   let room = null;           // wird durch resolveToken() gesetzt
   let guest = null;          // wird durch Name-Gate gesetzt
@@ -761,7 +805,7 @@
     try {
       await fetch(`${SERVER}/lobby/${encodeURIComponent(room)}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Authorization:'Bearer '+guestToken, 'X-Guest-Client':guestClientSecret },
         keepalive: !!extra.leave,
         body: JSON.stringify({
           token: guestToken, client_id: lobbyId, stage: lobbyStage, ...extra,
@@ -791,13 +835,17 @@
   });
 
   async function resolveToken() {
-    if (!guestToken) { location.href = "/token_error.html"; return false; }
+    if(identityReady)return true;
+    if (!invitationToken) { location.href = "/token_error.html"; return false; }
     try {
-      const res  = await fetch(`${SERVER}/token/resolve?token=${encodeURIComponent(guestToken)}`);
+      const res  = await fetch(`${SERVER}/token/resolve?token=${encodeURIComponent(invitationToken)}`);
       if (!res.ok) { location.href = "/token_error.html"; return false; }
       const data = await res.json();
       if (!data.ok) { location.href = "/token_error.html"; return false; }
       room = data.room;
+      loadGuestSecret();
+      await claimGuestIdentity();
+      await lockGuestIdentity();
       await loadCaptureProfile();
       await askRecordingConsent();
       // Sofort in der Lobby anmelden -- noch vor der Namenseingabe.
@@ -814,11 +862,15 @@
       if (!guest) {
         const sessionInfo = $("sessionInfo");
         if (sessionInfo) {
-          sessionInfo.textContent = `Link gültig noch ${daysLeft} Tag(e). Gib deinen Namen ein.`;
+          sessionInfo.textContent=PodcastUX.t('room_invitation_hint');
         }
       }
       return true;
-    } catch { location.href = "/token_error.html"; return false; }
+    } catch(e) {
+      identityReady=false;releaseRecorderLease?.();releaseRecorderLease=null;
+      $('consentLoading').textContent=PodcastUX.error(e);
+      return false;
+    }
   }
 
   // ---------- State ----------
@@ -2501,7 +2553,7 @@
       item.blob=rec.blob;item.sha=rec.sha||await sha256(rec.blob);
       const signal=uploadBudget.start();timer=setTimeout(()=>uploadBudget.abort?.abort(),60000);
       const start=performance.now();
-      const response=await fetch(`${SERVER}/upload/${item.room}/${item.guest}/${item.sessionId}/${String(item.idx).padStart(6,'0')}?ext=${encodeURIComponent(item.ext||'pcm')}`,{method:'PUT',headers:{'Content-Type':'application/octet-stream',Authorization:'Bearer '+guestToken,'X-Chunk-SHA256':item.sha},body:item.blob,signal});
+      const response=await fetch(`${SERVER}/upload/${item.room}/${item.guest}/${item.sessionId}/${String(item.idx).padStart(6,'0')}?ext=${encodeURIComponent(item.ext||'pcm')}`,{method:'PUT',headers:{'Content-Type':'application/octet-stream',Authorization:'Bearer '+guestToken,'X-Guest-Client':guestClientSecret,'X-Chunk-SHA256':item.sha},body:item.blob,signal});
       const receipt=await response.json();
       if(!response.ok||receipt.idx!==item.idx||receipt.bytes!==item.blob.size||receipt.sha256!==item.sha)throw new Error('Upload-Quittung ungültig: '+response.status);
       uploadRate=item.blob.size/Math.max(0.1,(performance.now()-start)/1000);return true;
@@ -2562,7 +2614,7 @@
   function wsUrl() {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     return `${proto}//${location.host}/ws/guest/${encodeURIComponent(room)}/`
-         + `${encodeURIComponent(guest)}?token=${encodeURIComponent(guestToken)}`;
+         + `${encodeURIComponent(guest)}`;
   }
 
   function connectWs() {
@@ -2575,7 +2627,7 @@
       return;     // erst nach Token + Name-Gate
     }
     const url = wsUrl();
-    try { console.log('[ws] connectWs -> ', url); } catch {}
+    // Never log the bearer token or browser identity proof.
     setConnState("connecting");
     try {
       ws = new WebSocket(url);
@@ -2587,6 +2639,7 @@
     }
     ws.onopen = () => {
       try { console.log('[ws] onopen — verbunden'); } catch {}
+      ws.send(JSON.stringify({type:'hello',client:guestClientSecret,token:guestToken}));
       wsConnected = true;
       wsReconnectDelay = 1000;       // Backoff zuruecksetzen
       if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
@@ -2606,7 +2659,18 @@
       }
       // "pong" braucht keine Behandlung -- er haelt nur die Verbindung warm.
     };
-    ws.onclose = (ev) => { try { console.warn('[ws] onclose code=', ev && ev.code, 'reason=', ev && ev.reason, 'clean=', ev && ev.wasClean); } catch {} wsConnected = false; ws = null; setConnState("offline"); scheduleWsReconnect(); };
+    ws.onclose = (ev) => {
+      wsConnected=false;ws=null;setConnState('offline');
+      if(ev.code===4409||ev.code===4403||ev.code===4401||ev.code===4404){
+        clearTimeout(wsReconnectTimer);wsReconnectTimer=null;
+        guestCall?.dispose();guestCall=null;
+        const message=PodcastUX.t(ev.code===4404?'room_deleted':ev.code===4409?'guest_identity_busy':'guest_invitation_invalid');
+        setStatus(message);log(message,'err');
+        if(isRecording)stopRecording().catch(e=>log(PodcastUX.error(e),'err'));
+        return;
+      }
+      scheduleWsReconnect();
+    };
     ws.onerror = (ev) => { try { console.error('[ws] onerror', ev); } catch {} try { ws.close(); } catch {} };
   }
 
@@ -2844,18 +2908,8 @@
 
       try {
         db = await openDb();
-        if(!navigator.locks)throw new Error('Dieser Browser bietet keinen sicheren Mehrtab-Aufnahmeschutz');
-        await new Promise((resolve,reject)=>{
-          navigator.locks.request('openpodcast-recorder-'+studioGuest,{ifAvailable:true},async lock=>{
-            if(!lock){reject(new Error('Ein anderer Tab verwendet diese Einladung bereits'));return;}
-            try {
-              await requestPersistence();
-              await gcOldChunks();
-              resolve();
-            } catch(e) { reject(e); }
-            await new Promise(done=>{releaseRecorderLease=done;});
-          }).catch(reject);
-        });
+        await requestPersistence();
+        await gcOldChunks();
       } catch (err) {
         log("IndexedDB nicht verfügbar: " + err.message + " — Aufnahme wird aus Datensicherheitsgründen nicht gestartet", "err");
         setStatus("Lokaler Speicher nicht verfügbar — Aufnahme blockiert.");
@@ -2873,7 +2927,7 @@
       setStatus("Frage Berechtigungen ab…");
       // Im Default (Audio-Only) reicht Audio. Bei Video-Modus holen wir Video beim Rebuild.
       if (!guestCall) {
-        guestCall=PodcastJitsi.mountGuest({budget:uploadBudget,room,token:guestToken,
+        guestCall=PodcastJitsi.mountGuest({budget:uploadBudget,room,token:guestToken,clientSecret:()=>guestClientSecret,
           name:()=>displayName,parent:$('bottomStack'),onState:async value=>{
             if(!isRecording&&!recordingStarting){
               const p=value.profile;const changed=captureProfile&&JSON.stringify(captureProfile)!==JSON.stringify(p);
@@ -3008,7 +3062,7 @@
     // Log-Event: Gast hat seinen Namen eingegeben und betritt die Recorder-UI.
     try { log(`Name bestätigt: ${displayName} (${guest})`, "ok"); } catch {}
     const url = new URL(location.href);
-    url.searchParams.set("guest", guest);
+    url.searchParams.delete("guest");
     history.replaceState(null, "", url.toString());
 
     // Oben im Header nicht mehr den Token-/Name-Hinweis zeigen, sobald der Name feststeht.
@@ -3035,7 +3089,7 @@
 
     // Echtzeit-Kanal aufbauen, sobald der Gastname (und damit guest) feststeht.
     try { console.log('[submitName] fertig — guest=', guest, 'room=', room, '-> connectWs()'); } catch {}
-    try { log('connectWs(): versuche WebSocket zu ' + wsUrl(), 'ok'); } catch {}
+    try { log('connectWs(): '+PodcastUX.t('guest_connecting'), 'ok'); } catch {}
     connectWs();
 
     // Sofort Heartbeat senden, damit UI/Host direkt den Namen sieht
@@ -3071,7 +3125,7 @@
   $("consentLoading").textContent=PodcastUX.t("guest_loading");
   resolveToken().then(ok => {
     if (ok && !guest) { lobbyStage = "naming"; startLobbyPresence(); }
-    if(!ok && $("consentLoading"))$("consentLoading").textContent=PodcastUX.t("guest_error");
+    if(!ok && $('consentLoading')&&!$('consentLoading').textContent)$('consentLoading').textContent=PodcastUX.t('guest_error');
   });
   if(consentGranted)$("nameInput").focus();
 })();

@@ -1,17 +1,17 @@
-/* Call UI uses the IFrame API for both providers; the host never joins. */
+/* Call UI uses the IFrame API for all providers; the host never joins. */
 (() => {
 'use strict';
-const {el,t,error,request}=window.PodcastUX;
-let library=null,libraryOrigin='';
-function loadSDK(origin){
-  if(libraryOrigin&&libraryOrigin!==origin)return Promise.reject(new Error('ux.reload_after_recording'));
+  const {el,t,error,request}=window.PodcastUX;
+let library=null,libraryURL='';
+function loadSDK(url){
+  if(libraryURL&&libraryURL!==url)return Promise.reject(new Error('ux.reload_after_recording'));
   if(!library){
-    libraryOrigin=origin;
+    libraryURL=url;
     library=new Promise((resolve,reject)=>{
       const script=el('script');let done=false;
       const finish=e=>{if(done)return;done=true;clearTimeout(timer);script.onload=script.onerror=null;if(e){script.remove();reject(e);}else resolve(window.JitsiMeetExternalAPI);};
       const timer=setTimeout(()=>finish(new Error('ux.provider_unavailable')),15000);
-      script.src=origin+'/external_api.js';script.referrerPolicy='no-referrer';
+      script.src=url;script.referrerPolicy='no-referrer';
       script.onload=()=>finish(typeof window.JitsiMeetExternalAPI==='function'?null:new Error('ux.provider_unavailable'));
       script.onerror=()=>finish(new Error('ux.embed_failed'));document.head.append(script);
     }).catch(e=>{library=null;throw e;});
@@ -21,7 +21,7 @@ function loadSDK(origin){
 function style(){if(document.getElementById('call-style'))return;const css=el('style',undefined,{id:'call-style'});css.textContent=`.call-panel{margin:0;padding:12px 16px;min-width:0;border:1px solid var(--border);border-radius:10px;background:var(--panel)}.call-panel[hidden]{display:none!important}.call-panel p{margin:0;font-size:13px;line-height:1.5;overflow-wrap:anywhere}.call-frame{width:100%;height:360px;margin-top:10px;min-width:0}.call-frame.prejoin{height:460px}.call-frame iframe{border:0;max-width:100%}.call-provider{color:var(--muted);font-size:12px!important}.call-toggle:focus-visible{outline:2px solid var(--brand);outline-offset:3px}@media(max-width:600px){.call-frame{height:360px}.call-frame.prejoin{height:480px}}`;document.head.append(css);}
 class CallBase {
   constructor(o){this.o=o;this.room=o.room;this.snapshot=null;this.busy=false;this.disposed=false;style();}
-  headers(){return this.o.token?{Authorization:'Bearer '+this.o.token}:{'X-Host-Client':this.o.clientId()};}
+  headers(){return this.o.token?{Authorization:'Bearer '+this.o.token,...(this.o.clientSecret?{'X-Guest-Client':this.o.clientSecret()}: {})}:{'X-Host-Client':this.o.clientId()};}
   path(action){return '/api/jitsi/'+action+'/'+encodeURIComponent(this.room);}
   request(action,method='GET',body){return request(this.path(action),{method,headers:this.headers(),body:body===undefined?undefined:JSON.stringify(body)});}
   begin(){this.poll();this.timer=setInterval(()=>this.poll(),3000);window.addEventListener('pagehide',()=>this.dispose());}
@@ -30,24 +30,42 @@ class CallBase {
 class HostCall extends CallBase {
   constructor(o){super(o);this.button=el('button',t('call_off'),{type:'button',class:'meta-pill call-toggle','data-lock-control':'','aria-label':t('call_cycle')});this.button.disabled=true;document.getElementById('modeBtn').after(this.button);
     this.panel=el('section',undefined,{class:'call-panel','aria-label':t('live_call')});this.status=el('p',t('loading'),{role:'status','aria-live':'polite'});this.panel.append(this.status);document.querySelector('.wrap').append(this.panel);
-    this.button.onclick=()=>this.cycle();this.begin();
+    this.end=el('button',t('call_end'),{type:'button',class:'meta-pill call-toggle','data-lock-control':'',disabled:''});this.button.after(this.end);this.end.onclick=()=>this.endCall();this.button.onclick=()=>this.cycle();this.begin();
   }
-  render(){const s=this.snapshot;if(!s)return;const c=s.call;const m=c?.state==='active'?c.mode:'off';this.button.textContent=t('call_'+m);this.button.setAttribute('aria-label',t('call_cycle')+': '+t('call_'+m));this.button.classList.toggle('active',m!=='off');this.button.disabled=this.changing||!s.configured||c?.state==='closing'||!this.o.canControl();
-    this.status.textContent=s.deployment==='off'?t('jitsi_off'):!s.configured?t('jitsi_unavailable'):c?.state==='closing'?t('call_closing'):c?t('call_'+m)+' · '+s.participants+' '+t('connected_guests'):t('call_off');
+  render(){const s=this.snapshot;if(!s)return;const c=s.call;const m=c?.state==='active'?c.mode:'off';this.button.textContent=t(c?.state==='closing'?'call_closing_short':'call_'+m);this.button.setAttribute('aria-label',t('call_cycle')+': '+t('call_'+m));this.button.classList.toggle('active',m!=='off');this.button.disabled=this.changing||!s.configured||c?.state==='closing'||!this.o.canControl();
+    this.end.textContent=t(c?.state==='closing'?'call_close_retry':'call_end');
+    this.end.disabled=this.changing||!this.o.canControl()||!c||!!s.closure?.in_flight; 
+    this.status.textContent=s.deployment==='off'?t('jitsi_off'):!s.configured?t('jitsi_unavailable'):c?.state==='closing'?this.closeStatus(s):c?t('call_'+m)+' · '+s.participants+' '+t('connected_guests'):t('call_off');if(s.auto_close)this.status.textContent+=' '+t('call_auto_countdown').replace('{seconds}',String(Math.max(0,Math.ceil(s.auto_close.deadline-Date.now()/1000))))+' '+t('call_auto_'+s.auto_close.reason);
   }
-  async poll(){if(this.busy||this.disposed)return;this.busy=true;try{this.snapshot=await this.request('state');if(!this.changing)this.render();}catch(e){this.status.textContent=error(e);this.button.disabled=true;}finally{this.busy=false;}}
+  closeStatus(s){const d=s.closure;if(!d)return t('call_closing');
+    const seconds=Math.max(0,d.remaining_seconds||0);
+    if(d.error){
+      let text=window.OpenPodcastI18n.t(d.error).replace('{status}',String(d.http_status||''));
+      text+=' '+t('call_close_retry_hint').replace('{seconds}',String(Math.max(0,d.retry_in_seconds||0)));
+      const key=s.call.id+':'+d.error+':'+d.http_status;
+      if(this.closeErrorKey!==key){this.closeErrorKey=key;PodcastUX.toast(text,'error');}
+      return text;
+    }
+    this.closeErrorKey=null;
+    return seconds>0?t('call_close_draining').replace('{seconds}',String(seconds)):t('call_close_requesting');
+  }
+  async poll(){if(this.busy||this.disposed)return;this.busy=true;try{this.snapshot=await this.request('state');if(!this.changing)this.render();}catch(e){this.status.textContent=error(e);this.button.disabled=true;this.end.disabled=true;}finally{this.busy=false;}}
+  async endCall(){if(this.changing||!this.snapshot?.call||!this.o.canControl())return;this.changing=true;this.end.disabled=true;
+    try{const c=this.snapshot.call;this.snapshot=await this.request('mode','PUT',{mode:'off',expected_id:c.id,expected_revision:c.revision});}
+    catch(e){this.status.textContent=error(e);PodcastUX.toast(error(e),'error');}finally{this.changing=false;this.render();}}
   async cycle(){if(this.changing||!this.snapshot||!this.o.canControl())return;this.changing=true;this.button.disabled=true;const call=this.snapshot.call;const mode=call?.mode||'off';const next={off:'audio',audio:'video',video:'off'}[mode];this.status.textContent=t('saving');
     try{this.snapshot=await this.request('mode','PUT',{mode:next,expected_id:call?.id||null,expected_revision:call?.revision||0});this.changing=false;this.render();}
-    catch(e){this.changing=false;await this.poll();this.status.textContent=error(e);}finally{this.changing=false;}
+    catch(e){this.changing=false;await this.poll();this.status.textContent=error(e);PodcastUX.toast(error(e),'error');}finally{this.changing=false;}
   }
 }
 class GuestCall extends CallBase {
-  constructor(o){super(o);this.generation=0;this.state='left';this.retryAt=0;this.modeChain=Promise.resolve();this.panel=el('section',undefined,{class:'call-panel',hidden:'','aria-label':t('live_call')});this.status=el('p','',{role:'status','aria-live':'polite'});this.provider=el('p','',{class:'call-provider'});this.panel.append(this.status,this.provider);o.parent.append(this.panel);this.begin();}
+  constructor(o){super(o);this.generation=0;this.state='left';this.retryAt=0;this.modeChain=Promise.resolve();this.panel=el('section',undefined,{class:'call-panel',hidden:'','aria-label':t('live_call')});this.status=el('p','',{role:'status','aria-live':'polite'});this.provider=el('p','',{class:'call-provider'});this.notice=el('p','',{role:'status','aria-live':'polite'});this.panel.append(this.status,this.provider,this.notice);o.parent.append(this.panel);this.begin();}
   async poll(){if(this.busy||this.disposed)return;this.busy=true;
     try{const s=await this.request('state');this.snapshot=s;Promise.resolve(this.o.onState?.(s)).catch(()=>{});
+      this.notice.textContent=s.auto_close?t('call_auto_countdown').replace('{seconds}',String(Math.max(0,Math.ceil(s.auto_close.deadline-Date.now()/1000))))+' '+t('call_auto_'+s.auto_close.reason):'';
       const call=s.call,active=s.configured&&call?.state==='active'&&call.deadline>Date.now()/1000;
       if(!active){this.disconnect();this.panel.hidden=true;this.dismissed=null;return;}
-      this.panel.hidden=false;this.provider.textContent=s.deployment==='public'?t('public_call_note')+' '+s.origin:t('separate_devices');
+      this.panel.hidden=false;this.provider.textContent=s.deployment==='public'?t('public_call_note')+' '+s.origin:s.deployment==='jaas'?t('jaas_call_note')+' '+t('separate_devices'):t('separate_devices');
       if(this.call?.id!==call.id){this.disconnect();this.call=call;this.dismissed=null;this.retryAt=0;}
       if(!this.api&&!this.joining&&this.dismissed!==call.id&&Date.now()>this.retryAt)await this.join();
       if(this.api&&this.appliedMode!==call.mode)await this.applyMode(call.mode);
@@ -56,9 +74,9 @@ class GuestCall extends CallBase {
     finally{this.busy=false;}
   }
   async join(){const generation=++this.generation;this.joining=true;this.state='joining';this.status.textContent=t('prejoin_loading');
-    try{const grant=await this.request('grant','POST',{name:this.o.name()});const API=await loadSDK(grant.origin);if(generation!==this.generation||this.disposed)return;
+    try{const grant=await this.request('grant','POST',{name:this.o.name()});const API=await loadSDK(grant.sdk_url||grant.origin+'/external_api.js');if(generation!==this.generation||this.disposed)return;
       this.call=grant.call;this.frame=el('div',undefined,{class:'call-frame prejoin'});this.panel.append(this.frame);
-      const audio=grant.call.mode==='audio';const api=new API(grant.domain,{roomName:grant.call.conference,parentNode:this.frame,width:'100%',height:'100%',...(grant.jwt?{jwt:grant.jwt}:{}),lang:window.OpenPodcastI18n.locale,
+      const audio=grant.call.mode==='audio';const api=new API(grant.domain,{roomName:grant.room_name||grant.call.conference,parentNode:this.frame,width:'100%',height:'100%',...(grant.jwt?{jwt:grant.jwt}:{}),lang:window.OpenPodcastI18n.locale,
         userInfo:{displayName:grant.name},configOverwrite:{prejoinConfig:{enabled:true},startAudioOnly:audio,startWithVideoMuted:audio,disableDeepLinking:true,toolbarButtons:this.toolbar(grant.call.mode)}});
       this.api=api;this.appliedMode=grant.call.mode;this.o.budget.maxDuringCall=0;this.o.budget.update(true,'unknown');api.getIFrame().title=t('live_call');api.getIFrame().referrerPolicy='no-referrer';
       const current=()=>this.api===api&&generation===this.generation;
@@ -66,7 +84,7 @@ class GuestCall extends CallBase {
       const ended=()=>{if(!current())return;this.dismissed=this.call.id;this.report('left');this.disconnect();this.status.textContent=t('call_left');};
       api.addListener('videoConferenceLeft',ended);api.addListener('readyToClose',ended);
       api.addListener('videoMuteStatusChanged',e=>{if(current()&&!e.muted&&this.snapshot?.call?.mode==='audio')this.enforceAudio();});
-      api.addListener('errorOccurred',()=>{if(current()){this.status.textContent=t('provider_error');this.report('failed');}});
+      api.addListener('errorOccurred',()=>{if(current()){this.state='failed';this.report('failed');this.disconnect();this.retryAt=Date.now()+30000;this.status.textContent=t('provider_error');}});
       this.status.textContent=t('prejoin_ready');
     }catch(e){if(generation===this.generation){this.disconnect();this.retryAt=Date.now()+30000;this.status.textContent=error(e);}}
     finally{this.joining=false;}
@@ -83,7 +101,7 @@ class GuestCall extends CallBase {
       this.status.textContent=mode==='video'?t('video_available'):t('call_audio');
       // Never auto-enable a camera, never rebuild the iframe on a mode change.
     }).catch(e=>{if(!this.disposed)this.status.textContent=error(e);});return this.modeChain;}
-  disconnect(){++this.generation;const api=this.api;this.api=null;this.appliedMode=null;try{api?.dispose();}catch{}this.frame?.remove();this.frame=null;this.o.budget.update(false,'unknown');}
+  disconnect(){++this.generation;const api=this.api;this.api=null;this.appliedMode=null;try{api?.executeCommand('hangup');}catch{}try{api?.dispose();}catch{}this.frame?.remove();this.frame=null;this.o.budget.update(false,'unknown');}
   dispose(){this.report('left');this.disconnect();super.dispose();}
 }
 // Event routes include room and call ID, unlike room-only state endpoints.

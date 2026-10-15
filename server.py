@@ -422,6 +422,22 @@ def _init_db():
                 revoked     INTEGER NOT NULL DEFAULT 0
             )
         """)
+        # Ancestry is committed together with the child token, even across crashes.
+        token_columns = {r[1] for r in conn.execute("PRAGMA table_info(guest_tokens)")}
+        if "parent_id" not in token_columns:
+            conn.execute("ALTER TABLE guest_tokens ADD COLUMN parent_id TEXT")
+        conn.execute("CREATE TABLE IF NOT EXISTS room_invitations(room TEXT PRIMARY KEY, token_id TEXT UNIQUE NOT NULL)")
+        # Select one canonical legacy room link; preserve its URL and retain aliases for migration.
+        for room_row in conn.execute("SELECT DISTINCT room FROM guest_tokens WHERE parent_id IS NULL OR parent_id=''").fetchall():
+            room_name=room_row[0]
+            if conn.execute("SELECT 1 FROM room_invitations WHERE room=?",(room_name,)).fetchone():continue
+            candidate=conn.execute("SELECT id FROM guest_tokens WHERE room=? AND revoked=0 AND expires_at>? AND (parent_id IS NULL OR parent_id='') ORDER BY expires_at DESC,created_at DESC LIMIT 1",(room_name,time.time())).fetchone()
+            if candidate:
+                conn.execute("INSERT INTO room_invitations VALUES(?,?)",(room_name,candidate[0]))
+                conn.execute("UPDATE guest_tokens SET expires_at=253402300799 WHERE id=?",(candidate[0],))
+        # Legacy room URLs become aliases of the one canonical invitation.
+        # Revoking/deleting that invitation also disables every old alias.
+        conn.execute("UPDATE guest_tokens SET parent_id=(SELECT token_id FROM room_invitations WHERE room=guest_tokens.room) WHERE (parent_id IS NULL OR parent_id='') AND room IN (SELECT room FROM room_invitations) AND id NOT IN (SELECT token_id FROM room_invitations)")
         # Persistente Aufnahme-Identitaet: UI-Name und gemeinsame Zeitgrenzen.
         conn.execute("""
             CREATE TABLE IF NOT EXISTS recording_sessions (
@@ -518,6 +534,12 @@ def _room_register(room: str) -> None:
             conn.commit()
     except Exception as e:
         print("[rooms] register failed:", e)
+
+
+def _room_exists(room: str) -> bool:
+    with _DB_LOCK, _db_conn() as c:
+        registered=c.execute('SELECT 1 FROM rooms WHERE room=?',(room,)).fetchone()
+    return bool(registered or room in ROOMS or (UPLOADS/room).is_dir())
 
 
 def _room_registry_list() -> list[str]:
@@ -781,21 +803,21 @@ def _marker_delete(marker_id: str) -> bool:
 
 # Token-Operationen --------------------------------------------------------
 
-def _token_create(room: str, days: int, label: str = "") -> dict:
+def _token_create(room: str, days: int, label: str = "", parent_id: str | None = None, expires_at: float | None = None) -> dict:
     """Erzeugt einen neuen Gast-Token und speichert ihn in der DB."""
     token_id  = secrets.token_hex(4)          # kurze ID fuer Verwaltung
     token_val = secrets.token_urlsafe(32)      # 256-Bit Einladungstoken
     now       = time.time()
-    expires   = now + days * 86400
+    expires   = now + days * 86400 if expires_at is None else expires_at
     with _DB_LOCK, _db_conn() as conn:
         conn.execute(
-            "INSERT INTO guest_tokens (id, token, room, label, created_at, expires_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (token_id, token_val, room, label[:80], now, expires),
+            "INSERT INTO guest_tokens (id, token, room, label, created_at, expires_at, parent_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (token_id, token_val, room, label[:80], now, expires, parent_id),
         )
         conn.commit()
     return {"id": token_id, "token": token_val, "room": room,
-            "label": label, "created_at": now, "expires_at": expires}
+            "label": label, "created_at": now, "expires_at": expires, "parent_id": parent_id}
 
 
 def _token_resolve(token_val: str) -> dict | None:
@@ -822,7 +844,7 @@ def _token_resolve(token_val: str) -> dict | None:
 def _token_list(room: str) -> list[dict]:
     with _DB_LOCK, _db_conn() as conn:
         rows = conn.execute(
-            "SELECT * FROM guest_tokens WHERE room=? ORDER BY created_at DESC", (room,)
+            "SELECT t.* FROM guest_tokens t JOIN room_invitations i ON i.token_id=t.id WHERE i.room=? ORDER BY t.created_at DESC", (room,)
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -3042,10 +3064,7 @@ async def lobby_ping(room: str, request: Request):
         payload = {}
     if not isinstance(payload, dict):
         raise HTTPException(400, "Invalid lobby payload")
-    token = str(payload.get("token") or "")
-    info = _token_resolve(token) if token else None
-    if info is None or info.get("room") != room:
-        raise HTTPException(403, "Token ungueltig oder abgelaufen")
+    info = STUDIO.guest(request, room, admission=True)
     client_id = str(payload.get("client_id") or "")[:64]
     if not SAFE.match(client_id):
         raise HTTPException(400, "client_id fehlt oder ist ungueltig")
@@ -3072,6 +3091,7 @@ def token_resolve(token: str | None = None):
         "ok":         True,
         "room":       info["room"],
         "expires_at": info["expires_at"],
+        "permanent": info["expires_at"] >= 253402300799,
         "label":      info.get("label", ""),
         "locale":     _room_locale(info["room"]),
         "branding":   ((_cfg_get("room_branding") or {}).get(info["room"]) or {}),
@@ -3080,63 +3100,34 @@ def token_resolve(token: str | None = None):
 
 # ── Host: Token-Verwaltung ───────────────────────────────────────────────────
 
+def _canonical_invitation(room: str, create: bool = True) -> dict | None:
+    """Exactly one reusable, non-expiring room invitation. Guests are never links."""
+    with _DB_LOCK, _db_conn() as c:
+        row=c.execute("SELECT t.* FROM guest_tokens t JOIN room_invitations i ON i.token_id=t.id WHERE i.room=? AND t.revoked=0 AND t.expires_at>?",(room,time.time())).fetchone()
+        if row:return dict(row)
+        if not create:return None
+        # Explicit host link creation after revocation/deletion rotates only this room link.
+        now=time.time()
+        while True:
+            owner=secrets.token_hex(4);value=secrets.token_urlsafe(32)
+            try:
+                c.execute("INSERT INTO guest_tokens(id,token,room,label,created_at,expires_at) VALUES(?,?,?,?,?,?)",(owner,value,room,room,now,253402300799))
+                break
+            except sqlite3.IntegrityError:continue
+        c.execute("INSERT OR REPLACE INTO room_invitations VALUES(?,?)",(room,owner))
+        c.commit()
+        return dict(id=owner,token=value,room=room,label=room,created_at=now,expires_at=253402300799,revoked=0,parent_id=None)
+
+
 @app.post("/host/token/{room}")
 async def host_token_create(room, _auth=Depends(require_auth)):
-    """Token fuer einen Raum erstellen.
-
-    Regel: pro Raum soll es immer nur EINEN gueltigen Token geben.
-    - Gibt es bereits einen aktiven Token (nicht revoked, nicht expired), wird
-      dieser zurueckgegeben (idempotent) und KEIN neuer erzeugt.
-    - Gibt es keinen aktiven Token (abgelaufen / widerrufen / geloescht), wird
-      ein neuer erzeugt.
-
-    Laufzeit kommt aus der globalen Konfig (token_days).
-    Label ist automatisch der Raumname.
-    """
     check_ident(room)
-    cfg = _cfg_load()
-    if room in set(cfg.get("archived_rooms", [])):
+    if room in set(_cfg_load().get("archived_rooms", [])):
         raise HTTPException(400, "Raum ist archiviert (keine neuen Gastlinks)")
-
-    _room_register(room)  # Raum sofort registrieren (Admin-Uebersicht)
-
-    # Bereits aktiven Token fuer diesen Raum finden
-    now = time.time()
-    with _DB_LOCK, _db_conn() as conn:
-        row = conn.execute(
-            "SELECT id, token, room, label, created_at, expires_at, revoked "
-            "FROM guest_tokens "
-            "WHERE room=? AND revoked=0 AND expires_at>? "
-            "ORDER BY created_at DESC LIMIT 1",
-            (room, now),
-        ).fetchone()
-
-    if row:
-        tok = dict(row)
-        return {
-            "ok":         True,
-            "id":         tok["id"],
-            "token":      tok["token"],
-            "room":       tok["room"],
-            "label":      tok.get("label", "") or room,
-            "expires_at": tok["expires_at"],
-            "link":       f"/recorder.html?token={tok['token']}",
-            "existing":   True,
-        }
-
-    days  = int(cfg.get("token_days", _cfg_get("token_days")))
-    label = room
-    tok   = _token_create(room, days, label)
-    return {
-        "ok":         True,
-        "id":         tok["id"],
-        "token":      tok["token"],
-        "room":       tok["room"],
-        "label":      tok["label"],
-        "expires_at": tok["expires_at"],
-        "link":       f"/recorder.html?token={tok['token']}",
-        "existing":   False,
-    }
+    _room_register(room)
+    token=_canonical_invitation(room)
+    return dict(ok=True,**{k:token[k] for k in ('id','token','room','label','expires_at')},
+                link='/recorder.html?token='+token['token'],existing=True,permanent=True)
 
 
 @app.get("/host/tokens/{room}")
@@ -3195,7 +3186,7 @@ def admin_token_list(_role=Depends(require_admin)):
     with _DB_LOCK, _db_conn() as conn:
         rows = conn.execute(
             "SELECT id, token, room, label, created_at, expires_at, revoked "
-            "FROM guest_tokens ORDER BY created_at DESC"
+            "FROM guest_tokens WHERE id IN (SELECT token_id FROM room_invitations) ORDER BY created_at DESC"
         ).fetchall()
     out = []
     for r in rows:
@@ -3209,6 +3200,7 @@ def admin_token_list(_role=Depends(require_admin)):
             "token_preview": preview,
             "created_at":    r["created_at"],
             "expires_at":    r["expires_at"],
+            "permanent":     r["expires_at"] >= 253402300799,
             "revoked":       bool(r["revoked"]),
             "expired":       expired,
             "active":        (not r["revoked"]) and (not expired),
@@ -4339,18 +4331,18 @@ async def rooms_create(request: Request, _role=Depends(require_auth)):
     room = str(payload.get("room") or "").strip()
     check_ident(room)
     preset_id = str(payload.get("preset_id") or "").strip()
-    cfg = _cfg_load()
-    valid = {str(p.get("id")) for p in cfg.get("branding_presets") or [] if isinstance(p, dict)}
-    if preset_id and preset_id not in valid:
-        raise HTTPException(400, "Unbekanntes Branding-Preset")
-    assignments = dict(cfg.get("room_preset_assignments") or {})
-    if preset_id:
-        assignments[room] = preset_id
-    else:
-        assignments.pop(room, None)
-    cfg["room_preset_assignments"] = assignments
-    _cfg_save(cfg)
-    _room_register(room)
+    # Serialize duplicate checking and registration with deletion/call changes.
+    with STUDIO.lock:
+        if _room_exists(room):raise HTTPException(409,'ux.room_exists')
+        cfg = _cfg_load()
+        valid = {str(p.get("id")) for p in cfg.get("branding_presets") or [] if isinstance(p, dict)}
+        if preset_id and preset_id not in valid:raise HTTPException(400, "Unbekanntes Branding-Preset")
+        assignments = dict(cfg.get("room_preset_assignments") or {})
+        if preset_id:assignments[room] = preset_id
+        else:assignments.pop(room, None)
+        cfg["room_preset_assignments"] = assignments
+        _cfg_save(cfg)
+        _room_register(room)
     return {"ok": True, "room": room, "preset_id": preset_id,
             "branding": _room_preset(room, cfg)}
 
@@ -4412,42 +4404,47 @@ async def admin_room_archive(room, request: Request, _role=Depends(require_admin
 
 
 @app.delete("/admin/room/{room}")
-def admin_room_delete(room, _role=Depends(require_admin)):
-    """Loescht alle Aufnahmen + Tokens eines Raums komplett."""
+async def admin_room_delete(room, _role=Depends(require_admin)):
+    """Delete the local room incarnation; retire its provider calls independently."""
     check_ident(room)
-    room_dir = safe(room)
-    uploads_abs = UPLOADS.resolve()
-    if room_dir.exists():
-        try:
-            room_dir.resolve().relative_to(uploads_abs)
-            shutil.rmtree(room_dir)
-        except ValueError:
-            raise HTTPException(400, "Ungueltiger Pfad")
-    # Abgeleitete MP3-Mixdowns des Raums ebenfalls vollstaendig entfernen.
-    mix_room = DATA_DIR / "mixdowns" / room
-    if mix_room.exists():
-        try:
-            shutil.rmtree(mix_room)
-        except OSError as exc:
-            print("[mixdown] Raum-Cleanup fehlgeschlagen:", exc)
-    with _DB_LOCK, _db_conn() as conn:
-        conn.execute("DELETE FROM guest_tokens WHERE room=?", (room,))
-        conn.execute("DELETE FROM markers WHERE room=?", (room,))
-        conn.execute("DELETE FROM recording_sessions WHERE room=?", (room,))
-        conn.execute("DELETE FROM clip_events WHERE room=?", (room,))
-        conn.commit()
-    # Persistente Gast-Logs des Raums ebenfalls entfernen (sonst verwaiste Zeilen).
-    _guest_logs_delete_room(room)
-    _room_registry_delete(room)
-    cfg = _cfg_load()
-    arch = set(cfg.get("archived_rooms", []))
-    arch.discard(room)
-    cfg["archived_rooms"] = sorted(arch)
-    _cfg_save(cfg)
-    ROOMS.pop(room, None)
-    with _CONSOLE_LOCK:
-        GUEST_CONSOLE.pop(room, None)
-    return {"ok": True, "deleted": room}
+    with STUDIO.lock:
+        current=ROOMS.get(room,{})
+        if current.get('rec_state')=='recording' or current.get('command',{}).get('action')=='start':
+            raise HTTPException(409,'ux.room_delete_recording')
+        room_dir=safe(room)
+        uploads_abs=UPLOADS.resolve()
+        mix_room=DATA_DIR/'mixdowns'/room
+        if room_dir.exists() and not room_dir.resolve().is_relative_to(uploads_abs):
+            raise HTTPException(400,'ux.invalid_room_path')
+        if mix_room.exists() and not mix_room.resolve().is_relative_to((DATA_DIR/'mixdowns').resolve()):
+            raise HTTPException(400,'ux.invalid_room_path')
+        # Gather old sockets before clearing their registries. Never touch replacement sockets.
+        with _WS_LOCK:
+            sockets=list(_WS_HOSTS.pop(room,set()) | _WS_GUESTS.pop(room,set()))
+        for owner,value in list(STUDIO.guest_socket_rooms.items()):
+            if value==room:
+                sock=STUDIO.guest_sockets.get(owner)
+                if sock is not None and sock not in sockets:sockets.append(sock)
+        JITSI.retire_room(room)
+        if room_dir.exists():shutil.rmtree(room_dir)
+        if mix_room.exists():shutil.rmtree(mix_room)
+        STUDIO.purge_room_data(room)
+        cfg=_cfg_load()
+        cfg['archived_rooms']=sorted(set(cfg.get('archived_rooms',[]))-{room})
+        assignments=dict(cfg.get('room_preset_assignments') or {});assignments.pop(room,None)
+        cfg['room_preset_assignments']=assignments
+        _cfg_save(cfg)
+        ROOMS.pop(room,None)
+        with _HOST_LOCK_MUTEX:_HOST_LOCKS.pop(room,None)
+        with _CONSOLE_LOCK:GUEST_CONSOLE.pop(room,None)
+        STUDIO.audit('admin','room.delete',room)
+    # An old handler must not recreate/mutate a newly created room during finally.
+    async def disconnect(sock):
+        try:await sock.close(code=4404,reason='Room deleted')
+        except Exception:pass
+    await asyncio.gather(*(disconnect(sock) for sock in sockets))
+    return {'ok':True,'deleted':room}
+
 
 
 @app.get("/admin/room/{room}/guests")
@@ -4843,11 +4840,19 @@ async def ws_guest(websocket: WebSocket, room: str, guest: str, token: str | Non
     if not SAFE.match(room) or not SAFE.match(guest):
         await websocket.close(code=4000)
         return
-    info = _token_resolve(token) if token else None
-    if info is None or info.get("room") != room:
-        await websocket.close(code=4401)
-        return
     await websocket.accept()
+    try:
+        hello=await asyncio.wait_for(websocket.receive_json(),timeout=10)
+        if not isinstance(hello,dict) or hello.get('type')!='hello':raise HTTPException(403)
+        info=STUDIO.resolve_guest(hello.get('token') or token)
+        if not info or info['room']!=room or guest!='g_'+info['id']:raise HTTPException(403)
+        STUDIO.check_guest_client(info,hello.get('client'))
+    except (HTTPException,asyncio.TimeoutError,WebSocketDisconnect,ValueError,TypeError):
+        await websocket.close(code=4403);return
+    if not STUDIO.reserve_guest_socket(info, websocket):
+        await websocket.close(code=4409, reason="Guest identity already connected")
+        return
+    room_instance=_room(room)
     _ws_add(_WS_GUESTS, room, websocket)
     try:
         # Initialer State-Push (command + settings), damit der Gast sofort
@@ -4855,6 +4860,8 @@ async def ws_guest(websocket: WebSocket, room: str, guest: str, token: str | Non
         await _broadcast_guests(room)
         while True:
             data = await websocket.receive_json()
+            if ROOMS.get(room) is not room_instance:
+                await websocket.close(code=4404);break
             mtype = data.get("type")
             if mtype == "heartbeat":
                 _apply_guest_telemetry(room, guest, data)
@@ -4961,6 +4968,7 @@ async def ws_guest(websocket: WebSocket, room: str, guest: str, token: str | Non
         _error_record("ws-guest", "Gast-WebSocket-Fehler", room=room, detail=str(e))
     finally:
         _ws_remove(_WS_GUESTS, room, websocket)
+        STUDIO.release_guest_socket(info, websocket)
 
 
 @app.websocket("/ws/host/{room}")
@@ -4971,13 +4979,17 @@ async def ws_host(websocket: WebSocket, room: str,
         await websocket.close(code=4401)
         return
     role = _session_role(ps_session or "") or "host"
+    if not _room_exists(room):
+        await websocket.close(code=4404);return
     await websocket.accept()
-    _room_register(room)
+    if not _room_exists(room):
+        await websocket.close(code=4404);return
     # Mark host presence for room overview (index + admin rooms list)
     with _LOCK:
         r = _room(room)
         r["host_online"] = True
         r["host_last_seen"] = time.time()
+        room_instance=r
     _ws_add(_WS_HOSTS, room, websocket)
 
     # Roadmap 5: Lock-Zustand dieser Verbindung. Die Client-Kennung kommt mit
@@ -5002,6 +5014,8 @@ async def ws_host(websocket: WebSocket, room: str,
         await send_lock_state({"reason": "awaiting_hello"})
         while True:
             data = await websocket.receive_json()
+            if ROOMS.get(room) is not room_instance:
+                await websocket.close(code=4404);break
             mtype = data.get("type")
             now_ms = int(time.time() * 1000)
 
@@ -5168,18 +5182,15 @@ async def ws_host(websocket: WebSocket, room: str,
         _ws_remove(_WS_HOSTS, room, websocket)
         # Roadmap 5: Der Lock bleibt fuer HOST_LOCK_GRACE reserviert, damit ein
         # Reload oder ein kurzer Netzausfall die Steuerung zurueckbekommt.
-        if client_id:
-            _lock_mark_disconnected(room, client_id)
-        # Unmark host presence only when no other host socket remains.
-        remaining = bool(_ws_targets(_WS_HOSTS, room))
-        with _LOCK:
-            r = _room(room)
-            r["host_online"] = remaining
-            r["host_last_seen"] = time.time()
-        try:
-            await _broadcast_host_status(room)
-        except Exception:
-            pass
+        if ROOMS.get(room) is room_instance:
+            if client_id:_lock_mark_disconnected(room, client_id)
+            remaining = bool(_ws_targets(_WS_HOSTS, room))
+            with _LOCK:
+                if ROOMS.get(room) is room_instance:
+                    room_instance["host_online"] = remaining
+                    room_instance["host_last_seen"] = time.time()
+            try:await _broadcast_host_status(room)
+            except Exception:pass
 
 
 # ── Static Uploads ─────────────────────────────────────────────────────────
