@@ -1,7 +1,7 @@
 /* Shared localized UI helpers. All new strings are in locale/de.json and en.json. */
 window.PodcastUX = {
   t(key) { return window.OpenPodcastI18n.t('ux.'+key); },
-  error(error) {const key=error?.message||String(error);const i18n=window.OpenPodcastI18n;if(key.startsWith('ux.'))return i18n.t(key);if(error?.name==='AbortError')return i18n.t('ux.request_timeout');if(error instanceof TypeError)return i18n.t('ux.network_error');return i18n.translateMessage?.(key)||key;},
+  error(error) {const key=error?.message||String(error);const i18n=window.OpenPodcastI18n;if(key.startsWith('ux.'))return i18n.t(key);if(error?.name==='RequestTimeoutError')return i18n.t('ux.request_timeout');if(error instanceof TypeError)return i18n.t('ux.network_error');return i18n.translateMessage?.(key)||key;},
   el(tag,text,attrs={}) {const n=document.createElement(tag);if(text!==undefined)n.textContent=text;for(const [k,v] of Object.entries(attrs))n.setAttribute(k,v);return n;},
   toast(message,kind='error') {
     let area=document.getElementById('podcast-toast-area');
@@ -13,9 +13,11 @@ window.PodcastUX = {
     item.append(text,dismiss);area.append(item);while(area.children.length>3)area.children[0].remove();setTimeout(()=>item.remove(),12000);return item;
   },
   async request(url,options={}) {
-    const ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort(),15000);
+    const ctrl=new AbortController();let timedOut=false;
+    const timer=setTimeout(()=>{timedOut=true;ctrl.abort();},15000);
     try {const r=await fetch(url,{...options,credentials:'same-origin',cache:'no-store',signal:ctrl.signal,headers:{'Content-Type':'application/json',...options.headers}});const d=await r.json().catch(()=>({}));
       if(!r.ok){const error=new Error(typeof d.detail==='string'?d.detail:'ux.http_error');error.status=r.status;throw error;}return d;
-    }finally{clearTimeout(timer);}
+    }catch(error){if(timedOut){const timeout=new Error('ux.request_timeout');timeout.name='RequestTimeoutError';throw timeout;}throw error;}
+    finally{clearTimeout(timer);}
   }
 };

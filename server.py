@@ -3390,7 +3390,7 @@ def _apply_trigger(room: str, action: str, issued_at: int | None = None,
         cur_session = r.get("rec_session", "")
         if action in ("start", "clear") and r.get("command", {}).get("action") == "stop":
             stop_at = int(r["command"].get("stop_at") or 0)
-            busy = any(g.get("state") in ("recording", "uploading")
+            busy = any(g.get("state") in ("starting", "recording", "stopping", "uploading", "finalizing")
                        and now_ms / 1000 - g.get("last_seen", 0) < 120
                        for g in r["guests"].values())
             if now_ms < stop_at + 1000 or busy:
@@ -5211,6 +5211,15 @@ def protected_upload(asset_path: str, _auth=Depends(require_auth)):
 
 
 
+
+
+# A real same-origin module works with script-src 'self'; blob: is not needed.
+# Register before studio_core's asset routes and security middleware.
+@app.get("/recording/pcm-worklet.js")
+def recording_pcm_worklet():
+    return FileResponse(Path(__file__).with_name("pcm-worklet.js"),
+                        media_type="application/javascript",
+                        headers={"Cache-Control": "no-cache"})
 
 
 # Recording integrity and call orchestration.

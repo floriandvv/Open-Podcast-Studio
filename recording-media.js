@@ -2,6 +2,14 @@
 (function(root){
 'use strict';
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+async function mediaOperation(label, operation) {
+  let timer;
+  try {
+    return await Promise.race([operation(),new Promise((_,reject)=>{
+      timer=setTimeout(()=>reject(new Error(label+': Medienvorbereitung nicht innerhalb von 15 Sekunden abgeschlossen')),15000);
+    })]);
+  } finally { clearTimeout(timer); }
+}
 class MediaOwner extends EventTarget {
   constructor(devices=navigator.mediaDevices){super();this.devices=devices;this.source=null;this.tail=Promise.resolve();this.recording=null;this.revision=0;this.options={};}
   emit(type,detail){this.dispatchEvent(new CustomEvent(type,{detail}));}
@@ -33,8 +41,10 @@ class MediaOwner extends EventTarget {
   async recordingStream(profile){
     if(this.recording)throw new Error('Aufnahmegraph bereits aktiv');
     if(!this.source)throw new Error('Keine Medienquelle');
-    const ctx=new (window.AudioContext||window.webkitAudioContext)({sampleRate:profile.sample_rate||48000});
-    await ctx.resume();
+    const AC = window.AudioContext || window.webkitAudioContext;
+    const ownsContext=!profile.audioContext;
+    const ctx=profile.audioContext||new AC({sampleRate:profile.sample_rate||48000});
+    // Resume only inside the cleanup-protected block below.
     const sink=ctx.createMediaStreamDestination();sink.channelCount=profile.channels||1;
     let input=null,raf=0,video=null,canvas=null,canvasTrack=null,lastFrame=0;
     const output=new MediaStream(sink.stream.getAudioTracks());
@@ -49,14 +59,14 @@ class MediaOwner extends EventTarget {
       try {
         if(profile.video){
           const track=source.getVideoTracks()[0];if(!track)throw new Error('Kamera der Videoaufnahme fehlt');
-          nextVideo=document.createElement('video');nextVideo.muted=true;nextVideo.playsInline=true;nextVideo.srcObject=new MediaStream([track]);await nextVideo.play();
+          nextVideo=document.createElement('video');nextVideo.muted=true;nextVideo.playsInline=true;nextVideo.srcObject=new MediaStream([track]);await mediaOperation('Video.play',()=>nextVideo.play());
         }
         next.connect(sink);if(input)input.disconnect();input=next;
         if(video){video.pause();video.srcObject=null;}video=nextVideo;
       } catch(e){next.disconnect();if(nextVideo)nextVideo.srcObject=null;throw e;}
     };
-    const close=async()=>{cancelAnimationFrame(raf);if(video){video.pause();video.srcObject=null;}input?.disconnect();output.getTracks().forEach(t=>t.stop());await ctx.close();};
-    try {await bind(this.source);this.recording={stream:output,bind,close};return output;}
+    const close=async()=>{cancelAnimationFrame(raf);if(video){video.pause();video.srcObject=null;}input?.disconnect();output.getTracks().forEach(t=>t.stop());if(ownsContext&&ctx.state!=='closed')await ctx.close();};
+    try {await mediaOperation('AudioContext.resume',()=>ctx.resume());if(ctx.state!=='running')throw new Error('AudioContext ist nicht aktiv');await bind(this.source);this.recording={stream:output,bind,close};return output;}
     catch(e){await close();throw e;}
   }
   async releaseRecording(){const r=this.recording;this.recording=null;if(r)await r.close();}

@@ -188,6 +188,8 @@
   .state-tag.recording { color: var(--accent); border-color: var(--accent); }
   .state-tag.uploading { color: var(--warn); border-color: var(--warn); }
   .state-tag.done { color: var(--ok); border-color: var(--ok); }
+  .state-tag.error { color: var(--accent); border-color: var(--accent); }
+  .state-tag.starting, .state-tag.stopping, .state-tag.finalizing { color: var(--warn); border-color: var(--warn); }
   /* Bereitschaft + Clipping pro Gast */
   .ready-tag { display: inline-block; font-size: 12px; padding: 1px 7px;
                border: 1px solid var(--muted); border-radius: 999px;
@@ -695,15 +697,21 @@
   // Antwort des Servers auf einen Start-/Stopp-Befehl.
   function handleTriggerResult(msg) {
     if (!msg.ok) {
-      // Der Server hat den Start abgelehnt (Gaeste nicht bereit).
       if (msg.action === 'start') {
         phase = 'idle'; recording = false;
+        clearInterval(countdownTimer);countdownTimer=null;
+        $('countdownWrap').style.display='none';
         setMainButton('start');
         applyGateToButton();
+      } else if(msg.action==='stop') {
+        phase=stopReturnPhase==='armed'?'armed':'live';recording=true;
+        setMainButton(phase==='armed'?'sync':'stop');
+        stopReturnPhase=null;
       }
       $('statusLine').textContent = msg.detail || 'Befehl abgelehnt.';
       return;
     }
+    if(msg.action==='stop')stopReturnPhase=null;
     if (msg.duplicate) {
       // Idempotenz: derselbe Befehl kam mehrfach an, der Zustand bleibt gueltig.
       if (msg.reason === 'already_recording') {
@@ -772,6 +780,7 @@
   let currentSessionId = '';   // session_id der laufenden Aufnahme (Marker-Bindung)
   let recording    = false;
   let phase        = 'idle';
+  let stopReturnPhase = null;
   let recStartAt   = 0;
   let durTimer     = null;
   let countdownTimer = null;
@@ -884,7 +893,7 @@
     return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
   };
   const connIcon   = c => c === 'online' ? '🟢' : c === 'stale' ? '🟡' : c === 'offline' ? '🔴' : '🔴';
-  const stateLabel = s => ({idle:'bereit',recording:'Aufnahme',uploading:'Upload',done:'fertig'}[s] || s || '—');
+  const stateLabel = s => ({idle:'bereit',starting:'Aufnahme wird vorbereitet',recording:'Aufnahme',stopping:'Aufnahme endet',uploading:'Upload',finalizing:'Finalisierung',error:'Aufnahmestart fehlgeschlagen',done:'fertig'}[s] || s || '—');
 
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, c =>
@@ -1484,33 +1493,19 @@
       }
       renderMarkers(_markersForSelectedSession());
 
-      const gs           = data.guests || [];
-      const anyRecording = gs.some(g => (g.state || '') === 'recording');
+      const gs = data.guests || [];
 
-      // Guardrails aus dem Status uebernehmen und das Start-Gate lokal spiegeln,
-      // damit der Knopf gesperrt ist, BEVOR der Server ablehnt.
+      // Reconcile server commands BEFORE considering local UI phases.
+      syncCommandState(data.command);
       if (data.guardrails) {
         requireGuestReady  = !!data.guardrails.require_guest_ready;
         requireGuestOnline = !!data.guardrails.require_guest_online;
       }
       lastGate = evaluateGate(gs);
-      const anyPending = gs.some(g => ((g.seconds_since_seen||0) < 90) && ((['recording','uploading'].includes((g.state||''))) || (g.queue || 0) > 0));
+      renderRecordingProgress(data, gs);
 
-      if (phase === 'armed' || phase === 'live') {
-        if (anyRecording) phase = 'live';
-        setMainButton('stop');
-      } else if (phase === 'stopping') {
-        if (anyPending) {
-          setMainButton('busy');
-          $('statusLine').textContent = 'Aufnahme beendet. Gäste laden letzte Chunks hoch…';
-        } else {
-          finishRecordingUI();
-          $('statusLine').textContent = '✔ Fertig. Bereit für die nächste Aufnahme.';
-        }
-      }
-
-      // Marker-Buttons nur bei laufender Aufnahme aktiv.
-      setMarkerButtonsEnabled(phase === 'armed' || phase === 'live');
+      // Marker-Buttons nur bei bestaetigter laufender Aufnahme aktiv.
+      setMarkerButtonsEnabled(phase === 'live');
 
       // Startsperre anwenden, solange keine Aufnahme laeuft.
       applyGateToButton();
@@ -1696,13 +1691,24 @@
   }
 
   function syncCommandState(cmd) {
-    if (!cmd || recording) return;
+    if (!cmd) return;
+    // A stop can originate in another host tab or in server/call orchestration.
+    // Do not depend on this tab having clicked the stop button.
+    if (cmd.action === 'stop' && (recording || phase !== 'idle')) {
+      phase = 'stopping';
+      clearInterval(countdownTimer);
+      $('countdownWrap').style.display = 'none';
+      if (Date.now() + serverOffset >= Number(cmd.stop_at || 0)) {
+        clearInterval(durTimer);durTimer=null;
+      }
+      return;
+    }
+    if (recording) return;
     if (cmd.action === 'start' && cmd.start_at) {
       const localStart = cmd.start_at - serverOffset;
-      if (localStart > Date.now() - 1000) {
-        setMainButton('stop');
-        beginCountdownTo(localStart);
-      }
+      // A stale persisted start command is not a new countdown. Live guests are
+      // reconciled from their session-bound heartbeats below.
+      if (localStart > Date.now() - 1000) beginCountdownTo(localStart);
     }
   }
 
@@ -1738,13 +1744,16 @@
 
   mainBtn.addEventListener('click', async () => {
     if (recording) {
+      const previousPhase=phase;
+      stopReturnPhase=previousPhase;
       phase = 'stopping'; setMainButton('busy');
       try {
         await trigger('stop');
-        $('statusLine').textContent = 'Stopp gesendet. Gäste beenden & laden letzte Chunks hoch…';
+        $('statusLine').textContent = 'Stopp gesendet. Gäste beenden & sichern die letzten Chunks…';
       } catch (err) {
+        phase=previousPhase;stopReturnPhase=null;
         $('statusLine').textContent = 'Fehler beim Stoppen: ' + err.message;
-        setMainButton('stop');
+        setMainButton(previousPhase==='armed'?'sync':'stop');
       }
       return;
     }
@@ -1800,25 +1809,68 @@
       }
       $('countdownWrap').textContent = Math.ceil(remain / 1000);
     };
-    tick();
     countdownTimer = setInterval(tick, 100);
+    tick();
+  }
+
+  function renderRecordingProgress(data, guests) {
+    const session=String(data.command?.session||data.session||'');
+    const online=guests.filter(g=>g.connection==='online');
+    const current=guests.filter(g=>String(g.session||'')===session);
+    const failed=current.filter(g=>g.state==='error');
+    const running=online.filter(g=>String(g.session||'')===session&&g.state==='recording');
+    if(phase==='idle'&&running.length) {
+      recording=true;phase='live';
+      recStartAt=Number(data.command?.start_at||data.server_time)-serverOffset;
+      setMainButton('stop');
+    }
+    if(phase==='armed') { setMainButton('sync');return; }
+    if(phase==='starting'||phase==='live') {
+      setMainButton('stop');
+      if(running.length) {
+        phase='live';
+        if(!durTimer)durTimer=setInterval(()=>{$('dur').textContent=fmtTime(Date.now()-recStartAt);},250);
+      } else { clearInterval(durTimer);durTimer=null; }
+      if(failed.length) {
+        $('statusLine').textContent='⚠ Aufnahmestart fehlgeschlagen bei: '+failed.map(g=>g.display_name||g.guest).join(', ')+`. Bestätigt: ${running.length}/${online.length}.`;
+      } else if(running.length&&running.length===online.length) {
+        $('statusLine').textContent='🔴 Aufnahme läuft bei allen verbundenen Gästen (bestätigt).';
+      } else {
+        $('statusLine').textContent=`Aufnahmestart: ${running.length}/${online.length} Gäste bestätigt — warte auf Rückmeldung…`;
+      }
+    } else if(phase==='stopping') {
+      // Match the server guard: keep STOP available for reconnecting guests until
+      // its absolute time plus the grace period; never clear on an early idle heartbeat.
+      const due=Number(data.server_time||Date.now()+serverOffset)>=Number(data.command?.stop_at||0)+1000;
+      const pending=guests.some(g=>(g.seconds_since_seen||0)<120&&
+        (['starting','recording','stopping','uploading','finalizing'].includes(g.state)||(g.queue||0)>0));
+      if(!due||pending) {
+        setMainButton('busy');
+        $('statusLine').textContent=!due?'Stopp geplant — Gäste beenden synchron…':'Aufnahme beendet. Lokale Sicherung, Upload oder Finalisierung noch ausstehend; ein aktiver Call kann Uploads pausieren.';
+      } else {
+        finishRecordingUI();
+        const disconnected=current.some(g=>g.connection!=='online');
+        $('statusLine').textContent=failed.length?'⚠ Aufnahme beendet. Mindestens ein Aufnahmestart ist fehlgeschlagen; fehlende Spuren wurden nicht aufgenommen.':disconnected?'⚠ Aufnahme beendet. Getrennte Gäste: Abschluss und lokale Daten prüfen.':'✔ Aufnahme beendet. Bereit für die nächste Aufnahme.';
+      }
+    }
   }
 
   function startRecordingUI(localStartMs) {
-    recording = true; phase = 'live'; recStartAt = localStartMs;
+    // The countdown confirms only the scheduled command, not local capture.
+    recording = true; phase = 'starting'; recStartAt = localStartMs;
     setMainButton('stop');
-    $('statusLine').textContent = '🔴 Aufnahme läuft bei allen verbundenen Gästen.';
-    clearInterval(durTimer);
-    durTimer = setInterval(() => { $('dur').textContent = fmtTime(Date.now() - recStartAt); }, 250);
+    $('statusLine').textContent = 'Startzeit erreicht — warte auf Aufnahmebestätigung der Gäste…';
+    clearInterval(durTimer);durTimer=null;
+    $('dur').textContent=fmtTime(0);
   }
 
   function finishRecordingUI() {
     if (!recording) return;
     recording = false; phase = 'idle';
-    clearInterval(durTimer); clearInterval(countdownTimer);
+    clearInterval(durTimer);durTimer=null;clearInterval(countdownTimer);
     $('countdownWrap').style.display = 'none';
     setMainButton('start');
-    trigger('clear').catch(() => {});
+    if(lockMode==='control')trigger('clear').catch(() => {});
   }
 
   // ---------- Marker ----------
