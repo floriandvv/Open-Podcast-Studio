@@ -435,6 +435,10 @@
   .rec-row .sid { display:block; font-size:11px; color:var(--muted);
                   font-variant-numeric: tabular-nums; margin-top:2px; }
   .rec-row.is-archived { opacity: .85; }
+  .quality-report { margin:0 0 12px; padding:10px 12px; font-size:13px; overflow-wrap:anywhere; background:var(--panel2); border-left:3px solid var(--ok); }
+  .quality-report.quality-attention { border-left-color:var(--warn); }
+  .quality-report ul { margin:6px 0 0; padding-left:20px; }
+  .quality-report li + li { margin-top:6px; }
   .session-card { border:1px solid var(--border); border-radius:10px; margin:10px 0; overflow:hidden; background:var(--panel2); }
   .session-head { display:grid; grid-template-columns:minmax(180px,1fr) minmax(260px,1.4fr) auto;
     gap:14px; align-items:center; padding:14px; }
@@ -449,6 +453,7 @@
   .session-guests .guest-head { color:var(--muted); font-size:12px; border-bottom:1px solid var(--border); }
   .session-guests .guest-track { color:var(--text); font-size:14px; border-bottom:1px solid var(--border); }
   .session-guests .guest-track:last-child { border-bottom:0; }
+  .session-guests > .quality-report { margin:0 4px 12px; }
   @media (max-width:800px) {
     .session-head { grid-template-columns:1fr; }
     .session-actions { justify-content:flex-start; }
@@ -598,6 +603,7 @@
   </header>
 
   <section class="panel" id="jitsi-settings" data-i18n-aria-label="ux.jitsi_settings" aria-label="Jitsi"></section>
+  <section class="panel" id="upload-settings" data-i18n-aria-label="ux.upload_settings" aria-label="Uploads"></section>
   <section class="panel" id="audio-profiles" data-i18n-aria-label="ux.audio_profiles" aria-label="Audioprofile"></section>
   <section class="panel" id="consent-settings" data-i18n-aria-label="ux.consent_settings" aria-label="Aufnahme und Datenschutz"></section>
 
@@ -1936,7 +1942,7 @@
   // Zustand pro Gast: { count, lastTs, lastLine, counts }
   let logsState = new Map();
 
-  const LVL_COL = (lv) => lv === 'err' ? '#e5484d' : lv === 'ok' ? 'var(--ok)' : 'var(--muted)';
+  const LVL_COL = (lv) => lv === 'err' ? '#e5484d' : lv === 'warn' ? 'var(--warn)' : lv === 'ok' ? 'var(--ok)' : 'var(--muted)';
 
   function openLogs(room) {
     logsGeneration++;
@@ -1965,6 +1971,7 @@
         <span style="transition:transform .15s;transform:rotate(${open?90:0}deg);color:var(--muted)">▶</span>
         <b style="font-size:14px">${esc(g.guest)}</b>
         <span style="font-size:12px;color:var(--muted)">${g.count} Ereignis(se) · ${t}</span>
+        ${c.warn ? `<span class="pill" style="margin-left:2px;color:var(--warn);border-color:var(--warn)">${c.warn} ${esc(PodcastUX.t('quality_warning_count'))}</span>` : ''}
         ${c.err ? `<span class="pill err" style="margin-left:2px">${c.err} Fehler</span>` : ''}
         <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;text-align:right">${preview}</span>
       </button>
@@ -2005,9 +2012,9 @@
 
       // Merge Delta-Daten in den Zustand.
       for (const g of guests) {
-        const prev = logsState.get(g.guest) || { count:0, lastTs:0, lastLine:null, counts:{info:0,ok:0,err:0} };
+        const prev = logsState.get(g.guest) || { count:0, lastTs:0, lastLine:null, counts:{info:0,ok:0,warn:0,err:0} };
         prev.count  += (g.lines||[]).length;
-        for (const k of ['info','ok','err']) prev.counts[k] += (g.counts?.[k]||0);
+        for (const k of ['info','ok','warn','err']) prev.counts[k] += (g.counts?.[k]||0);
         if (g.last && (g.last_ts||0) >= prev.lastTs) { prev.lastTs = g.last_ts||0; prev.lastLine = g.last; }
         for (const ln of (g.lines||[])) { if ((ln.ts||0) > maxTs) maxTs = ln.ts||0; }
         prev.guest = g.guest;
@@ -2132,7 +2139,7 @@
     // Nur die Felder, die die Darstellung beeinflussen.
     return JSON.stringify(sessions.map(s => [
       s.room, s.guest, s.session, s.state, s.chunks_count,
-      s.size_mb, s.has_wav, s.has_mixdown, s.archived, s.online, s.label,
+      s.size_mb, s.has_wav, s.has_mixdown, s.archived, s.online, s.label, s.quality_report,
     ]));
   }
 
@@ -2197,6 +2204,14 @@
         aria-pressed="${stateFilter === f ? 'true' : 'false'}">${esc(label)} (${n})</button>`;
     }
     return html + '</div>';
+  }
+
+  function qualityReportHtml(report) {
+    if(!report)return '';
+    const messages=PodcastUX.qualityMessages(report);
+    const known=['complete','complete_with_warnings','incomplete'].includes(report.status);
+    const label=PodcastUX.t(known?'quality_status_'+report.status:'quality_status_unknown');
+    return `<div class="quality-report${messages.length?' quality-attention':''}"><strong>${esc(PodcastUX.t('quality_report'))}: ${esc(label)}</strong>${messages.length?'<ul>'+messages.map(m=>'<li>'+esc(m)+'</li>').join('')+'</ul>':''}</div>`;
   }
 
   function renderSessions(opts = {}) {
@@ -2302,7 +2317,7 @@
                 data-guest="${esc(r.guest)}" data-session="${esc(r.session)}"
                 data-label="${esc(r.guest + ' · ' + title)}">Löschen</button>
             </span>
-          </div>`;
+          </div>${qualityReportHtml(r.quality_report)}`;
         }
         html += `</div></section>`;
       }

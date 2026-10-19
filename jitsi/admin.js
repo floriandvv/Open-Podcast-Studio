@@ -49,3 +49,37 @@ async function loadUsage(){
 }
 form.onsubmit=save;reload.onclick=load;usageReload.onclick=loadUsage;visible();load();
 })();
+
+// Recording uploads are configured independently of the Jitsi provider.
+(() => {
+'use strict';
+const {el,t,error,request}=PodcastUX,box=document.getElementById('upload-settings');
+if(!box)return;
+let busy=false,loaded=false;
+const form=el('form'),grid=el('div',undefined,{class:'jitsi-settings-grid'});
+function field(key,input,hint){const wrap=el('div',undefined,{class:'jitsi-field'});wrap.append(el('label',t(key),{for:input.id}),input);if(hint){const id=input.id+'-hint';wrap.append(el('small',t(hint),{id}));input.setAttribute('aria-describedby',id);}return wrap;}
+const mode=el('select',undefined,{id:'upload-mode'});
+for(const value of ['pause','limited','unlimited'])mode.append(el('option',t('upload_mode_'+value),{value}));
+const cap=el('input',undefined,{id:'upload-kbps',type:'number',min:'32',max:'100000',step:'1',required:''});
+const minimum=el('input',undefined,{id:'upload-min-kbps',type:'number',min:'0',max:'80000',step:'1',required:''});
+const recording=el('input',undefined,{id:'upload-pause-recording',type:'checkbox'});
+grid.append(field('upload_mode',mode,'upload_mode_hint'),field('upload_cap',cap,'upload_cap_hint'),field('upload_min',minimum,'upload_min_hint'),field('upload_recording_pause',recording,'upload_recording_pause_hint'));
+const save=el('button',t('configuration_save'),{type:'submit',class:'btn btn-primary'}),reload=el('button',t('refresh_config'),{type:'button',class:'btn'}),status=el('p',t('loading'),{role:'status','aria-live':'polite'}),actions=el('div',undefined,{class:'jitsi-actions'});
+actions.append(save,reload);form.append(grid,el('p',t('upload_settings_hint'),{class:'sub'}),actions,status);box.replaceChildren(el('h2',t('upload_settings')),form);
+function lock(value){busy=value;for(const n of [mode,cap,minimum,recording,save])n.disabled=value||!loaded;reload.disabled=value;cap.disabled=minimum.disabled=value||!loaded||mode.value!=='limited';}
+function apply(config){loaded=true;mode.value=!config.upload_throttle_enabled?'unlimited':config.pause_uploads_during_call?'pause':'limited';cap.value=config.upload_kbps;minimum.value=config.upload_min_kbps;recording.checked=config.pause_uploads_during_recording;}
+async function load(){if(busy)return;lock(true);status.textContent=t('loading');try{apply((await request('/api/studio/settings')).config);status.textContent=t('saved');}catch(e){status.textContent=error(e);}finally{lock(false);}}
+function changed(){status.textContent=t('unsaved_changes');lock(false);}
+for(const input of [mode,cap,minimum,recording]){input.addEventListener('input',changed);input.addEventListener('change',changed);}
+form.onsubmit=async event=>{
+ event.preventDefault();if(busy||!loaded||!form.reportValidity())return;
+ const next={upload_kbps:Number(cap.value),upload_min_kbps:Number(minimum.value),pause_uploads_during_recording:recording.checked,
+   upload_throttle_enabled:mode.value!=='unlimited',pause_uploads_during_call:mode.value==='pause'};
+ if(mode.value==='limited'&&next.upload_min_kbps*1.25>next.upload_kbps){status.textContent=t('upload_invalid_threshold');minimum.focus();return;}
+ lock(true);status.textContent=t('saving');
+ try{apply((await request('/api/studio/settings',{method:'PUT',body:JSON.stringify(next)})).config);status.textContent=t('upload_saved');}
+ catch(e){status.textContent=t('configuration_not_saved')+' '+error(e);}
+ finally{lock(false);}
+};
+reload.onclick=load;load();
+})();

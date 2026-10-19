@@ -274,7 +274,7 @@ class JitsiService:
         with self.s.db() as c:
             count=c.execute("SELECT COUNT(*) FROM jitsi_participants WHERE call_id=? AND state='joined' AND updated>?",(call['id'] if call and call['state']=='active' else '',time.time()-30)).fetchone()[0]
         return dict(ok=True,configured=self.configured(),deployment=self.settings['mode'],origin=self.embed_origin(),
-                    call=call,participants=count,profile=self.s.profile(room),auto_close=self.auto_close_snapshot(call),closure=self.closure_snapshot(call))
+                    call=call,participants=count,profile=self.s.profile(room),upload_policy=self.s.upload_policy(),auto_close=self.auto_close_snapshot(call),closure=self.closure_snapshot(call))
     async def set_mode(self,room,request:Request):
         role,_=self.auth(request,room,True,True);p=await self.s.payload(request)
         mode=p.get('mode')

@@ -61,7 +61,7 @@ class HostCall extends CallBase {
 class GuestCall extends CallBase {
   constructor(o){super(o);this.generation=0;this.state='left';this.retryAt=0;this.modeChain=Promise.resolve();this.panel=el('section',undefined,{class:'call-panel',hidden:'','aria-label':t('live_call')});this.status=el('p','',{role:'status','aria-live':'polite'});this.provider=el('p','',{class:'call-provider'});this.notice=el('p','',{role:'status','aria-live':'polite'});this.panel.append(this.status,this.provider,this.notice);o.parent.append(this.panel);this.begin();}
   async poll(){if(this.busy||this.disposed)return;this.busy=true;
-    try{const s=await this.request('state');this.snapshot=s;Promise.resolve(this.o.onState?.(s)).catch(()=>{});
+    try{const s=await this.request('state');this.snapshot=s;if(s.upload_policy)this.o.budget.configure(s.upload_policy);Promise.resolve(this.o.onState?.(s)).catch(()=>{});
       this.notice.textContent=s.auto_close?t('call_auto_countdown').replace('{seconds}',String(Math.max(0,Math.ceil(s.auto_close.deadline-Date.now()/1000))))+' '+t('call_auto_'+s.auto_close.reason):'';
       const call=s.call,active=s.configured&&call?.state==='active'&&call.deadline>Date.now()/1000;
       if(!active){this.disconnect();this.panel.hidden=true;this.dismissed=null;return;}
@@ -78,7 +78,7 @@ class GuestCall extends CallBase {
       this.call=grant.call;this.frame=el('div',undefined,{class:'call-frame prejoin'});this.panel.append(this.frame);
       const audio=grant.call.mode==='audio';const api=new API(grant.domain,{roomName:grant.room_name||grant.call.conference,parentNode:this.frame,width:'100%',height:'100%',...(grant.jwt?{jwt:grant.jwt}:{}),lang:window.OpenPodcastI18n.locale,
         userInfo:{displayName:grant.name},configOverwrite:{prejoinConfig:{enabled:true},startAudioOnly:audio,startWithVideoMuted:audio,disableDeepLinking:true,toolbarButtons:this.toolbar(grant.call.mode)}});
-      this.api=api;this.appliedMode=grant.call.mode;this.o.budget.maxDuringCall=0;this.o.budget.update(true,'unknown');api.getIFrame().title=t('live_call');api.getIFrame().referrerPolicy='no-referrer';
+      this.api=api;this.appliedMode=grant.call.mode;this.o.budget.update(true);api.getIFrame().title=t('live_call');api.getIFrame().referrerPolicy='no-referrer';
       const current=()=>this.api===api&&generation===this.generation;
       api.addListener('videoConferenceJoined',()=>{if(!current())return;this.state='joined';this.frame.classList.remove('prejoin');this.status.textContent=t('call_connected');this.report('joined');this.applyMode(this.snapshot.call.mode,true);});
       const ended=()=>{if(!current())return;this.dismissed=this.call.id;this.report('left');this.disconnect();this.status.textContent=t('call_left');};

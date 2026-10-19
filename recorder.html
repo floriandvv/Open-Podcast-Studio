@@ -279,6 +279,7 @@
   }
   .log .ok { color: var(--ok); }
   .log .err { color: var(--accent); }
+  .log .warn { color: var(--warn); }
   label { font-size: 14px; color: var(--muted); display: block; margin-bottom: 4px; }
 
   /* ---------- VU-Meter ---------- */
@@ -636,7 +637,11 @@
 (() => {
   // ---------- Config ----------
   const mediaOwner = new PodcastMedia.MediaOwner();
-  const uploadBudget = new PodcastMedia.UploadBudget();
+  const uploadBudget = new PodcastMedia.UploadBudget({onState:state=>{
+    const text=PodcastUX.format('upload_state_'+state,{rate:uploadBudget.config.upload_kbps});
+    log(text,['call','recording','slow'].includes(state)?'warn':'info');
+    if(['call','recording','slow'].includes(state))console.warn(text);else console.info(text);
+  }});
   let guestCall = null, recordingStarting = false;
   let recordingStartTask = null, recordingStopTask = null;
   let captureGeneration = 0, recordingError = '';
@@ -679,6 +684,7 @@
   async function loadCaptureProfile() {
     const value = await studioFetch(`${SERVER}/api/studio/bootstrap/${room}`);
     captureProfile=value.profile;studioPolicy=value.policy;studioGuest=value.guest;
+    uploadBudget.configure(studioPolicy);
     CHUNK_MS=captureProfile.chunk_ms;VIDEO_BITRATE=captureProfile.video_bitrate;
     AUDIO_BITRATE=captureProfile.audio_bitrate;AUDIO_SAMPLE_RATE=captureProfile.sample_rate;
     audioOnly=!captureProfile.video;
@@ -2059,6 +2065,20 @@
     clearTimeout(maxDurationTimer);
     maxDurationTimer=setTimeout(()=>{studioEvent('maximum_duration');stopRecording();},Math.min(captureProfile.max_duration_s,studioPolicy.max_duration_s)*1000);
   }
+  const loggedQualityReports = new Set();
+  function logQualityReport(m) {
+    if(!m.report)return;
+    const key=m.sessionKey+':'+m.report.validated_at;
+    if(loggedQualityReports.has(key))return;
+    loggedQualityReports.add(key);
+    const label=PodcastUX.format('quality_context',{room:m.room,guest:m.guest,session:m.sessionId});
+    for(const text of PodcastUX.qualityMessages(m.report)){
+      const message=label+' '+text;
+      // The console transport stores 400 characters per entry: do not silently truncate details.
+      for(let i=0;i<message.length;i+=390)log(message.slice(i,i+390),'warn');
+      console.warn(message);
+    }
+  }
   async function finalizeManifest(m) {
     if(!m.closed || m.finalized || !m.count) return;
     await ensureRemoteMetadata(m);
@@ -2067,8 +2087,10 @@
     const result=await studioFetch(`${SERVER}/finish/${m.room}/${m.guest}/${m.sessionId}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({expected_chunks:m.count,interrupted:!!m.interrupted})});
     if(!result.finalized || !result.report?.files?.['full.wav']?.sha256) throw new Error('Server-Finalisierung nicht bestätigt');
     m.finalized=true;m.report=result.report;await manifestOp('put',m);
+    logQualityReport(m);
     await dbDeleteBySession(m.sessionKey);
-    log('Server bestätigt: '+result.report.status+'. Lokale Chunks freigegeben.','ok');
+    const statusKey=['complete','complete_with_warnings','incomplete'].includes(result.report.status)?'quality_status_'+result.report.status:'quality_status_unknown';
+    log(PodcastUX.format('quality_finalized',{status:PodcastUX.t(statusKey)}),result.report.status==='complete'?'ok':'warn');
   }
   let finalizerBusy=false;
   async function finishPending() {
@@ -2090,10 +2112,17 @@
     if(!trackManifest)return;
     const rows=(await dbGetAll()).filter(r=>r.sessionKey===trackManifest.sessionKey);
     const local=rows.reduce((s,r)=>s+r.size,0),uploaded=rows.filter(r=>r.uploaded).reduce((s,r)=>s+r.size,0);
-    const backlog=local-uploaded, eta=uploadRate>0?Math.ceil(backlog/uploadRate):null;
+    const backlog=local-uploaded;
+    const effectiveRate=uploadBudget.capBytes?Math.min(uploadRate,uploadBudget.capBytes):uploadRate;
+    const eta=!uploadBudget.pausedReason&&!uploadBudget.recovering&&effectiveRate>0?Math.ceil(backlog/effectiveRate):null;
     const m=await manifestOp('get',trackManifest.sessionKey);
     const state=storageFault?'data_loss_possible':m?.finalized?'finalized':!navigator.onLine?'recoverable_offline':isRecording?'recording':backlog?'uploading':'finalizing';
-    const text=m?.finalized ? 'Server-Finalisierung bestätigt: '+m.report.status : `${isRecording?'AUFNAHME LÄUFT · ':''}${uploadBudget.call&&!uploadBudget.maxDuringCall?'CALL HAT VORRANG / UPLOAD PAUSIERT · ':''}Lokal gesichert: ${fmtMB(local)} · serverbestätigt: ${fmtMB(uploaded)} · ausstehend: ${fmtMB(backlog)} · Wiederholungen: ${uploadRetries} · Restzeit: ${eta===null?'unbekannt':eta+' s'} · ${state}`;
+    const uploadState=PodcastUX.format('upload_state_'+uploadBudget.state,{rate:uploadBudget.config.upload_kbps});
+    const text=m?.finalized ? PodcastUX.format('quality_server_status',{status:PodcastUX.t(['complete','complete_with_warnings','incomplete'].includes(m.report.status)?'quality_status_'+m.report.status:'quality_status_unknown')}) : PodcastUX.format('upload_progress',{
+      recording:isRecording?PodcastUX.t('upload_recording_active')+' · ':'',policy:uploadState,
+      local:fmtMB(local),uploaded:fmtMB(uploaded),backlog:fmtMB(backlog),retries:uploadRetries,
+      rate:uploadBudget.rateKbps===null?PodcastUX.t('quality_unavailable'):uploadBudget.rateKbps.toLocaleString(window.OpenPodcastI18n?.locale||'en',{maximumFractionDigits:0})+' kbit/s',
+      eta:eta===null?PodcastUX.t('quality_unavailable'):eta+' s'});
     const el=$('recordingSafety');if(el){el.hidden=false;el.textContent=text;}
     if(navigator.onLine && m?.remoteMeta) {
       studioFetch(`${SERVER}/api/studio/telemetry/${m.room}/${m.guest}/${m.sessionId}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({local_bytes:local,uploaded_bytes:uploaded,backlog_bytes:backlog,retry_count:uploadRetries,eta_s:eta,state,events:studioEvents,peak_dbfs:20*Math.log10(currentPeak||1e-7),clip_count:studioEvents.filter(e=>e.type==='clipping').length})}).catch(()=>{});
@@ -2277,7 +2306,7 @@
         if(!consentGranted||!db)throw new Error('Einwilligung oder lokaler Speicher fehlt');
         await startCapture(generation);
       } catch(e) {
-        isRecording=false;
+        isRecording=false;uploadBudget.setRecording(false);
         clearTimeout(maxDurationTimer);clearInterval(durationTimer);clearInterval(pcmFlushTimer);
         if (generation === captureGeneration) {
           recordingError=PodcastUX.error(e);
@@ -2349,7 +2378,7 @@
     assertCaptureActive(generation);
     recorder.start(CHUNK_MS);
     // Never announce recording when start() has thrown.
-    isRecording=true;micLostDuringRec=false;startTs=Date.now();
+    isRecording=true;uploadBudget.setRecording(true);micLostDuringRec=false;startTs=Date.now();
     startCaptureClock();
     setStatus('🔴 Video-Aufnahme läuft…');
     log(`Video-Aufnahme gestartet (${pick.label})`,'ok');
@@ -2384,7 +2413,7 @@
     pcmNode.connect(pcmSilent);pcmSilent.connect(pcmCtx.destination);
     await prepareManifest(pcmSampleRate, pcmChannels);
     assertCaptureActive(generation);
-    isRecording=true;micLostDuringRec=false;startTs=Date.now();
+    isRecording=true;uploadBudget.setRecording(true);micLostDuringRec=false;startTs=Date.now();
     clearInterval(pcmFlushTimer);
     pcmFlushTimer=setInterval(()=>pcmFlush(false),CHUNK_MS);
     startCaptureClock();
@@ -2411,7 +2440,7 @@
       recordingError=PodcastUX.error(error);
       log('Aufnahmeabschluss fehlgeschlagen: '+recordingError,'err');
       setStatus('Aufnahme beendet; Abschluss fehlgeschlagen. Lokale Daten bleiben erhalten.');
-    }).finally(()=>{recordingStopTask=null;sendHeartbeat();});
+    }).finally(()=>{uploadBudget.setRecording(false);recordingStopTask=null;sendHeartbeat();});
     sendHeartbeat();
     return recordingStopTask;
   }
@@ -2470,7 +2499,7 @@
     try { if (pcmCtx && pcmCtx!==audioCtx && pcmCtx.state !== "closed") await pcmCtx.close(); } catch {}
     pcmCtx = null;pcmCtxShared=false;
     pcmFlush(true);
-    await persistChain; // Final media event and manifest count committed before sealing.
+    try { await persistChain; } finally { uploadBudget.setRecording(false); } // Final media event and manifest count committed before sealing.
     await mediaOwner.releaseRecording();recordingOutput=null;
 
     if (trackManifest) {
@@ -2484,9 +2513,7 @@
       $('warnBanner').classList.remove('show');releaseWakeLock();
       return;
     }
-    setStatus(uploadBudget.call&&!uploadBudget.maxDuringCall
-      ? 'Aufnahme lokal beendet und gesichert. Upload pausiert bis zum Ende des Calls.'
-      : 'Aufnahme beendet, lade restliche Chunks hoch…');
+    setStatus(PodcastUX.t('upload_locally_finished')+' '+PodcastUX.format('upload_state_'+uploadBudget.state,{rate:uploadBudget.config.upload_kbps}));
     log("Aufnahme gestoppt, lokale Speicherung und Upload-Manifest bleiben bis zur Serverbestätigung erhalten.");
     (async () => {
       while (pendingChunkEnqueues > 0 || uploadQueue.length > 0 || uploaderRunning) await new Promise(r => setTimeout(r, 200));
@@ -2537,6 +2564,8 @@
   function updateConnectionStatus() {
     if (!navigator.onLine) {
       setStatus(`🔴 Offline — warte auf Verbindung… (Queue: ${uploadQueue.length})`);
+    } else if (uploadQueue.length && uploadBudget.pausedReason) {
+      setStatus((isRecording?PodcastUX.t('upload_recording_active')+' · ':'')+PodcastUX.format('upload_state_'+uploadBudget.state,{rate:uploadBudget.config.upload_kbps}));
     } else if (uploadQueue.length > 3) {
       setStatus(`🟡 Verbindung schwach — ${uploadQueue.length} Chunks im Rückstand`);
     } else if (isRecording) {
@@ -2583,6 +2612,7 @@
       }
       const ok = await uploadChunk(item);
 
+      if(ok===null){await sleepInterruptible(250);continue;}
       if (ok) {
         try { await dbMarkUploaded(item); } catch(e) {
           log("Lokale Upload-Quittung konnte nicht gespeichert werden; Daten bleiben erhalten", "err");
@@ -2616,21 +2646,27 @@
 
   async function uploadChunk(item) {
     if(!navigator.onLine)return false;
-    let timer;
+    let timer,start=null;
     try {
       const m=await manifestOp('get',sessionKeyOf(item.room,item.guest,item.sessionId));
       if(!m)throw new Error('Upload-Manifest fehlt');
-      await uploadBudget.wait(item.size);await ensureRemoteMetadata(m);
+      await uploadBudget.wait();await ensureRemoteMetadata(m);
       const rec=await dbGet(item.key);if(!rec)throw new Error('Lokaler Chunk fehlt');
       item.blob=rec.blob;item.sha=rec.sha||await sha256(rec.blob);
       const signal=uploadBudget.start();timer=setTimeout(()=>uploadBudget.abort?.abort(),60000);
-      const start=performance.now();
+      start=performance.now();
       const response=await fetch(`${SERVER}/upload/${item.room}/${item.guest}/${item.sessionId}/${String(item.idx).padStart(6,'0')}?ext=${encodeURIComponent(item.ext||'pcm')}`,{method:'PUT',headers:{'Content-Type':'application/octet-stream',Authorization:'Bearer '+guestToken,'X-Guest-Client':guestClientSecret,'X-Chunk-SHA256':item.sha},body:item.blob,signal});
       const receipt=await response.json();
       if(!response.ok||receipt.idx!==item.idx||receipt.bytes!==item.blob.size||receipt.sha256!==item.sha)throw new Error('Upload-Quittung ungültig: '+response.status);
-      uploadRate=item.blob.size/Math.max(0.1,(performance.now()-start)/1000);return true;
-    } catch(e){uploadRetries++;return false;}
-    finally{clearTimeout(timer);uploadBudget.done();}
+      const seconds=Math.max(0.1,(performance.now()-start)/1000);
+      uploadRate=item.blob.size/seconds;uploadBudget.account(item.blob.size);uploadBudget.observe(item.blob.size,seconds);
+      return true;
+    } catch(e){
+      if(e.uploadPolicy||uploadBudget.cancelledByPolicy)return null;
+      uploadRetries++;
+      if(start!==null){uploadBudget.account(item.blob.size);if(navigator.onLine)uploadBudget.observe(0,1);}
+      return false;
+    } finally{clearTimeout(timer);uploadBudget.done();}
   }
 
 

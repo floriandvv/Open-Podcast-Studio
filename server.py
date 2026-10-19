@@ -4230,7 +4230,7 @@ def admin_diagnostics_logs(_role=Depends(require_admin),
         _error_record("diagnostics", "Client-Logs konnten nicht gelesen werden",
                       detail=str(e))
         raise HTTPException(500, "Client-Logs konnten nicht gelesen werden")
-    counts = {"info": 0, "ok": 0, "err": 0}
+    counts = {"info": 0, "ok": 0, "warn": 0, "err": 0}
     for r in rows:
         lvl = str(r.get("level") or "info")
         counts[lvl] = counts.get(lvl, 0) + 1
@@ -4516,7 +4516,7 @@ def admin_room_logs(room, since: float = 0.0, _role=Depends(require_admin)):
           {
             guest: "<id>",
             last_ts: <epoch_s>,
-            counts: { info, ok, err },
+            counts: { info, ok, warn, err },
             last: { ts, level, msg, session },   # juengstes Ereignis (Inline-Zeile)
             lines: [ { ts, level, msg, session }, ... ]  # chronologisch
           }, ...
@@ -4533,7 +4533,7 @@ def admin_room_logs(room, since: float = 0.0, _role=Depends(require_admin)):
         grp = groups.get(g)
         if grp is None:
             grp = {"guest": g, "last_ts": 0.0,
-                   "counts": {"info": 0, "ok": 0, "err": 0},
+                   "counts": {"info": 0, "ok": 0, "warn": 0, "err": 0},
                    "last": None, "lines": []}
             groups[g] = grp
         line = {"ts": r.get("ts"), "level": r.get("level"),
@@ -4594,6 +4594,19 @@ def sessions(role=Depends(require_auth)):
                 })
                 if has_wav:
                     session_keys.add((room_dir.name, sess_dir.name))
+
+    # Admins see persisted quality results, including older finalized takes.
+    reports = {}
+    if role == "admin":
+        with STUDIO.db() as c:
+            for track in c.execute("SELECT room,guest,session,report FROM tracks WHERE report IS NOT NULL"):
+                report = json.loads(track["report"])
+                reports[(track["room"],track["guest"],track["session"])] = {
+                    k: report[k] for k in ("status","warnings","expected_duration_s","raw_duration_s","duration_s",
+                        "start_deviation_s","end_deviation_s","duration_tolerance_s","start_tolerance_s") if k in report}
+                reports[(track["room"],track["guest"],track["session"])]["telemetry"] = {"events":report.get("telemetry",{}).get("events",[])}
+    for row in out:
+        row["quality_report"] = reports.get((row["room"],row["guest"],row["session"]))
 
     # Alte Sessions bekommen ihren Mixdown beim ersten Listenabruf nachtraeglich.
     mix_state = {}

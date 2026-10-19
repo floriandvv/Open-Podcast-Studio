@@ -46,7 +46,8 @@ DEFAULTS = dict(profiles=PROFILES, default_profile="audio-standard",
                 max_guests=12, max_duration_s=14400, max_chunk_bytes=67108864,
                 max_track_bytes=21474836480, min_free_bytes=1073741824,
                 requests_per_minute=240, token_requests_per_minute=180,
-                admission_minutes=1440, upload_kbps=512, pause_uploads_during_recording=False)
+                admission_minutes=1440, upload_kbps=512, pause_uploads_during_recording=False,
+                upload_throttle_enabled=True, pause_uploads_during_call=True, upload_min_kbps=0)
 IDENT = re.compile(r"^[a-zA-Z0-9_-]{1,80}$")
 HASH = re.compile(r"^[0-9a-f]{64}$")
 
@@ -634,6 +635,7 @@ class Studio:
                 state="incomplete" if t["interrupted"] or expected is None else "complete_with_warnings" if warnings else "complete"
                 report=dict(status=state,validated_at=time.time(),warnings=warnings,expected_duration_s=duration,
                             raw_duration_s=raw_duration,duration_s=frames/rate,start_deviation_s=start_deviation,
+                            duration_tolerance_s=max(0.25,duration*0.005) if duration else None,start_tolerance_s=0.25,
                             end_deviation_s=((start_deviation or 0)+raw_duration-duration if duration else None),
                             sample_rate=rate,channels=channels,frames=frames,size_bytes=wav.stat().st_size,
                             missing_chunks=missing,retried_chunks=sum(r["attempts"]>1 for r in rows),
@@ -893,16 +895,26 @@ class Studio:
 
     async def settings_set(self,request: Request):
         role=self.role(request,True);p=await self.payload(request)
-        if any(r.get("rec_state") == "recording" for r in self.a["ROOMS"].values()):
+        upload_keys=set(self.upload_policy())
+        if set(p)-upload_keys and any(r.get("rec_state") == "recording" for r in self.a["ROOMS"].values()):
             raise HTTPException(409, "ux.recording_busy")
         cfg=json.loads(json.dumps(self.config))
         if any(k not in DEFAULTS for k in p):raise HTTPException(422,"Unknown setting")
         cfg.update(p)
         bounds=dict(retention_days=(0,3650),diagnostic_days=(1,365),max_guests=(1,100),max_duration_s=(60,86400),
                     max_chunk_bytes=(65536,268435456),max_track_bytes=(1048576,1099511627776),min_free_bytes=(0,1099511627776),
-                    requests_per_minute=(30,10000),token_requests_per_minute=(30,10000),admission_minutes=(5,43200),upload_kbps=(32,100000))
+                    requests_per_minute=(30,10000),token_requests_per_minute=(30,10000),admission_minutes=(5,43200))
         for k,(lo,hi) in bounds.items():cfg[k]=number(cfg[k],lo,hi,k)
-        for k in ("collect_device_metadata","automatic_chapters","pause_uploads_during_recording"):
+        try:
+            for k,lo,hi in (("upload_kbps",32,100000),("upload_min_kbps",0,80000)):
+                cfg[k]=number(cfg[k],lo,hi,k)
+            for k in ("upload_throttle_enabled","pause_uploads_during_call","pause_uploads_during_recording"):
+                if not isinstance(cfg[k],bool):raise ValueError(k)
+        except (HTTPException,ValueError):
+            raise HTTPException(422,"ux.upload_invalid_settings") from None
+        if cfg["upload_throttle_enabled"] and not cfg["pause_uploads_during_call"] and cfg["upload_min_kbps"]*1.25>cfg["upload_kbps"]:
+            raise HTTPException(422,"ux.upload_invalid_threshold")
+        for k in ("collect_device_metadata","automatic_chapters"):
             if not isinstance(cfg[k],bool):raise HTTPException(422,f"{k}: boolean required")
         for k in ("consent_text","consent_text_en","privacy_policy","storage_region","backup_policy"):
             if not isinstance(cfg[k],str) or len(cfg[k])>12000:raise HTTPException(422,f"Invalid {k}")
@@ -944,6 +956,10 @@ class Studio:
         self.audit(role,"settings.update",detail={"fields":list(p)})
         return {"ok":True,"config":cfg}
 
+    def upload_policy(self):
+        return {k:self.config[k] for k in ("upload_kbps","upload_min_kbps","upload_throttle_enabled",
+                "pause_uploads_during_call","pause_uploads_during_recording")}
+
     def consent_policy(self,room):
         """A single authoritative localized text/digest snapshot for display and receipt."""
         config=self.config
@@ -974,6 +990,7 @@ class Studio:
             if t:pro=json.loads(t["profile"])
         with self.lock:
             policy={k:self.config[k] for k in ("privacy_policy","retention_days","storage_region","backup_policy","collect_device_metadata","upload_kbps","pause_uploads_during_recording","max_duration_s")}
+            policy.update(self.upload_policy())
             policy.update(self.consent_policy(room))
         return dict(ok=True,guest="g_"+token["id"],profile=pro,policy=policy)
 
