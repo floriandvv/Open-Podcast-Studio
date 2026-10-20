@@ -2,15 +2,22 @@
 'use strict';
 const {el,t,error,request}=PodcastUX,box=document.getElementById('jitsi-settings');
 let saved=null,busy=false,usageBusy=false;
-const form=el('form'),grid=el('div',undefined,{class:'jitsi-settings-grid'});
-function field(key,input,hint){const wrap=el('div',undefined,{class:'jitsi-field'}),label=el('label',t(key),{for:input.id});wrap.append(label,input);if(hint)wrap.append(el('small',t(hint)));return wrap;}
+const form=el('form'),grid=el('div',undefined,{class:'settings-fields'});
+function field(key,input,hint){
+ const number=input.type==='number',row=el('div',undefined,{class:'cfg-row'+(number?' cfg-row-num':'')}),copy=el('div');
+ copy.append(el('label',t(key),{for:input.id}));
+ if(hint){const id=input.id+'-hint';copy.append(el('div',t(hint),{class:'desc',id}));input.setAttribute('aria-describedby',id);}
+ row.append(copy);
+ if(number){const controls=el('div',undefined,{class:'num-wrap'});controls.append(input,el('span','s',{class:'unit'}));row.append(controls);}else row.append(input);
+ return row;
+}
 const mode=el('select',undefined,{id:'jitsi-mode'});for(const k of ['off','public','self_hosted','jaas'])mode.append(el('option',t('deployment_'+k),{value:k}));
 const url=el('input',undefined,{id:'jitsi-public-url',type:'url',maxlength:'260'}),appId=el('input',undefined,{id:'jitsi-jaas-app-id',type:'text',maxlength:'119',autocomplete:'off',spellcheck:'false',translate:'no','data-i18n-ignore':''});
 const publicFields=field('public_url',url,'public_hint'),jaasFields=field('jaas_app_id',appId,'jaas_app_hint');
 const empty=el('input',undefined,{id:'jitsi-empty-grace',type:'number',min:'0',max:'3600',step:'1'}),absence=el('input',undefined,{id:'jitsi-host-grace',type:'number',min:'0',max:'3600',step:'1'});
 grid.append(field('deployment',mode),jaasFields,publicFields,field('call_empty_grace',empty,'call_grace_hint'),field('call_host_grace',absence,'call_host_grace_hint'));
-const saveButton=el('button',t('configuration_save'),{type:'submit',class:'btn btn-primary',id:'jitsi-save'}),reload=el('button',t('refresh_config'),{type:'button',class:'btn'}),hint=el('p','',{class:'sub'}),status=el('p',t('loading'),{role:'status','aria-live':'polite'}),actions=el('div',undefined,{class:'jitsi-actions'});
-actions.append(saveButton,reload);form.append(grid,hint,actions,status);
+const saveButton=el('button',t('configuration_save'),{type:'submit',class:'btn btn-primary',id:'jitsi-save'}),hint=el('p','',{class:'sub'}),status=el('p',t('loading'),{class:'settings-status',role:'status','aria-live':'polite'}),actions=el('div',undefined,{class:'jitsi-actions'});
+actions.append(saveButton,status);form.append(grid,hint,actions);
 // Usage is a full separate statistics row, never a child of the App ID field.
 const usage=el('section',undefined,{class:'jitsi-usage',id:'jitsi-usage','aria-label':t('jaas_mau_title')}),dashboard=el('div',undefined,{class:'overview-dashboard'});
 function statistic(label,id){const card=el('div',undefined,{class:'overview-card'}),value=el('div','\u2014',{class:'value',id,translate:'no','data-i18n-ignore':''}),detail=el('div','',{class:'detail'});card.append(el('div',t(label),{class:'label'}),value,detail);dashboard.append(card);return {value,detail};}
@@ -19,7 +26,7 @@ const usageStatus=el('p','',{role:'status','aria-live':'polite'}),usageReload=el
 usageActions.append(usageReload,consoleLink);usage.append(dashboard,usageStatus,usageActions,el('p',t('jaas_mau_webhook_hint'),{class:'sub'}));
 box.replaceChildren(el('h2',t('jitsi_settings')),form,usage);
 function visible(){publicFields.hidden=mode.value!=='public';jaasFields.hidden=mode.value!=='jaas';usage.hidden=mode.value!=='jaas';hint.textContent=t(mode.value==='off'?'jitsi_off':mode.value==='jaas'?'jaas_hint':mode.value==='self_hosted'?'self_hint':'public_hint');}
-function lock(value){busy=value;for(const n of [mode,url,appId,empty,absence,saveButton,reload])n.disabled=value;usageReload.disabled=value||usageBusy;}
+function lock(value){busy=value;for(const n of [mode,url,appId,empty,absence,saveButton])n.disabled=value||!saved;usageReload.disabled=value||usageBusy;}
 function changed(){appId.setAttribute('aria-invalid','false');status.textContent=t('unsaved_changes');visible();}
 for(const n of [mode,url,appId,empty,absence])n.addEventListener('change',changed);
 appId.addEventListener('input',changed);
@@ -47,7 +54,7 @@ async function loadUsage(){
  }catch(e){health.value.textContent=t('jaas_webhook_error');usageStatus.textContent=error(e);}
  finally{usageBusy=false;usageReload.disabled=busy;if(saved.jaas_app_id!==app)loadUsage();}
 }
-form.onsubmit=save;reload.onclick=load;usageReload.onclick=loadUsage;visible();load();
+form.onsubmit=save;usageReload.onclick=loadUsage;visible();load();
 })();
 
 // Recording uploads are configured independently of the Jitsi provider.
@@ -56,17 +63,26 @@ form.onsubmit=save;reload.onclick=load;usageReload.onclick=loadUsage;visible();l
 const {el,t,error,request}=PodcastUX,box=document.getElementById('upload-settings');
 if(!box)return;
 let busy=false,loaded=false;
-const form=el('form'),grid=el('div',undefined,{class:'jitsi-settings-grid'});
-function field(key,input,hint){const wrap=el('div',undefined,{class:'jitsi-field'});wrap.append(el('label',t(key),{for:input.id}),input);if(hint){const id=input.id+'-hint';wrap.append(el('small',t(hint),{id}));input.setAttribute('aria-describedby',id);}return wrap;}
+const form=el('form'),grid=el('div',undefined,{class:'settings-fields'});
+function field(key,input,hint){
+ const number=input.type==='number',row=el('div',undefined,{class:'cfg-row'+(number?' cfg-row-num':'')}),copy=el('div');
+ copy.append(el('label',t(key),{for:input.id}));
+ if(hint){const id=input.id+'-hint';copy.append(el('div',t(hint),{class:'desc',id}));input.setAttribute('aria-describedby',id);}
+ row.append(copy);
+ const controls=el('div',undefined,{class:number?'num-wrap':'cfg-toggle'});
+ if(number){controls.append(input,el('span','kbit/s',{class:'unit'}));row.append(controls);}
+ else if(input.type==='checkbox'){controls.append(input,el('label',t('active'),{for:input.id}));row.append(controls);}else row.append(input);
+ return row;
+}
 const mode=el('select',undefined,{id:'upload-mode'});
 for(const value of ['pause','limited','unlimited'])mode.append(el('option',t('upload_mode_'+value),{value}));
 const cap=el('input',undefined,{id:'upload-kbps',type:'number',min:'32',max:'100000',step:'1',required:''});
 const minimum=el('input',undefined,{id:'upload-min-kbps',type:'number',min:'0',max:'80000',step:'1',required:''});
 const recording=el('input',undefined,{id:'upload-pause-recording',type:'checkbox'});
 grid.append(field('upload_mode',mode,'upload_mode_hint'),field('upload_cap',cap,'upload_cap_hint'),field('upload_min',minimum,'upload_min_hint'),field('upload_recording_pause',recording,'upload_recording_pause_hint'));
-const save=el('button',t('configuration_save'),{type:'submit',class:'btn btn-primary'}),reload=el('button',t('refresh_config'),{type:'button',class:'btn'}),status=el('p',t('loading'),{role:'status','aria-live':'polite'}),actions=el('div',undefined,{class:'jitsi-actions'});
-actions.append(save,reload);form.append(grid,el('p',t('upload_settings_hint'),{class:'sub'}),actions,status);box.replaceChildren(el('h2',t('upload_settings')),form);
-function lock(value){busy=value;for(const n of [mode,cap,minimum,recording,save])n.disabled=value||!loaded;reload.disabled=value;cap.disabled=minimum.disabled=value||!loaded||mode.value!=='limited';}
+const save=el('button',t('configuration_save'),{type:'submit',class:'btn btn-primary',id:'upload-save'}),status=el('p',t('loading'),{class:'settings-status',role:'status','aria-live':'polite'}),actions=el('div',undefined,{class:'jitsi-actions'});
+actions.append(save,status);form.append(grid,el('p',t('upload_settings_hint'),{class:'sub'}),actions);box.replaceChildren(el('h2',t('upload_settings')),form);
+function lock(value){busy=value;for(const n of [mode,cap,minimum,recording,save])n.disabled=value||!loaded;cap.disabled=minimum.disabled=value||!loaded||mode.value!=='limited';}
 function apply(config){loaded=true;mode.value=!config.upload_throttle_enabled?'unlimited':config.pause_uploads_during_call?'pause':'limited';cap.value=config.upload_kbps;minimum.value=config.upload_min_kbps;recording.checked=config.pause_uploads_during_recording;}
 async function load(){if(busy)return;lock(true);status.textContent=t('loading');try{apply((await request('/api/studio/settings')).config);status.textContent=t('saved');}catch(e){status.textContent=error(e);}finally{lock(false);}}
 function changed(){status.textContent=t('unsaved_changes');lock(false);}
@@ -81,5 +97,5 @@ form.onsubmit=async event=>{
  catch(e){status.textContent=t('configuration_not_saved')+' '+error(e);}
  finally{lock(false);}
 };
-reload.onclick=load;load();
+load();
 })();

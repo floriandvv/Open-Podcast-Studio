@@ -359,6 +359,8 @@
     line-height: 1.5;
   }
   .warn-banner.show { display: block; }
+  .warn-banner.pending { background: rgba(245,158,11,0.12); border-color: var(--warn); }
+  .warn-banner.pending b { color: var(--warn); }
   .warn-banner b { color: var(--accent); }
 
   /* ---------- Clipping-Warnung ---------- */
@@ -2086,36 +2088,77 @@
     if(records.length!==m.count || records.some(r=>!r.uploaded))return;
     const result=await studioFetch(`${SERVER}/finish/${m.room}/${m.guest}/${m.sessionId}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({expected_chunks:m.count,interrupted:!!m.interrupted})});
     if(!result.finalized || !result.report?.files?.['full.wav']?.sha256) throw new Error('Server-Finalisierung nicht bestätigt');
-    m.finalized=true;m.report=result.report;await manifestOp('put',m);
+    const confirmed={...m,finalized:true,report:result.report};
+    await manifestOp('put',confirmed);Object.assign(m,confirmed);
+    // Server acknowledgement, not the later local cleanup, settles every status view.
+    syncRecordingCompletion(m);
     logQualityReport(m);
     await dbDeleteBySession(m.sessionKey);
     const statusKey=['complete','complete_with_warnings','incomplete'].includes(result.report.status)?'quality_status_'+result.report.status:'quality_status_unknown';
     log(PodcastUX.format('quality_finalized',{status:PodcastUX.t(statusKey)}),result.report.status==='complete'?'ok':'warn');
   }
-  let finalizerBusy=false;
-  async function finishPending() {
-    if(!db || finalizerBusy || uploaderRunning || isRecording || recordingStarting || !navigator.onLine)return;
-    finalizerBusy=true;
-    try {
+  function hasUnfinishedRecording() {
+    return !!(isRecording || recordingStarting || recordingStopTask || pendingChunkEnqueues > 0 ||
+      uploadQueue.length > 0 || uploaderRunning ||
+      (trackManifest && !trackManifest.finalized && (trackManifest.count || !trackManifest.closed)));
+  }
+  function updateRecordingWarning() {
+    const banner=$('warnBanner'),pending=hasUnfinishedRecording();
+    if(banner) {
+      banner.textContent=PodcastUX.t(isRecording?'upload_warning_recording':'upload_warning_pending');
+      banner.classList.toggle('pending',pending&&!isRecording);
+      banner.classList.toggle('show',pending);
+    }
+    if(!pending)releaseWakeLock();
+  }
+  function syncRecordingCompletion(m=trackManifest) {
+    // Late results from an older take must never overwrite a new take/countdown/error.
+    if(!m?.finalized || !m.closed || !m.report?.files?.['full.wav']?.sha256 ||
+       m.sessionKey!==trackManifest?.sessionKey || isRecording || recordingStarting ||
+       countingDown || pendingSessionId || recordingError)return false;
+    trackManifest=m;
+    const key=['complete','complete_with_warnings','incomplete'].includes(m.report.status)
+      ?'quality_status_'+m.report.status:'quality_status_unknown';
+    const text=PodcastUX.format('quality_server_status',{status:PodcastUX.t(key)})+
+      (storageFault?' '+PodcastUX.t('upload_capture_incomplete'):'');
+    setStatus(text);
+    const safety=$('recordingSafety');if(safety){safety.hidden=false;safety.textContent=text;}
+    updateRecordingWarning();
+    return true;
+  }
+  let finalizerTask=null;
+  function finishPending() {
+    // Every caller awaits the same in-flight finalization instead of an early return.
+    if(finalizerTask)return finalizerTask;
+    if(!db || uploaderRunning || isRecording || recordingStarting || !navigator.onLine)return Promise.resolve();
+    finalizerTask=(async()=>{
       const owner=await tokenFingerprint();
       for(const m of await manifestOp('getAll')) {
-        if(m.owner!==owner || !m.closed || m.finalized)continue;
-        try { await finalizeManifest(m); if(trackManifest?.sessionKey===m.sessionKey)trackManifest=m; }
-        catch(e){log('Finalisierung ausstehend; lokale Daten bleiben erhalten: '+e.message,'err');}
+        if(m.owner!==owner || !m.closed)continue;
+        try {
+          if(!m.finalized)await finalizeManifest(m);
+          if(syncRecordingCompletion(m))sendHeartbeat();
+        } catch(e){log('Finalisierung ausstehend; lokale Daten bleiben erhalten: '+e.message,'err');}
       }
-    } finally {finalizerBusy=false;}
+    })().catch(e=>{log('Finalisierung ausstehend; lokale Daten bleiben erhalten: '+e.message,'err');})
+      .finally(()=>{finalizerTask=null;});
+    return finalizerTask;
   }
   async function monitorStorage() {
     if(!db)return;
     if(isRecording && Date.now()-lastMonitorTick>15000)studioEvent('sleep_or_timer_interruption');
     lastMonitorTick=Date.now();
     if(!trackManifest)return;
-    const rows=(await dbGetAll()).filter(r=>r.sessionKey===trackManifest.sessionKey);
+    const monitoredKey=trackManifest.sessionKey;
+    const rows=(await dbGetAll()).filter(r=>r.sessionKey===monitoredKey);
     const local=rows.reduce((s,r)=>s+r.size,0),uploaded=rows.filter(r=>r.uploaded).reduce((s,r)=>s+r.size,0);
     const backlog=local-uploaded;
     const effectiveRate=uploadBudget.capBytes?Math.min(uploadRate,uploadBudget.capBytes):uploadRate;
     const eta=!uploadBudget.pausedReason&&!uploadBudget.recovering&&effectiveRate>0?Math.ceil(backlog/effectiveRate):null;
-    const m=await manifestOp('get',trackManifest.sessionKey);
+    const m=await manifestOp('get',monitoredKey);
+    if(trackManifest?.sessionKey!==monitoredKey || recordingStarting || countingDown || pendingSessionId)return;
+    const completed=syncRecordingCompletion(m);
+    updateRecordingWarning();
     const state=storageFault?'data_loss_possible':m?.finalized?'finalized':!navigator.onLine?'recoverable_offline':isRecording?'recording':backlog?'uploading':'finalizing';
     const uploadState=PodcastUX.format('upload_state_'+uploadBudget.state,{rate:uploadBudget.config.upload_kbps});
     const text=m?.finalized ? PodcastUX.format('quality_server_status',{status:PodcastUX.t(['complete','complete_with_warnings','incomplete'].includes(m.report.status)?'quality_status_'+m.report.status:'quality_status_unknown')}) : PodcastUX.format('upload_progress',{
@@ -2123,7 +2166,7 @@
       local:fmtMB(local),uploaded:fmtMB(uploaded),backlog:fmtMB(backlog),retries:uploadRetries,
       rate:uploadBudget.rateKbps===null?PodcastUX.t('quality_unavailable'):uploadBudget.rateKbps.toLocaleString(window.OpenPodcastI18n?.locale||'en',{maximumFractionDigits:0})+' kbit/s',
       eta:eta===null?PodcastUX.t('quality_unavailable'):eta+' s'});
-    const el=$('recordingSafety');if(el){el.hidden=false;el.textContent=text;}
+    const el=$('recordingSafety');if(el&&!completed){el.hidden=false;el.textContent=text;}
     if(navigator.onLine && m?.remoteMeta) {
       studioFetch(`${SERVER}/api/studio/telemetry/${m.room}/${m.guest}/${m.sessionId}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({local_bytes:local,uploaded_bytes:uploaded,backlog_bytes:backlog,retry_count:uploadRetries,eta_s:eta,state,events:studioEvents,peak_dbfs:20*Math.log10(currentPeak||1e-7),clip_count:studioEvents.filter(e=>e.type==='clipping').length})}).catch(()=>{});
     }
@@ -2426,7 +2469,7 @@
       const t=fmtTime(Date.now()-startTs);$('duration').textContent=t;
       const dbg=$('durationDbg');if(dbg)dbg.textContent=t;
     },500);
-    $('warnBanner').classList.add('show');acquireWakeLock();
+    updateRecordingWarning();acquireWakeLock();
   }
 
   function stopRecording() {
@@ -2440,7 +2483,7 @@
       recordingError=PodcastUX.error(error);
       log('Aufnahmeabschluss fehlgeschlagen: '+recordingError,'err');
       setStatus('Aufnahme beendet; Abschluss fehlgeschlagen. Lokale Daten bleiben erhalten.');
-    }).finally(()=>{uploadBudget.setRecording(false);recordingStopTask=null;sendHeartbeat();});
+    }).finally(()=>{uploadBudget.setRecording(false);recordingStopTask=null;updateRecordingWarning();sendHeartbeat();});
     sendHeartbeat();
     return recordingStopTask;
   }
@@ -2453,7 +2496,7 @@
       } else if(!trackManifest?.count) {
         setStatus('⏹ Aufnahme beendet. Es wurde keine Aufnahme gestartet.');
       } else {
-        setStatus(trackManifest.finalized?'Fertig. Server-Finalisierung bestätigt.':'Aufnahme lokal beendet. Upload oder Finalisierung noch ausstehend.');
+        if(!syncRecordingCompletion())setStatus(PodcastUX.t('upload_finalization_pending'));
       }
       if(!trackManifest?.count||trackManifest.finalized) {
         $('warnBanner').classList.remove('show');releaseWakeLock();
@@ -2461,6 +2504,7 @@
       return;
     }
     isRecording = false;
+    updateRecordingWarning();
     clearTimeout(maxDurationTimer);
     clearInterval(durationTimer);
 
@@ -2515,17 +2559,17 @@
     }
     setStatus(PodcastUX.t('upload_locally_finished')+' '+PodcastUX.format('upload_state_'+uploadBudget.state,{rate:uploadBudget.config.upload_kbps}));
     log("Aufnahme gestoppt, lokale Speicherung und Upload-Manifest bleiben bis zur Serverbestätigung erhalten.");
+    const stoppedKey=trackManifest.sessionKey;
     (async () => {
-      while (pendingChunkEnqueues > 0 || uploadQueue.length > 0 || uploaderRunning) await new Promise(r => setTimeout(r, 200));
+      while (pendingChunkEnqueues > 0 || uploadQueue.length > 0 || uploaderRunning) {
+        if(trackManifest?.sessionKey!==stoppedKey || isRecording || recordingStarting)return;
+        await new Promise(r => setTimeout(r, 200));
+      }
       try {
         await finishPending();
-        if (trackManifest?.finalized) {
-          setStatus("Fertig. Server-Finalisierung bestätigt.");
-          $("warnBanner").classList.remove("show");
-          releaseWakeLock();
-        } else {
-          setStatus("Upload unvollständig — lokale Daten bleiben zur Wiederaufnahme erhalten.");
-        }
+        if(trackManifest?.sessionKey!==stoppedKey || isRecording || recordingStarting || countingDown || pendingSessionId)return;
+        if(!syncRecordingCompletion())setStatus(PodcastUX.t('upload_finalization_pending'));
+        updateRecordingWarning();
       } catch (err) { log("Finalisierung ausstehend: " + err.message, "err"); }
       if (micLostDuringRec) {
         log("Hinweis: Während dieser Aufnahme wurde das Mikrofon getrennt. Bitte die Qualitätsprüfung ansehen.", "err");
@@ -2562,6 +2606,8 @@
   }
 
   function updateConnectionStatus() {
+    updateRecordingWarning();
+    if(syncRecordingCompletion())return;
     if (!navigator.onLine) {
       setStatus(`🔴 Offline — warte auf Verbindung… (Queue: ${uploadQueue.length})`);
     } else if (uploadQueue.length && uploadBudget.pausedReason) {

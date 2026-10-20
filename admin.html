@@ -248,7 +248,9 @@
   /* Inputs (base) */
   .cfg-row input[type=number],
   .cfg-row input[type=password],
-  .cfg-row input[type=text] {
+  .cfg-row input[type=text],
+  .cfg-row input[type=url],
+  .cfg-row select {
     background: var(--panel2);
     color: var(--text);
     border: 1px solid var(--border);
@@ -259,7 +261,12 @@
   }
   .cfg-row input[type=number]:focus,
   .cfg-row input[type=password]:focus,
-  .cfg-row input[type=text]:focus { border-color: var(--ok); }
+  .cfg-row input[type=text]:focus,
+  .cfg-row input[type=url]:focus,
+  .cfg-row select:focus { border-color: var(--ok); }
+  .cfg-row select { min-width: 180px; max-width: 100%; }
+  .cfg-row input:disabled, .cfg-row select:disabled { opacity: .45; cursor: not-allowed; }
+  .cfg-row input:focus-visible, .cfg-row select:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
 
   /* Compact number inputs */
   .cfg-row input[type=number] {
@@ -554,28 +561,27 @@
   @media (max-width: 720px) { .brand-preview { min-width:0; width:100%; } #brandPreset{width:100%} .preset-editor-grid{grid-template-columns:1fr 1fr} }
 
   [hidden]{display:none!important}
-  #jitsi-settings{display:flex;flex-direction:column;gap:8px}
-  #jitsi-settings h2,#jitsi-settings p{margin:0}
-  #jitsi-settings select,#jitsi-settings input{max-width:620px;width:100%;padding:10px;border:1px solid var(--border);background:var(--panel2);color:var(--text);border-radius:8px}
+  /* Provider/upload forms use the global settings rows and control styles. */
+  #jitsi-settings h2,#upload-settings h2{font-size:16px;margin:0 0 14px}
+  #jitsi-settings .sub,#upload-settings .sub{margin:14px 0 0;font-size:12px;line-height:1.5}
+  .settings-fields .cfg-row>div:first-child{min-width:min(220px,100%)}
+  .settings-fields .cfg-row>input[type=text],.settings-fields .cfg-row>input[type=url]{width:360px;max-width:100%;min-width:0}
+  .settings-fields input[aria-invalid="true"]{border-color:#e5484d}
+  .settings-fields .cfg-toggle{flex:none}
+  .settings-status{font-size:13px;color:var(--muted);min-height:18px;margin:0;overflow-wrap:anywhere}
+  @media(max-width:720px){.settings-fields .cfg-row>input[type=text],.settings-fields .cfg-row>input[type=url]{width:100%}}
   .profile-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(220px,100%),1fr));gap:12px}
   .profile-fields label{display:flex;flex-direction:column;gap:6px;font-size:13px}
   .profile-fields input,.profile-fields textarea{font:inherit;min-width:0;width:100%;padding:10px;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:8px}
-  .profile-fields input:focus-visible,.profile-fields textarea:focus-visible,#jitsi-settings select:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+  .profile-fields input:focus-visible,.profile-fields textarea:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
   #audio-profiles .preset-card{align-content:start}
   #audio-profiles .preset-card form{grid-template-columns:1fr}
-  .jitsi-settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:start}
-  .jitsi-field{display:flex;flex-direction:column;gap:6px;min-width:0}
-  .jitsi-field input,.jitsi-field select{width:100%;box-sizing:border-box;min-width:0}
-  .jitsi-field input{height:40px}
-  .jitsi-field small{color:var(--muted);font-size:12px;line-height:1.5}
-  .jitsi-field input[aria-invalid="true"]{border-color:#e5484d}
-  .jitsi-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:16px}
+  .jitsi-actions{display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin-top:14px}
   .jitsi-usage{margin-top:20px;padding-top:16px;border-top:1px solid var(--border);min-width:0}
   .jitsi-usage .overview-dashboard{margin:10px 0}
   .jitsi-usage .overview-card{min-width:0}
   #jaas-mau-period,#jaas-webhook-status{font-size:clamp(18px,2.2vw,24px);line-height:1.25;overflow-wrap:anywhere}
   .jitsi-usage .detail{overflow-wrap:anywhere}
-  @media(max-width:640px){.jitsi-settings-grid{grid-template-columns:1fr}}
   #consent-settings textarea{resize:vertical}
   #consent-settings .consent-editor{grid-column:1/-1}
 
