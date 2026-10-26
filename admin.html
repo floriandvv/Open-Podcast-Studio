@@ -585,6 +585,44 @@
   #consent-settings textarea{resize:vertical}
   #consent-settings .consent-editor{grid-column:1/-1}
 
+  /* Recording settings: native, keyboard-accessible disclosure menus. */
+  #audio-profiles { min-width:0; }
+  #audio-profiles h2 { font-size:16px; margin:0 0 10px; }
+  #audio-profiles .recording-settings-intro { font-size:13px; line-height:1.6; color:var(--muted); max-width:76ch; margin:0 0 16px; }
+  #audio-profiles .recording-settings-toolbar { display:flex; flex-wrap:wrap; gap:10px 20px; align-items:center; padding:0 0 16px; }
+  #audio-profiles .recording-settings-actions { display:flex; flex-wrap:wrap; gap:8px; }
+  #audio-profiles .settings-status { flex:1 1 180px; }
+  #audio-profiles .btn:disabled { opacity:.5; cursor:not-allowed; }
+  #audio-profiles .recording-settings-sections { display:grid; gap:10px; min-width:0; }
+  #audio-profiles .recording-settings-section { border:1px solid var(--border); border-radius:10px; min-width:0; overflow:hidden; }
+  #audio-profiles summary { position:relative; display:flex; align-items:center; gap:16px; padding:16px 46px 16px 18px; cursor:pointer; list-style:none; background:var(--panel2); min-height:76px; }
+  #audio-profiles summary::-webkit-details-marker { display:none; }
+  #audio-profiles summary::after { content:''; position:absolute; right:20px; top:30px; width:8px; height:8px; border-right:2px solid var(--muted); border-bottom:2px solid var(--muted); transform:rotate(45deg); }
+  #audio-profiles details[open]>summary::after { transform:rotate(225deg); top:34px; }
+  #audio-profiles summary:hover { background:var(--panel); }
+  #audio-profiles summary:focus-visible { outline:2px solid var(--brand); outline-offset:-3px; }
+  #audio-profiles .recording-section-copy { display:block; min-width:0; }
+  #audio-profiles .recording-section-title { display:block; font-size:15px; font-weight:700; line-height:1.4; }
+  #audio-profiles .recording-section-value { display:block; color:var(--muted); font-size:12px; line-height:1.6; margin-top:4px; overflow-wrap:anywhere; }
+  #audio-profiles .recording-section-content { padding:0 18px 16px; border-top:1px solid var(--border); min-width:0; }
+  #audio-profiles .recording-section-hint { color:var(--muted); font-size:13px; line-height:1.6; margin:14px 0 4px; }
+  #audio-profiles .cfg-row { flex-wrap:wrap; gap:12px; }
+  #audio-profiles .cfg-row > select { max-width:100%; min-width:0; }
+  #audio-profiles .cfg-row.cfg-row-num { grid-template-columns:minmax(0,1fr) max-content; }
+  #audio-profiles .num-wrap { max-width:100%; }
+  #audio-profiles .num-wrap input { min-width:0; max-width:100%; }
+  #audio-profiles .profile-result { margin:14px 0 0; padding:12px; border-left:3px solid var(--brand); background:var(--panel2); font-size:13px; line-height:1.6; overflow-wrap:anywhere; }
+  #audio-profiles [hidden] { display:none !important; }
+  @media(max-width:640px){
+    #audio-profiles .recording-settings-toolbar { align-items:stretch; }
+    #audio-profiles .settings-status { flex-basis:100%; }
+    #audio-profiles summary { padding-left:14px; }
+    #audio-profiles .recording-section-content { padding-left:14px; padding-right:14px; }
+    #audio-profiles .cfg-row > div:first-child { min-width:0; flex-basis:100%; }
+    #audio-profiles .cfg-row > select { width:100%; }
+    #audio-profiles .cfg-row.cfg-row-num { grid-template-columns:minmax(0,1fr); }
+  }
+
 </style>
 <!-- Branding zuletzt: ueberschreibt die :root-Defaults oben. -->
 <!--BRANDING-->
@@ -610,7 +648,7 @@
 
   <section class="panel" id="jitsi-settings" data-i18n-aria-label="ux.jitsi_settings" aria-label="Jitsi"></section>
   <section class="panel" id="upload-settings" data-i18n-aria-label="ux.upload_settings" aria-label="Uploads"></section>
-  <section class="panel" id="audio-profiles" data-i18n-aria-label="ux.audio_profiles" aria-label="Audioprofile"></section>
+  <section class="panel" id="audio-profiles" data-i18n-aria-label="ux.recording_settings" aria-label="Aufnahmeeinstellungen"></section>
   <section class="panel" id="consent-settings" data-i18n-aria-label="ux.consent_settings" aria-label="Aufnahme und Datenschutz"></section>
 
   <!-- Globale Einstellungen -->
@@ -2212,12 +2250,17 @@
     return html + '</div>';
   }
 
-  function qualityReportHtml(report) {
+  function qualityReportHtml(report,recording) {
     if(!report)return '';
     const messages=PodcastUX.qualityMessages(report);
+    const base='/api/studio/file/'+[recording.room,recording.guest,recording.session].map(encodeURIComponent).join('/')+'/';
+    const outputs=Object.entries(report.files||{}).filter(([,v])=>v.role!=='internal_mixdown');
+    const links=outputs.map(([file])=>`<a class="dl" href="${esc(base+encodeURIComponent(file))}">${esc(file)}</a>`);
+    links.push(`<a class="dl" href="${esc(base+'quality.json')}">${esc(PodcastUX.t('quality_report_json'))}</a>`);
+    const downloads=`<p>${esc(PodcastUX.t('quality_verified_files'))}: ${links.join(' &middot; ')}</p>`;
     const known=['complete','complete_with_warnings','incomplete'].includes(report.status);
     const label=PodcastUX.t(known?'quality_status_'+report.status:'quality_status_unknown');
-    return `<div class="quality-report${messages.length?' quality-attention':''}"><strong>${esc(PodcastUX.t('quality_report'))}: ${esc(label)}</strong>${messages.length?'<ul>'+messages.map(m=>'<li>'+esc(m)+'</li>').join('')+'</ul>':''}</div>`;
+    return `<div class="quality-report${messages.length?' quality-attention':''}"><strong>${esc(PodcastUX.t('quality_report'))}: ${esc(label)}</strong>${messages.length?'<ul>'+messages.map(m=>'<li>'+esc(m)+'</li>').join('')+'</ul>':''}${downloads}</div>`;
   }
 
   function renderSessions(opts = {}) {
@@ -2303,7 +2346,7 @@
               ? `<audio controls preload="metadata" src="${esc(mixUrl)}"></audio>`
               : '<span class="sub">Noch kein MP3-Mixdown verfügbar.</span>'}</div>
             <div class="session-actions">${tracks.some(x => x.has_wav)
-              ? `<a class="btn btn-brand" href="${zipUrl}">⬇ Alle WAVs (ZIP)</a>` : ''}</div>
+              ? `<a class="btn btn-brand" href="${zipUrl}">${esc(PodcastUX.t('profile_session_archive'))}</a>` : ''}</div>
           </div>
           <div class="session-guests">
             <div class="guest-head"><span>Gast</span><span>Zustand</span><span>Chunks</span><span>Größe</span><span>Aktionen</span></div>`;
@@ -2318,12 +2361,12 @@
             <span>${Number(r.chunks_count || 0)}</span>
             <span>${(r.size_mb || 0).toFixed(2)} MB</span>
             <span class="session-actions">
-              ${r.has_wav ? `<a class="btn btn-brand" href="${dl}">⬇ WAV</a>` : ''}
+              ${r.has_wav ? `<a class="btn btn-brand" href="${dl}">${esc(PodcastUX.t(r.quality_report?.files?.['full.wav']?.role==='internal_mixdown'?'profile_internal_wav':'profile_wav'))}</a>` : ''}
               <button class="btn btn-danger" data-rec-del data-room="${esc(r.room)}"
                 data-guest="${esc(r.guest)}" data-session="${esc(r.session)}"
                 data-label="${esc(r.guest + ' · ' + title)}">Löschen</button>
             </span>
-          </div>${qualityReportHtml(r.quality_report)}`;
+          </div>${qualityReportHtml(r.quality_report,r)}`;
         }
         html += `</div></section>`;
       }

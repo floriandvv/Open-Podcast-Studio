@@ -4,11 +4,16 @@
 class PcmTap extends AudioWorkletProcessor {
   constructor(options) {
     super();
+    this.active = !options.processorOptions?.gated;
+    this.port.onmessage = event => {
+      if(event.data?.type === 'start') this.active = true;
+      if(event.data?.type === 'stop') { this.active = false; this.port.postMessage({type:'stopped'}); }
+    };
     this.channels = options.processorOptions?.channels === 2 ? 2 : 1;
   }
   process(inputs) {
     const input = inputs[0];
-    if (input && input[0]) {
+    if (this.active && input && input[0]) {
       const left = input[0], right = input[1] || left;
       const out = new Float32Array(left.length * this.channels);
       for (let i = 0; i < left.length; i++) {

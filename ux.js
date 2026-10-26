@@ -29,7 +29,7 @@ window.PodcastUX = {
       threshold:n(report.duration_tolerance_s??(Number.isFinite(report.expected_duration_s)?Math.max(0.25,report.expected_duration_s*0.005):null)),
       start:n(report.start_deviation_s),end:n(report.end_deviation_s),startThreshold:n(report.start_tolerance_s??0.25)};
     const warnings=Array.isArray(report.warnings)?report.warnings:[];
-    const lines=warnings.map(w=>keys[w]?this.format(keys[w],values):this.format('quality_unknown',{warning:typeof w==='string'?w:JSON.stringify(w)}));
+    const lines=warnings.map(w=>typeof w==='string'&&w.startsWith('ux.')?window.OpenPodcastI18n.t(w):keys[w]?this.format(keys[w],values):this.format('quality_unknown',{warning:typeof w==='string'?w:JSON.stringify(w)}));
     if(report.status==='complete_with_warnings'&&!lines.length)lines.push(this.t('quality_missing_details'));
     if(warnings.includes('Client reported device, permission, sleep or connection events; review timeline')){
       for(const e of report.telemetry?.events||[]){
@@ -39,6 +39,16 @@ window.PodcastUX = {
         lines.push(this.format('quality_event',{event,at}));
       }
     }
+    for(const [track,stream] of Object.entries(report.streams||{})){
+      lines.push(this.format('quality_stream_format',{track,mime:stream.reported_mime||stream.upload_ext,container:stream.container,
+        codecs:[stream.video_codec,stream.audio_codec].filter(Boolean).join(' / '),fallback:this.t(stream.fallback?'quality_yes':'quality_no')}));
+      lines.push(this.format('quality_stream_timing',{track,duration:n(stream.raw_duration_s),start:n(stream.start_deviation_s),end:n(stream.end_deviation_s)}));
+    }
+    if(Number.isFinite(report.video_audio_delta_s))lines.push(this.format('quality_sync_delta',{delta:n(report.video_audio_delta_s)}));
+    if(report.flac_sample_identical)lines.push(this.t('quality_flac_identical'));
+    for(const [file,value] of Object.entries(report.files||{}))lines.push(this.format('quality_file',{file,
+      role:this.t('quality_role_'+(value.role||'output')),codecs:(value.codecs||[]).join(' / '),bytes:value.bytes,
+      timeline:this.t('quality_timeline_'+(value.timeline||'session')),offset:n(value.start_offset_s||0)}));
     return lines;
   },
   async request(url,options={}) {

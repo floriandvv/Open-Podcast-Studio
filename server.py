@@ -4015,8 +4015,7 @@ def _upload_backlog() -> dict:
                 for sess_dir in sorted(guest_dir.iterdir()):
                     if not sess_dir.is_dir():
                         continue
-                    chunks = sorted(sess_dir.glob("chunk-*.pcm")) or \
-                             sorted(sess_dir.glob("chunk-*.webm"))
+                    chunks = sorted(p for ext in ("pcm","webm","mp4","ogg") for p in sess_dir.glob("chunk-*."+ext))
                     if not chunks:
                         continue
                     wav = sess_dir / "full.wav"
@@ -4570,7 +4569,7 @@ def sessions(role=Depends(require_auth)):
             for sess_dir in sorted(guest_dir.iterdir()):
                 if not sess_dir.is_dir():
                     continue
-                chunks = list(sess_dir.glob("chunk-*.pcm")) + list(sess_dir.glob("chunk-*.webm"))
+                chunks = [p for ext in ("pcm","webm","mp4","ogg") for p in sess_dir.glob("chunk-*."+ext)]
                 full = sess_dir / "full.wav"
                 has_wav = full.exists() and full.stat().st_size > 44
                 last_seen = max([sess_dir.stat().st_mtime]
@@ -4603,10 +4602,12 @@ def sessions(role=Depends(require_auth)):
                 report = json.loads(track["report"])
                 reports[(track["room"],track["guest"],track["session"])] = {
                     k: report[k] for k in ("status","warnings","expected_duration_s","raw_duration_s","duration_s",
-                        "start_deviation_s","end_deviation_s","duration_tolerance_s","start_tolerance_s") if k in report}
+                        "start_deviation_s","end_deviation_s","duration_tolerance_s","start_tolerance_s","streams","files","video_audio_delta_s","flac_sample_identical") if k in report}
                 reports[(track["room"],track["guest"],track["session"])]["telemetry"] = {"events":report.get("telemetry",{}).get("events",[])}
     for row in out:
         row["quality_report"] = reports.get((row["room"],row["guest"],row["session"]))
+        if row['quality_report'] and row['quality_report'].get('files'):
+            row['size_mb']=round(sum(f.get('bytes',0) for f in row['quality_report']['files'].values())/1024/1024,2)
 
     # Alte Sessions bekommen ihren Mixdown beim ersten Listenabruf nachtraeglich.
     mix_state = {}

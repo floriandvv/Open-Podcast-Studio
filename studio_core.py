@@ -26,6 +26,8 @@ from collections import OrderedDict
 from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import parse_qs
+from recording_profiles import normalize_profile, resolve_profile, expected_streams
+from recording_processing import build_recording
 from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.background import BackgroundTask
@@ -160,6 +162,15 @@ class Studio:
               created REAL NOT NULL,expires REAL NOT NULL,revoked INTEGER NOT NULL DEFAULT 0);
             CREATE UNIQUE INDEX IF NOT EXISTS guest_session_browser ON guest_sessions(room,client_hash) WHERE revoked=0;
             """)
+            c.execute('BEGIN IMMEDIATE')
+            # Transactional, repeatable upgrade: historical chunks retain the "main" namespace.
+            if 'logical' not in {r[1] for r in c.execute('PRAGMA table_info(chunks)')}:
+                c.execute('ALTER TABLE chunks RENAME TO chunks_v1')
+                c.execute("CREATE TABLE chunks(room TEXT,session TEXT,guest TEXT,logical TEXT NOT NULL DEFAULT 'main',idx INTEGER,size INTEGER NOT NULL,sha TEXT NOT NULL,ext TEXT NOT NULL,attempts INTEGER DEFAULT 1,PRIMARY KEY(room,session,guest,logical,idx))")
+                c.execute("INSERT INTO chunks SELECT room,session,guest,'main',idx,size,sha,ext,attempts FROM chunks_v1")
+                c.execute('DROP TABLE chunks_v1')
+            if 'stream_expected' not in {r[1] for r in c.execute('PRAGMA table_info(tracks)')}:
+                c.execute('ALTER TABLE tracks ADD COLUMN stream_expected TEXT')
             c.execute("INSERT OR IGNORE INTO security VALUES (1,?)", (secrets.token_hex(16),))
 
     def load_config(self):
@@ -176,8 +187,11 @@ class Studio:
                 wording=self.a.get('_load_locale',lambda _: {})(code).get('ux',{}).get('consent_default_text')
                 if isinstance(wording,str) and wording.strip():config[key]=wording
         # Global audio-quality presets; historical takes keep their snapshots.
-        for profile in config["profiles"]:
-            profile.update(video=False, container="pcm", codec="pcm_s16le")
+        config["profiles"] = [normalize_profile(p) for p in config["profiles"]]
+        # Persist the upgrade once; never rewrite historical take/track snapshots.
+        if config != stored:
+            with self.db() as c:
+                c.execute("INSERT OR REPLACE INTO settings VALUES(1,?)", (json.dumps(config),))
         return config
 
     def audit(self, actor, action, target="", detail=None):
@@ -344,11 +358,8 @@ class Studio:
             raise HTTPException(429, "Rate limit", headers={"Retry-After": "60"})
 
     def profile(self, room):
-        base = next(dict(p) for p in self.config["profiles"] if p["id"] == self.config["default_profile"])
-        # Audio quality is global; recording audio/video remains a separate host control.
-        video = not self.a["_room"](room)["settings"].get("audio_only", True)
-        base.update(video=video, container="webm" if video else "pcm", codec="vp8,opus" if video else "pcm_s16le")
-        return base
+        base = next(p for p in self.config["profiles"] if p["id"] == self.config["default_profile"])
+        return resolve_profile(base, not self.a["_room"](room)["settings"].get("audio_only", True))
 
     def take(self, room, session, create=False):
         self.ident(room, session)
@@ -485,6 +496,25 @@ class Studio:
             meta["os"] = str(data.get("os", "unknown"))[:80]
         else:
             meta["browser"] = meta["os"] = "not collected"
+        if effective.get("schema_version") == 2:
+            streams = data.get("streams")
+            if not isinstance(streams, dict) or set(streams) != expected_streams(effective):
+                raise HTTPException(422, "ux.stream_manifest_invalid")
+            clean = {}
+            for logical, stream in streams.items():
+                if not isinstance(stream, dict): raise HTTPException(422, "ux.stream_manifest_invalid")
+                ext=stream.get("ext");mime=stream.get("mime","")
+                lossless_audio=logical=='audio' and effective['audio_quality']=='lossless'
+                allowed={'pcm'} if lossless_audio else {'webm','mp4'} if logical in ('video','media') else {'webm','ogg','mp4'}
+                if ext not in allowed or not isinstance(mime,str) or len(mime)>200:
+                    raise HTTPException(422, "ux.stream_manifest_invalid")
+                base_mime=mime.split(';')[0].strip().lower()
+                valid_mimes={'pcm':{'audio/pcm'},'webm':{'audio/webm','video/webm'},'mp4':{'audio/mp4','video/mp4'},'ogg':{'audio/ogg'}}
+                if base_mime not in valid_mimes[ext] or logical in ('video','media') and not base_mime.startswith('video/'):
+                    raise HTTPException(422, "ux.stream_manifest_invalid")
+                clean[logical]=dict(ext=ext,mime=mime,requested=str(stream.get('requested',''))[:200],
+                    fallback=bool(stream.get('fallback')),started_at=number(stream.get('started_at',meta['started_at']),0,9999999999999,'started_at'))
+            meta['streams']=clean
         dest = self.dest(room, guest, session)
         with self.lock, self.db() as c:
             old = c.execute("SELECT meta,owner,guest FROM tracks WHERE room=? AND session=? AND guest=?", (room, session, guest)).fetchone()
@@ -495,7 +525,7 @@ class Studio:
                 if old["owner"] != token["id"]:
                     raise HTTPException(403, "Track ownership mismatch")
                 before = json.loads(old["meta"])
-                if (before["sample_rate"], before["channels"]) != (sr, ch):
+                if (before["sample_rate"], before["channels"]) != (sr, ch) or before.get('streams') != meta.get('streams'):
                     raise HTTPException(409, "Track format is immutable")
                 return {"ok": True, "meta": before}
             c.execute("INSERT INTO tracks(room,session,guest,owner,meta,updated) VALUES(?,?,?,?,?,?)",
@@ -503,14 +533,17 @@ class Studio:
             atomic_bytes(dest / "meta.json", json_bytes(meta))
         return {"ok": True, "meta": meta}
 
-    async def upload(self, room, guest, session, chunk, request: Request, ext: str = "pcm"):
+    async def upload(self, room, guest, session, chunk, request: Request, ext: str = "pcm", logical: str = "main"):
         token = self.guest(request, room, guest)
-        if not re.fullmatch(r"\d{6}", chunk) or ext not in ("pcm", "webm"):
+        if not re.fullmatch(r"\d{6}", chunk) or ext not in ("pcm", "webm", "mp4", "ogg") or logical not in ("main","audio","video","media"):
             raise HTTPException(400, "Invalid chunk index or container")
         sha = request.headers.get("x-chunk-sha256", "")
         if not HASH.fullmatch(sha):
             raise HTTPException(422, "SHA-256 required")
         track = self.track(room, guest, session, token["id"])
+        streams=json.loads(track['meta']).get('streams')
+        if streams and (logical not in streams or ext!=streams[logical]['ext']) or not streams and logical!='main':
+            raise HTTPException(422,'ux.stream_manifest_invalid')
         idx = int(chunk)
         data = await self.body(request, self.config["max_chunk_bytes"])
         if not data or hashlib.sha256(data).hexdigest() != sha:
@@ -519,15 +552,16 @@ class Studio:
             raise HTTPException(422, "Partial PCM frame")
         with self.lock, self.db() as c:
             self.take(room, session)
-            old = c.execute("SELECT * FROM chunks WHERE room=? AND session=? AND guest=? AND idx=?", (room,session,guest,idx)).fetchone()
-            path = self.dest(room,guest,session) / f"chunk-{idx:06d}.{ext}"
+            track=self.track(room,guest,session,token['id'])
+            old = c.execute("SELECT * FROM chunks WHERE room=? AND session=? AND guest=? AND logical=? AND idx=?", (room,session,guest,logical,idx)).fetchone()
+            path = self.chunk_path(room,guest,session,logical,idx,ext)
             if old:
                 if (old["sha"], old["size"], old["ext"]) != (sha, len(data), ext):
                     raise HTTPException(409, "Conflicting duplicate chunk; original preserved")
-                c.execute("UPDATE chunks SET attempts=attempts+1 WHERE room=? AND session=? AND guest=? AND idx=?", (room,session,guest,idx))
+                c.execute("UPDATE chunks SET attempts=attempts+1 WHERE room=? AND session=? AND guest=? AND logical=? AND idx=?", (room,session,guest,logical,idx))
                 if not path.exists() or digest(path) != sha:
                     atomic_bytes(path, data)
-                return dict(ok=True, idx=idx, bytes=len(data), sha256=sha, duplicate=True)
+                return dict(ok=True, logical=logical, idx=idx, bytes=len(data), sha256=sha, duplicate=True)
             if track["finalized"] or track["expected"] is not None:
                 raise HTTPException(409, "Track is sealed")
             total = c.execute("SELECT COALESCE(SUM(size),0) FROM chunks WHERE room=? AND session=? AND guest=?", (room,session,guest)).fetchone()[0]
@@ -536,122 +570,30 @@ class Studio:
             if shutil.disk_usage(self.root).free < self.config["min_free_bytes"] + len(data):
                 raise HTTPException(507, "Storage reserve reached; preserve local recording")
             atomic_bytes(path, data)
-            c.execute("INSERT INTO chunks(room,session,guest,idx,size,sha,ext) VALUES(?,?,?,?,?,?,?)",
-                      (room,session,guest,idx,len(data),sha,ext))
+            c.execute("INSERT INTO chunks(room,session,guest,logical,idx,size,sha,ext) VALUES(?,?,?,?,?,?,?,?)",
+                      (room,session,guest,logical,idx,len(data),sha,ext))
             c.execute("UPDATE tracks SET updated=? WHERE room=? AND session=? AND guest=?", (time.time(),room,session,guest))
-        return dict(ok=True, idx=idx, bytes=len(data), sha256=sha, duplicate=False)
+        return dict(ok=True, logical=logical, idx=idx, bytes=len(data), sha256=sha, duplicate=False)
+
+    def chunk_path(self,room,guest,session,logical,idx,ext):
+        prefix='chunk-' if logical=='main' else 'chunk-'+logical+'-'
+        return self.dest(room,guest,session)/f"{prefix}{idx:06d}.{ext}"
 
     def manifest(self, room, guest, session, request: Request):
         token = self.guest(request,room,guest)
         t = self.track(room,guest,session,token["id"])
         with self.db() as c:
-            rows = c.execute("SELECT idx,size,sha,attempts FROM chunks WHERE room=? AND session=? AND guest=? ORDER BY idx", (room,session,guest)).fetchall()
-        return dict(ok=True, expected=t["expected"], finalized=bool(t["finalized"]),
-                    chunks=[dict(r) for r in rows], report=json.loads(t["report"]) if t["report"] else None)
+            rows = c.execute("SELECT logical,idx,size,sha,ext,attempts FROM chunks WHERE room=? AND session=? AND guest=? ORDER BY logical,idx", (room,session,guest)).fetchall()
+        # Only acknowledge bytes that still exist and pass validation, not stale DB receipts.
+        valid=[]
+        for row in rows:
+            path=self.chunk_path(room,guest,session,row['logical'],row['idx'],row['ext'])
+            if path.exists() and path.stat().st_size==row['size'] and digest(path)==row['sha']:valid.append(dict(row))
+        return dict(ok=True, expected=t["expected"],stream_expected=json.loads(t['stream_expected']) if t['stream_expected'] else None,
+                    finalized=bool(t["finalized"]),chunks=valid,report=json.loads(t["report"]) if t["report"] else None)
 
     def build(self, room, guest, session, repair=False):
-        # Serialize finalization/rebuild/deletion across all tracks. No event-loop I/O.
-        with self.lock:
-            t = self.track(room,guest,session)
-            with self.db() as c:
-                rows = [dict(r) for r in c.execute("SELECT * FROM chunks WHERE room=? AND session=? AND guest=? ORDER BY idx", (room,session,guest))]
-            expected = t["expected"]
-            indices = {r["idx"] for r in rows}
-            missing = sorted(set(range(expected or (max(indices, default=-1)+1))) - indices)
-            if not rows or missing or expected is not None and len(rows) != expected:
-                raise HTTPException(409, dict(reason="missing_chunks", missing=missing[:1000], expected=expected, received=len(rows)))
-            dest = self.dest(room,guest,session)
-            paths = [dest / f"chunk-{r['idx']:06d}.{r['ext']}" for r in rows]
-            for row,path in zip(rows,paths):
-                if not path.exists() or path.stat().st_size != row["size"] or digest(path) != row["sha"]:
-                    raise HTTPException(409, dict(reason="corrupt_chunk", idx=row["idx"]))
-            meta = json.loads(t["meta"])
-            sr,ch = meta["sample_rate"],meta["channels"]
-            warnings = []
-            if expected is None:
-                warnings.append("No sealed client manifest; completeness cannot be proven")
-            if t["interrupted"]:
-                warnings.append("Client recording interrupted; unpersisted tail may be missing")
-            with self.a["_db_conn"]() as c:
-                timeline = c.execute("SELECT start_at,stop_at FROM recording_sessions WHERE room=? AND session=?", (room,session)).fetchone()
-            duration = ((timeline["stop_at"]-timeline["start_at"])/1000
-                        if timeline and timeline["stop_at"] and timeline["start_at"] else None)
-            if duration is None:
-                warnings.append("Session end boundary unavailable")
-            elif duration <= 0:
-                raise HTTPException(409, "Invalid session boundaries")
-            working = Path(tempfile.mkdtemp(prefix=".build-",dir=dest))
-            try:
-                wav = working / "full.wav"
-                ext = {r["ext"] for r in rows}
-                if ext == {"pcm"}:
-                    with wave.open(str(wav), "wb") as w:
-                        w.setparams((ch,2,sr,0,"NONE","not compressed"))
-                        for path in paths:
-                            with path.open("rb") as f:
-                                for block in iter(lambda:f.read(1024*1024),b""):
-                                    w.writeframesraw(block)
-                    raw_duration = sum(r["size"] for r in rows)/(sr*ch*2)
-                elif ext == {"webm"}:
-                    source = working / "source.webm"
-                    with source.open("wb") as out:
-                        for path in paths:
-                            with path.open("rb") as f:
-                                shutil.copyfileobj(f,out,1024*1024)
-                    self.ffmpeg(["-fflags","+genpts","-i",str(source),"-vn","-acodec","pcm_s16le","-ar",str(sr),"-ac",str(ch),str(wav)])
-                    with wave.open(str(wav)) as w:
-                        raw_duration = w.getnframes()/w.getframerate()
-                    try:
-                        self.ffmpeg(["-fflags","+genpts","-i",str(source),"-c:v","libx264","-preset","fast","-c:a","aac","-movflags","+faststart",str(working/"full.mp4")])
-                    except HTTPException:
-                        warnings.append("MP4 conversion failed; audio and source chunks preserved")
-                else:
-                    raise HTTPException(409, "Mixed chunk formats cannot be merged")
-                start_deviation = ((meta.get("started_at",0)-timeline["start_at"])/1000 if timeline and timeline["start_at"] else None)
-                if duration and abs(raw_duration-duration) > max(0.25,duration*0.005):
-                    warnings.append("Source duration differs from session duration")
-                if start_deviation is not None and abs(start_deviation)>0.25:
-                    warnings.append("Track started outside synchronization tolerance")
-                # Normalize to absolute boundaries only after preserving raw timing evidence.
-                if duration:
-                    normalized = working / "normalized.wav"
-                    offset = start_deviation or 0
-                    af = (f"adelay={round(offset*1000)}:all=1," if offset > 0 else f"atrim=start={-offset},asetpts=PTS-STARTPTS," if offset < 0 else "")
-                    self.ffmpeg(["-i",str(wav),"-af",af+f"apad,atrim=duration={duration}","-ar",str(sr),"-ac",str(ch),"-c:a","pcm_s16le",str(normalized)])
-                    os.replace(normalized,wav)
-                self.a["_wav_add_markers"](wav,self.markers(room,session))
-                with wave.open(str(wav)) as w:
-                    frames=w.getnframes(); rate=w.getframerate(); channels=w.getnchannels(); width=w.getsampwidth()
-                if rate!=sr or channels!=ch or width!=2 or frames<1 or wav.stat().st_size<44+frames*ch*2:
-                    raise HTTPException(422,"WAV structure validation failed")
-                if duration and abs(frames-round(duration*sr))>1:
-                    raise HTTPException(422,"WAV frame count differs from normalized timeline")
-                files={"full.wav":dict(sha256=digest(wav),bytes=wav.stat().st_size)}
-                if (working/"full.mp4").exists():
-                    files["full.mp4"]=dict(sha256=digest(working/"full.mp4"),bytes=(working/"full.mp4").stat().st_size)
-                telemetry=json.loads(t["telemetry"])
-                if telemetry.get("events"):
-                    warnings.append("Client reported device, permission, sleep or connection events; review timeline")
-                state="incomplete" if t["interrupted"] or expected is None else "complete_with_warnings" if warnings else "complete"
-                report=dict(status=state,validated_at=time.time(),warnings=warnings,expected_duration_s=duration,
-                            raw_duration_s=raw_duration,duration_s=frames/rate,start_deviation_s=start_deviation,
-                            duration_tolerance_s=max(0.25,duration*0.005) if duration else None,start_tolerance_s=0.25,
-                            end_deviation_s=((start_deviation or 0)+raw_duration-duration if duration else None),
-                            sample_rate=rate,channels=channels,frames=frames,size_bytes=wav.stat().st_size,
-                            missing_chunks=missing,retried_chunks=sum(r["attempts"]>1 for r in rows),
-                            duplicate_requests=sum(r["attempts"]-1 for r in rows),chunks=len(rows),
-                            profile=meta["profile"],browser=meta.get("browser"),os=meta.get("os"),telemetry=telemetry,files=files)
-                for filename in files:
-                    os.replace(working/filename,dest/filename)
-                atomic_bytes(dest/"quality.json",json_bytes(report))
-                with self.db() as c:
-                    c.execute("UPDATE tracks SET finalized=1,report=?,updated=? WHERE room=? AND session=? AND guest=?",
-                              (json.dumps(report),time.time(),room,session,guest))
-                self.a["_mixdown_path"](room,session).unlink(missing_ok=True)
-                self.audit("admin" if repair else "guest:"+t["owner"],"track.rebuild" if repair else "track.finalize",f"{room}/{session}/{guest}",dict(status=state))
-                return report
-            finally:
-                shutil.rmtree(working,ignore_errors=True)
+        return build_recording(self,room,guest,session,repair)
 
     def ffmpeg(self,args):
         try:
@@ -664,19 +606,27 @@ class Studio:
     async def finish(self, room, guest, session, request: Request):
         token=self.guest(request,room,guest)
         data=await self.payload(request)
-        count=number(data.get("expected_chunks"),1,999999,"expected_chunks")
         with self.lock:
             t=self.track(room,guest,session,token["id"])
-            if t["finalized"]:
-                if count != t["expected"]:
-                    raise HTTPException(409,"Finalized manifest differs")
-                return dict(ok=True,finalized=True,report=json.loads(t["report"]))
+            meta=json.loads(t['meta'])
+            names=set(meta.get('streams',{'main':{}}))
+            counts=data.get('expected_streams') if meta.get('streams') else {'main':data.get('expected_chunks')}
+            if not isinstance(counts,dict) or set(counts)!=names:raise HTTPException(422,'ux.stream_manifest_invalid')
+            counts={k:number(v,1,999999,'expected_chunks') for k,v in counts.items()}
+            count=sum(counts.values())
+            if t['finalized']:
+                before=json.loads(t['stream_expected']) if t['stream_expected'] else {'main':t['expected']}
+                if counts!=before:raise HTTPException(409,'ux.stream_manifest_conflict')
+                return dict(ok=True,finalized=True,report=json.loads(t['report']))
+            if t['stream_expected'] and json.loads(t['stream_expected'])!=counts:
+                raise HTTPException(409,'ux.stream_manifest_conflict')
             with self.db() as c:
-                got=c.execute("SELECT idx FROM chunks WHERE room=? AND session=? AND guest=? ORDER BY idx",(room,session,guest)).fetchall()
-                if [r[0] for r in got] != list(range(count)):
-                    raise HTTPException(409,"Chunk sequence incomplete; local data must be retained")
-                c.execute("UPDATE tracks SET expected=?,interrupted=? WHERE room=? AND session=? AND guest=?",
-                          (count,int(bool(data.get("interrupted"))),room,session,guest))
+                for logical,n in counts.items():
+                    got=c.execute('SELECT idx FROM chunks WHERE room=? AND session=? AND guest=? AND logical=? ORDER BY idx',(room,session,guest,logical)).fetchall()
+                    if [r[0] for r in got]!=list(range(n)):
+                        raise HTTPException(409,dict(reason='missing_chunks',logical=logical,expected=n,received=len(got)))
+                c.execute('UPDATE tracks SET expected=?,stream_expected=?,interrupted=? WHERE room=? AND session=? AND guest=?',
+                    (count,json.dumps(counts),int(bool(data.get('interrupted'))),room,session,guest))
         async with self.jobs:
             report=await asyncio.to_thread(self.build,room,guest,session)
         await self.a["_broadcast_host_status"](room)
@@ -792,6 +742,17 @@ class Studio:
                 c.execute("UPDATE takes SET "+",".join(k+"=?" for k in fields)+" WHERE room=? AND session=?",(*fields.values(),room,session))
         self.audit(role,"session.edit",f"{room}/{session}")
         return {"ok":True}
+
+    def recording_file(self,room,guest,session,filename,request: Request):
+        self.role(request,True)
+        t=self.track(room,guest,session)
+        report=json.loads(t['report']) if t['report'] else {}
+        if filename=='quality.json' and t['finalized']:pass
+        elif filename not in report.get('files',{}):raise HTTPException(404)
+        if not re.fullmatch(r'[a-zA-Z0-9_.-]+',filename):raise HTTPException(404)
+        path=self.dest(room,guest,session)/filename
+        if not path.is_file() or path.is_symlink():raise HTTPException(404)
+        return FileResponse(path,filename=f'{room}_{guest}_{session}_{filename}')
 
     def package(self,room,session):
         with self.lock:
@@ -922,20 +883,13 @@ class Studio:
         for k in ("consent_text","consent_text_en"):cfg[k]=cfg[k].strip()
         if not isinstance(cfg["profiles"],list) or not 1<=len(cfg["profiles"])<=20:raise HTTPException(422,"1..20 profiles required")
         ids=set()
-        for pro in cfg["profiles"]:
-            if not isinstance(pro,dict):raise HTTPException(422,"Invalid profile")
-            self.ident(pro.get("id",""))
-            if pro["id"] in ids:raise HTTPException(422,"Duplicate profile id")
-            ids.add(pro["id"])
-            if not isinstance(pro.get("name"),str) or not 1<=len(pro["name"])<=100:raise HTTPException(422,"Profile name required")
-            for k,lo,hi in (("sample_rate",8000,192000),("channels",1,2),("width",160,3840),("height",120,2160),("fps",1,60),("audio_bitrate",64000,512000),("video_bitrate",100000,40000000),("chunk_ms",1000,10000),("max_duration_s",60,86400)):
-                pro[k]=number(pro.get(k),lo,hi,k)
-            if not isinstance(pro.get("video"),bool):raise HTTPException(422,"Profile video boolean required")
-            if pro.get("container") not in ("pcm","webm","mp4") or pro.get("codec") not in ("pcm_s16le","vp8,opus","vp9,opus","h264,aac"):
-                raise HTTPException(422,"Unsupported preferred codec/container")
-            if not pro["video"] and (pro["container"]!="pcm" or pro["codec"]!="pcm_s16le"):
-                raise HTTPException(422,"Audio profiles use lossless PCM")
-            if pro["video"] and pro["container"]=="pcm":raise HTTPException(422,"Video needs a media container")
+        try:cfg['profiles']=[normalize_profile(pro) for pro in cfg['profiles']]
+        except ValueError:raise HTTPException(422,'ux.profile_invalid') from None
+        for pro in cfg['profiles']:
+            self.ident(pro.get('id',''))
+            if pro['id'] in ids:raise HTTPException(422,'ux.profile_invalid')
+            ids.add(pro['id'])
+            if not isinstance(pro.get('name'),str) or not 1<=len(pro['name'])<=100:raise HTTPException(422,'ux.profile_invalid')
         if cfg["default_profile"] not in ids:raise HTTPException(422,"Unknown default profile")
         cats=cfg["marker_categories"]
         if not isinstance(cats,list) or not 1<=len(cats)<=30:raise HTTPException(422,"1..30 marker categories required")
@@ -946,10 +900,8 @@ class Studio:
             seen.add(cat["id"])
             if not isinstance(cat.get("label"),str) or not 1<=len(cat["label"])<=100:raise HTTPException(422,"Invalid category label")
         with self.lock,self.db() as c:
-            if any(r.get("rec_state") == "recording" for r in self.a["ROOMS"].values()):
+            if set(p)-upload_keys and any(r.get("rec_state") == "recording" for r in self.a["ROOMS"].values()):
                 raise HTTPException(409, "ux.recording_busy")
-            if any(p["video"] for p in cfg["profiles"]):
-                raise HTTPException(422, "ux.audio_profiles_only")
             c.execute("INSERT OR REPLACE INTO settings VALUES(1,?)",(json.dumps(cfg),))
             self.config=cfg
             self.a["MARKER_KINDS"]=set(x["id"] for x in cats)
@@ -1232,7 +1184,7 @@ def install(api):
     app.add_api_route("/finish/{room}/{guest}/{session}",s.finish,methods=["POST"])
     app.add_api_route("/admin/session-export/{room}/{session}",s.export_session,methods=["GET"])
     prefix="/api/studio"
-    routes=[("/join/{room}",s.join_guest,["POST"]),("/consent/{room}",s.consent,["POST"]),("/bootstrap/{room}",s.bootstrap,["GET"]),("/manifest/{room}/{guest}/{session}",s.manifest,["GET"]),
+    routes=[("/file/{room}/{guest}/{session}/{filename}",s.recording_file,["GET"]),("/join/{room}",s.join_guest,["POST"]),("/consent/{room}",s.consent,["POST"]),("/bootstrap/{room}",s.bootstrap,["GET"]),("/manifest/{room}/{guest}/{session}",s.manifest,["GET"]),
             ("/telemetry/{room}/{guest}/{session}",s.telemetry,["POST"]),("/sessions",s.overview,["GET"]),
             ("/session/{room}/{session}",s.session_edit,["PATCH"]),("/session/{room}/{session}/{action}",s.action,["POST"]),
             ("/markers/{room}/{session}/export",s.export_markers,["GET"]),("/marker/{id_}",s.marker_edit,["PATCH"]),
@@ -1242,7 +1194,7 @@ def install(api):
     for path,handler,methods in routes:app.add_api_route(prefix+path,handler,methods=methods)
     @app.get("/assets/{name}")
     def client_asset(name: str):
-        if name not in ("audio-profiles.js", "recording-media.js", "ux.js"):
+        if name not in ("audio-profiles.js", "recording-media.js", "recording-formats.js", "ux.js"):
             raise HTTPException(404)
         return FileResponse(api["BASE"]/name, media_type="application/javascript")
     @app.on_event("startup")

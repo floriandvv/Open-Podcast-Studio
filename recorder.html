@@ -4,6 +4,7 @@
 <script src="/assets/ux.js"></script>
 <meta charset="utf-8" />
 <script src="/assets/recording-media.js"></script>
+<script src="/assets/recording-formats.js"></script>
 <script src="/jitsi/call.js"></script>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title id="pageTitle">Podcast Recorder</title>
@@ -735,25 +736,6 @@
   // Der Server transkodiert ohnehin nach WAV und erzeugt zusaetzlich eine
   // H.264-MP4. Wir liefern hier also bevorzugt das, was der Browser sauber
   // produzieren kann.
-  function pickVideoMime() {
-    if (typeof MediaRecorder === "undefined" ||
-        typeof MediaRecorder.isTypeSupported !== "function") {
-      return { mime: "", ext: "webm", label: "Standard (Browser-Default)" };
-    }
-    const candidates = [
-      { mime: "video/webm;codecs=vp9,opus", ext: "webm", label: "VP9 / Opus (WebM)" },
-      { mime: "video/webm;codecs=vp8,opus", ext: "webm", label: "VP8 / Opus (WebM)" },
-      { mime: "video/webm",                 ext: "webm", label: "WebM (Browser-Default)" },
-      // Safari-Unterstützung: H.264 (teils als MP4-Container).
-      { mime: "video/mp4;codecs=h264,aac",  ext: "webm", label: "H.264 / AAC" },
-      { mime: "video/mp4",                  ext: "webm", label: "MP4" },
-    ];
-    for (const c of candidates) {
-      if (MediaRecorder.isTypeSupported(c.mime)) return c;
-    }
-    return { mime: "", ext: "webm", label: "Standard (Browser-Default)" };
-  }
-
   // ---------- Session aus Token ----------
   // Der Raum steckt im Token – nicht in der URL.
   // Wir lesen room erst nach erfolgreicher Token-Aufloesung.
@@ -1622,10 +1604,11 @@
     const audioTracks = srcStream.getAudioTracks();
     if (!audioTracks.length) { log("VU-Meter: kein Audio-Track", "err"); return; }
     try {
+      if(audioCtx&&audioCtx.sampleRate!==AUDIO_SAMPLE_RATE&&!isRecording){audioCtx.close().catch(()=>{});audioCtx=null;pcmWorkletPromise=null;}
       if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)({sampleRate:AUDIO_SAMPLE_RATE});
       // Warm the same-origin worklet while preview is already activated by the
       // guest's deliberate join action, not after the synchronized countdown.
-      if(audioOnly)preloadPcmWorklet().catch(error=>log('AudioWorklet-Vorbereitung fehlgeschlagen: '+error.message,'err'));
+      if(captureProfile?.audio_quality==='lossless')preloadPcmWorklet().catch(error=>log('AudioWorklet-Vorbereitung fehlgeschlagen: '+error.message,'err'));
       // Manche Browser starten den AudioContext erst nach User-Geste "suspended".
       // Da das VU-Meter erst nach dem Klick auf "Weiter" startet, ist eine Geste
       // gegeben -> resume() reaktiviert den Context zuverlaessig.
@@ -2020,25 +2003,26 @@
       transaction.onerror=transaction.onabort=()=>reject(transaction.error||new Error('Manifest nicht gespeichert'));
     });
   }
-  async function persistChunk(blob, ext) {
+  async function persistChunk(blob, ext, logical = "audio") {
     if (!blob || !blob.size || !trackManifest) return;
-    const m=trackManifest, idx=chunkIndex++;
+    const m=trackManifest, idx=m.nextIndices[logical]++;
+    chunkIndex++;
     pendingChunkEnqueues++;
     const job=persistChain.then(async()=>{
       if (storageFault) throw new Error('Lokaler Speicher ausgefallen');
-      const key=chunkKey(m.room,m.guest,m.sessionId,idx), sha=await sha256(blob);
-      const rec={key,sessionKey:m.sessionKey,room:m.room,guest:m.guest,sessionId:m.sessionId,idx,blob,size:blob.size,ext,sha,createdAt:Date.now(),uploaded:false};
+      const key=chunkKey(m.room,m.guest,m.sessionId,idx,logical), sha=await sha256(blob);
+      const rec={key,sessionKey:m.sessionKey,room:m.room,guest:m.guest,sessionId:m.sessionId,logical,idx,blob,size:blob.size,ext,sha,createdAt:Date.now(),uploaded:false};
       // Chunk + manifest count commit in ONE transaction; request success is not durability.
       await new Promise((resolve,reject)=>{
         const transaction=db.transaction([STORE,'manifests'],'readwrite');
         transaction.objectStore(STORE).put(rec);
-        transaction.objectStore('manifests').put({...m,count:idx+1,localBytes:m.localBytes+blob.size});
+        transaction.objectStore('manifests').put({...m,count:m.count+1,counts:{...m.counts,[logical]:idx+1},localBytes:m.localBytes+blob.size});
         transaction.oncomplete=resolve;transaction.onerror=transaction.onabort=()=>reject(transaction.error||new Error('IndexedDB commit fehlgeschlagen'));
       });
-      m.count=idx+1;m.localBytes+=blob.size;recBytes=m.localBytes;
+      m.count++;m.counts[logical]=idx+1;m.localBytes+=blob.size;recBytes=m.localBytes;
       if($('chunkCount'))$('chunkCount').textContent=m.count;
       if($('recSize'))$('recSize').textContent=fmtMB(recBytes);
-      uploadQueue.push({key,idx,size:blob.size,room:m.room,guest:m.guest,sessionId:m.sessionId,ext,sha});
+      uploadQueue.push({key,idx,size:blob.size,room:m.room,guest:m.guest,sessionId:m.sessionId,logical,ext,sha});
       runUploader();
     }).catch(async error=>{
       storageFault=true;m.interrupted=true;studioEvent('local_storage_failure');
@@ -2056,11 +2040,12 @@
     await updateManifest(m.sessionKey, current=>({...current,remoteMeta:true}));
     if(trackManifest?.sessionKey===m.sessionKey)trackManifest.remoteMeta=true;
   }
-  async function prepareManifest(sampleRate,channels) {
+  async function prepareManifest(sampleRate,channels,streams) {
     if(await manifestOp('get',sessionKeyOf(room,guest,sessionId))) throw new Error('Diese Session wurde bereits lokal aufgenommen. Für eine neue Aufnahme muss der Host eine neue Session starten.');
     const m={sessionKey:sessionKeyOf(room,guest,sessionId),room,guest,sessionId,owner:await tokenFingerprint(),
+      counts:Object.fromEntries(Object.keys(streams).map(k=>[k,0])),nextIndices:Object.fromEntries(Object.keys(streams).map(k=>[k,0])),
       count:0,localBytes:0,uploadedBytes:0,closed:false,finalized:false,interrupted:false,createdAt:Date.now(),
-      meta:{sample_rate:sampleRate,channels,consent:consentGranted,started_at:Date.now()+serverOffset,
+      meta:{streams,sample_rate:sampleRate,channels,consent:consentGranted,started_at:Math.round(Date.now()+serverOffset),
         diagnostics_consent:diagnosticsConsent,browser:diagnosticsConsent?navigator.userAgent:'not collected',os:diagnosticsConsent?(navigator.userAgentData?.platform||navigator.platform):'not collected'}};
     await manifestOp('put',m);trackManifest=m;
     studioEvents=[];uploadRetries=0;storageFault=false;
@@ -2086,7 +2071,7 @@
     await ensureRemoteMetadata(m);
     const records=(await dbGetAll()).filter(r=>r.sessionKey===m.sessionKey);
     if(records.length!==m.count || records.some(r=>!r.uploaded))return;
-    const result=await studioFetch(`${SERVER}/finish/${m.room}/${m.guest}/${m.sessionId}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({expected_chunks:m.count,interrupted:!!m.interrupted})});
+    const result=await studioFetch(`${SERVER}/finish/${m.room}/${m.guest}/${m.sessionId}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({expected_chunks:m.count,expected_streams:m.counts,interrupted:!!m.interrupted})});
     if(!result.finalized || !result.report?.files?.['full.wav']?.sha256) throw new Error('Server-Finalisierung nicht bestätigt');
     const confirmed={...m,finalized:true,report:result.report};
     await manifestOp('put',confirmed);Object.assign(m,confirmed);
@@ -2196,7 +2181,7 @@
     }
   }
 
-  function chunkKey(r, g, s, idx) { return `${r}/${g}/${s}/${String(idx).padStart(6, "0")}`; }
+  function chunkKey(r, g, s, idx, logical='main') { return `${r}/${g}/${s}/${logical==='main'?'':logical+'/'}${String(idx).padStart(6, "0")}`; }
   function sessionKeyOf(r, g, s) { return `${r}/${g}/${s}`; }
 
   async function gcOldChunks() {
@@ -2209,11 +2194,11 @@
       if(!m.closed){m.closed=true;m.interrupted=true;await manifestOp('put',m);}
       // Revalidate server receipts after a restart; acknowledged bytes can be lost in bad server backups.
       let received=new Map();
-      try {const r=await studioFetch(`${SERVER}/api/studio/manifest/${m.room}/${m.guest}/${m.sessionId}`);received=new Map(r.chunks.map(c=>[c.idx,c.sha]));}catch{}
+      try {const r=await studioFetch(`${SERVER}/api/studio/manifest/${m.room}/${m.guest}/${m.sessionId}`);received=new Map(r.chunks.map(c=>[(c.logical||'main')+':'+c.idx,c.sha]));}catch{}
       for(const r of records.filter(r=>r.sessionKey===m.sessionKey).sort((a,b)=>a.idx-b.idx)){
-        if(received.get(r.idx)===r.sha)continue;
-        const full=await dbGet(r.key);full.uploaded=false;await dbPut(full);
-        uploadQueue.push(r);
+        const full=await dbGet(r.key);
+        full.uploaded=received.get((r.logical||'main')+':'+r.idx)===r.sha;await dbPut(full);
+        if(!full.uploaded)uploadQueue.push(full);
       }
       log('Recovery: gespeicherte Chunks bleiben erhalten. Unterbrochene Aufnahme wird als unvollständig gekennzeichnet.','info');
     }
@@ -2258,6 +2243,8 @@
   let pcmBuffer = [];         // gesammelte Int16-Arrays fuer den aktuellen Chunk
   let pcmBufferedSamples = 0; // Anzahl Frames im aktuellen Chunk
   let pendingChunkEnqueues = 0; // noch nicht in die Upload-Queue übernommene Chunks
+  let pcmAccepting = false, pcmStopResolve = null;
+  let mediaLogical = "media";
   let pcmFlushTimer = null;    // intervall fuer PCM-chunk flush, null before first start
   let scheduledStop = null;      // absoluter Stop-Termin aus dem Host-Befehl
   let scheduledStopAt = 0;
@@ -2272,7 +2259,7 @@
 
   // Sammelt Int16-Samples und schiebt fertige Chunks in die Upload-Queue.
   function pcmCollect(int16) {
-    if (!int16.length) return;
+    if (!pcmAccepting || !int16.length) return;
     pcmBuffer.push(int16);
     pcmBufferedSamples += int16.length;
     // Nach Sample-Anzahl schneiden, nicht nach dem ungenauen Browser-Timer.
@@ -2303,7 +2290,7 @@
 
   async function enqueuePcmChunk(blob) {
     if (!blob || blob.size === 0) return;
-    await persistChunk(blob, "pcm");
+    await persistChunk(blob, "pcm", "audio");
   }
 
   // Feature 9: Video-/Media-Chunks (WebM bzw. Safari-Unterstützung) in dieselbe
@@ -2311,7 +2298,7 @@
   // Video erkennt und daraus WAV + H.264-MP4 erzeugt.
   async function enqueueMediaChunk(blob, ext) {
     if (!blob || blob.size === 0) return;
-    await persistChunk(blob, ext || "webm");
+    await persistChunk(blob, ext, mediaLogical);
   }
 
   // Load from the application origin, not a blob: URL rejected by strict CSPs.
@@ -2357,12 +2344,17 @@
           setStatus('Aufnahmestart fehlgeschlagen. Call bleibt verbunden.');
           setDeclaredReady(false);
         }
+        pcmAccepting=false;
+        try { if(recorder?.state!=='inactive')recorder?.stop(); } catch {}
+        for(const node of [pcmSourceNode,pcmNode,pcmSilent]){try{node?.disconnect();}catch{}}
         try { await mediaOwner.releaseRecording(); } catch {}
         try { if(pcmCtx&&pcmCtx!==audioCtx&&pcmCtx.state!=='closed')await pcmCtx.close(); } catch {}
         pcmCtx=null;pcmCtxShared=false;pcmSourceNode=pcmNode=pcmSilent=null;recorder=null;recordingOutput=null;
-        if(trackManifest?.sessionId===sessionId && !trackManifest.count) {
-          try { await manifestOp('put',{...trackManifest,closed:true,interrupted:true}); } catch {}
-          trackManifest=null;
+        try{await persistChain;}catch{}
+        if(trackManifest?.sessionId===sessionId){
+          trackManifest.closed=true;trackManifest.interrupted=true;
+          try{await manifestOp('put',trackManifest);}catch{}
+          if(!trackManifest.count)trackManifest=null;
         }
       } finally { recordingStarting=false;recordingStartTask=null;sendHeartbeat(); }
     })();
@@ -2389,79 +2381,72 @@
     const rs = $("recSize"); if (rs) rs.textContent = "0 MB";
     const us = $("upSize"); if (us) us.textContent = "0 MB";
 
-    // Video-Modus (host-gesteuert) + vorhandener Video-Track -> MediaRecorder.
-    // Sonst der bewaehrte Audio-only-PCM-Pfad (Safari/iOS-sicher).
     assertCaptureActive(generation);
-    if (!audioOnly) {
-      if(!stream.getVideoTracks().length)throw new Error("ux.camera_required");
-      await _startVideoRecording(generation);
-    } else {
-      await _startPcmRecording(audioTracks, generation);
+    const lossless=captureProfile.audio_quality==='lossless';
+    const streams={};
+    if(lossless){
+      await preparePcmRecording(audioTracks,generation);
+      streams.audio={ext:'pcm',mime:'audio/pcm',requested:'pcm_s16le',fallback:false};
     }
-  }
-
-  // ---------- Video-Aufnahme via MediaRecorder ----------
-  async function _startVideoRecording(generation) {
-    const pick = pickVideoMime();
-    mediaExt = pick.ext;
-    const opts = { videoBitsPerSecond: VIDEO_BITRATE, audioBitsPerSecond: AUDIO_BITRATE };
-    if (pick.mime) opts.mimeType = pick.mime;
-    recordingOutput = await mediaOwner.recordingStream({...captureProfile,video:true,audioContext:audioCtx});
-    assertCaptureActive(generation);
-    try { recorder = new MediaRecorder(recordingOutput, opts); }
-    catch { recorder = new MediaRecorder(recordingOutput); mediaExt = "webm"; }
-    recorder.ondataavailable = e => {
-      if(e.data?.size)enqueueMediaChunk(e.data, mediaExt);
-    };
-    recorder.onerror = e => {
-      log('MediaRecorder-Fehler: '+(e.error?.name||'unbekannt'),'err');
-      storageFault=true;studioEvent('media_recorder_failed');stopRecording();
-    };
-    await prepareManifest(AUDIO_SAMPLE_RATE, captureProfile.channels);
-    assertCaptureActive(generation);
-    recorder.start(CHUNK_MS);
-    // Never announce recording when start() has thrown.
-    isRecording=true;uploadBudget.setRecording(true);micLostDuringRec=false;startTs=Date.now();
-    startCaptureClock();
-    setStatus('🔴 Video-Aufnahme läuft…');
-    log(`Video-Aufnahme gestartet (${pick.label})`,'ok');
-  }
-
-  async function _startPcmRecording(audioTracks, generation) {
-    const AC = window.AudioContext || window.webkitAudioContext;
-    const micStream = new MediaStream([audioTracks[0]]);
-    pcmCtx = audioCtx || new AC({sampleRate:AUDIO_SAMPLE_RATE});
-    pcmCtxShared = pcmCtx === audioCtx;
-    pcmSourceNode = pcmCtx.createMediaStreamSource(micStream);
-    if (pcmCtx.state === 'suspended') {
-      await captureStep('AudioContext.resume', () => pcmCtx.resume());
+    if(!lossless||captureProfile.video){
+      if(captureProfile.video&&!stream.getVideoTracks().length)throw new Error('ux.camera_required');
+      recordingOutput=await mediaOwner.recordingStream({...captureProfile,audioContext:audioCtx});
       assertCaptureActive(generation);
+      // Never pass an audio track to the lossless+video recorder.
+      const mediaStream=captureProfile.video&&lossless?new MediaStream(recordingOutput.getVideoTracks()):recordingOutput;
+      const chosen=PodcastFormats.create(captureProfile,mediaStream);
+      recorder=chosen.recorder;mediaExt=chosen.spec.ext;mediaLogical=chosen.logical;
+      streams[mediaLogical]=chosen.spec;
+      recorder.ondataavailable=e=>{
+        if(!e.data?.size)return;
+        // Some browsers attach codecs only to the first blob; reject container changes.
+        let validContainer=true;
+        try{validContainer=!e.data.type||PodcastFormats.extension(e.data.type)===mediaExt;}catch{validContainer=false;}
+        if(!validContainer){
+          storageFault=true;studioEvent('media_recorder_failed');stopRecording();return;
+        }
+        enqueueMediaChunk(e.data,mediaExt);
+      };
+      recorder.onerror=()=>{storageFault=true;studioEvent('media_recorder_failed');stopRecording();};
     }
-    if(pcmCtx.state!=='running')throw new Error('AudioContext ist nicht aktiv. Mikrofon im Gastfenster erneut freigeben.');
+    await prepareManifest(AUDIO_SAMPLE_RATE,captureProfile.channels,streams);
+    assertCaptureActive(generation);
+    const startedAt=Math.round(Date.now()+serverOffset);
+    trackManifest.meta.started_at=startedAt;
+    for(const spec of Object.values(streams))spec.started_at=startedAt;
+    // Persist the shared start epoch before any chunk commit/upload can run.
+    const snapshot=structuredClone(trackManifest);
+    persistChain=persistChain.then(()=>manifestOp('put',snapshot));
+    persistChain.catch(()=>{storageFault=true;studioEvent('local_storage_failure');if(isRecording)stopRecording();});
+    if(recorder)recorder.start(CHUNK_MS);
+    if(lossless){pcmAccepting=true;pcmNode.port.postMessage({type:'start'});}
+    isRecording=true;uploadBudget.setRecording(true);micLostDuringRec=false;startTs=Date.now();
+    clearInterval(pcmFlushTimer);
+    if(lossless)pcmFlushTimer=setInterval(()=>pcmFlush(false),CHUNK_MS);
+    startCaptureClock();setStatus(PodcastUX.t('profile_recording_active'));
+    log(PodcastUX.format('profile_capture_format',{format:Object.entries(streams).map(([key,v])=>key+': '+v.mime).join(' / ')}),'ok');
+  }
+
+  async function preparePcmRecording(audioTracks,generation) {
+    const AC=window.AudioContext||window.webkitAudioContext;
+    pcmCtx=audioCtx||new AC({sampleRate:AUDIO_SAMPLE_RATE});pcmCtxShared=pcmCtx===audioCtx;
+    pcmSourceNode=pcmCtx.createMediaStreamSource(new MediaStream([audioTracks[0]]));
+    if(pcmCtx.state==='suspended')await captureStep('AudioContext.resume',()=>pcmCtx.resume());
+    assertCaptureActive(generation);
+    if(pcmCtx.state!=='running')throw new Error('ux.audio_worklet_required');
     pcmSampleRate=pcmCtx.sampleRate;pcmChannels=captureProfile.channels||1;
     if(pcmSampleRate!==AUDIO_SAMPLE_RATE)throw new Error('ux.unsupported_sample_rate');
     if(!pcmCtx.audioWorklet)throw new Error('ux.audio_worklet_required');
-    await captureStep('AudioWorklet.addModule '+PCM_WORKLET_URL,
-      () => pcmCtxShared ? preloadPcmWorklet() : pcmCtx.audioWorklet.addModule(PCM_WORKLET_URL));
+    await captureStep('AudioWorklet.addModule',()=>pcmCtxShared?preloadPcmWorklet():pcmCtx.audioWorklet.addModule(PCM_WORKLET_URL));
     assertCaptureActive(generation);
-    pcmNode=new AudioWorkletNode(pcmCtx,'pcm-tap',{processorOptions:{channels:pcmChannels}});
-    pcmNode.port.onmessage=e=>{if(isRecording)pcmCollect(floatToInt16(e.data));};
-    pcmNode.onprocessorerror=()=>{
-      storageFault=true;studioEvent('audio_worklet_failed');
-      log('AudioWorklet-Verarbeitung ausgefallen; Aufnahme wird angehalten.','err');
-      stopRecording();
+    pcmNode=new AudioWorkletNode(pcmCtx,'pcm-tap',{processorOptions:{channels:pcmChannels,gated:true}});
+    pcmNode.port.onmessage=e=>{
+      if(e.data?.type==='stopped'){pcmAccepting=false;pcmStopResolve?.();pcmStopResolve=null;return;}
+      if(pcmAccepting&&e.data instanceof Float32Array)pcmCollect(floatToInt16(e.data));
     };
-    pcmSourceNode.connect(pcmNode);
-    pcmSilent=pcmCtx.createGain();pcmSilent.gain.value=0;
+    pcmNode.onprocessorerror=()=>{storageFault=true;studioEvent('audio_worklet_failed');stopRecording();};
+    pcmSourceNode.connect(pcmNode);pcmSilent=pcmCtx.createGain();pcmSilent.gain.value=0;
     pcmNode.connect(pcmSilent);pcmSilent.connect(pcmCtx.destination);
-    await prepareManifest(pcmSampleRate, pcmChannels);
-    assertCaptureActive(generation);
-    isRecording=true;uploadBudget.setRecording(true);micLostDuringRec=false;startTs=Date.now();
-    clearInterval(pcmFlushTimer);
-    pcmFlushTimer=setInterval(()=>pcmFlush(false),CHUNK_MS);
-    startCaptureClock();
-    setStatus('🔴 Aufnahme läuft…');
-    log(`Aufnahme gestartet (PCM ${pcmSampleRate}Hz, ${pcmChannels}ch)`,'ok');
   }
 
   function startCaptureClock() {
@@ -2508,6 +2493,12 @@
     clearTimeout(maxDurationTimer);
     clearInterval(durationTimer);
 
+    // Drain the PCM message port at the same stop boundary as MediaRecorder.
+    let pcmStopped=Promise.resolve();
+    if(pcmNode&&pcmAccepting){
+      pcmStopped=captureStep('PCM.stop',()=>new Promise(resolve=>{pcmStopResolve=resolve;pcmNode.port.postMessage({type:'stop'});}),10000)
+        .catch(()=>{storageFault=true;studioEvent('audio_worklet_failed');});
+    }
     // Video-Pfad (MediaRecorder): sauber stoppen. ondataavailable bleibt bis
     // zum letzten Chunk aktiv; erst danach finalisieren wir die Session.
     if (recorder) {
@@ -2534,6 +2525,7 @@
     }
 
     // Audio-Pfad (PCM): Graph abbauen + letzten Chunk ausschreiben.
+    await pcmStopped;pcmAccepting=false;pcmStopResolve=null;
     clearInterval(pcmFlushTimer); pcmFlushTimer = null;
     try { pcmSourceNode && pcmSourceNode.disconnect(); } catch {}
     try { pcmNode && pcmNode.disconnect(); } catch {}
@@ -2701,9 +2693,9 @@
       item.blob=rec.blob;item.sha=rec.sha||await sha256(rec.blob);
       const signal=uploadBudget.start();timer=setTimeout(()=>uploadBudget.abort?.abort(),60000);
       start=performance.now();
-      const response=await fetch(`${SERVER}/upload/${item.room}/${item.guest}/${item.sessionId}/${String(item.idx).padStart(6,'0')}?ext=${encodeURIComponent(item.ext||'pcm')}`,{method:'PUT',headers:{'Content-Type':'application/octet-stream',Authorization:'Bearer '+guestToken,'X-Guest-Client':guestClientSecret,'X-Chunk-SHA256':item.sha},body:item.blob,signal});
+      const response=await fetch(`${SERVER}/upload/${item.room}/${item.guest}/${item.sessionId}/${String(item.idx).padStart(6,'0')}?ext=${encodeURIComponent(item.ext||'pcm')}&logical=${encodeURIComponent(item.logical||'main')}`,{method:'PUT',headers:{'Content-Type':'application/octet-stream',Authorization:'Bearer '+guestToken,'X-Guest-Client':guestClientSecret,'X-Chunk-SHA256':item.sha},body:item.blob,signal});
       const receipt=await response.json();
-      if(!response.ok||receipt.idx!==item.idx||receipt.bytes!==item.blob.size||receipt.sha256!==item.sha)throw new Error('Upload-Quittung ungültig: '+response.status);
+      if(!response.ok||(receipt.logical||'main')!==(item.logical||'main')||receipt.idx!==item.idx||receipt.bytes!==item.blob.size||receipt.sha256!==item.sha)throw new Error('Upload-Quittung ungültig: '+response.status);
       const seconds=Math.max(0.1,(performance.now()-start)/1000);
       uploadRate=item.blob.size/seconds;uploadBudget.account(item.blob.size);uploadBudget.observe(item.blob.size,seconds);
       return true;
