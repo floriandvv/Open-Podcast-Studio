@@ -561,6 +561,44 @@
   @media (max-width: 720px) { .brand-preview { min-width:0; width:100%; } #brandPreset{width:100%} .preset-editor-grid{grid-template-columns:1fr 1fr} }
 
   [hidden]{display:none!important}
+
+  /* The four admin areas keep the existing theme tokens and live DOM state. */
+  .admin-intro { margin:8px 0 0; color:var(--muted); font-size:14px; line-height:1.6; }
+  .admin-tabs { position:sticky; top:0; z-index:20; display:grid;
+    grid-template-columns:minmax(0,1.35fr) minmax(0,1.3fr) minmax(0,.7fr) minmax(0,1fr);
+    gap:4px; padding:6px; background:var(--panel); border:1px solid var(--border); border-radius:10px; }
+  .admin-tab { appearance:none; min-width:0; padding:12px 10px; border:1px solid transparent;
+    border-radius:6px; background:transparent; color:var(--muted); cursor:pointer;
+    font:inherit; font-size:13px; font-weight:600; line-height:1.4; overflow-wrap:anywhere; }
+  .admin-tab:hover { background:var(--surface-hover); color:var(--text); }
+  .admin-tab[aria-selected="true"] { background:var(--panel2); border-color:var(--brand); color:var(--text);
+    box-shadow:inset 0 -2px 0 var(--brand); }
+  .admin-tab:focus-visible,.admin-tab-panel:focus-visible { outline:2px solid var(--brand); outline-offset:3px; }
+  .admin-tab-panel { display:flex; flex-direction:column; gap:16px; min-width:0; scroll-margin-top:100px; }
+  .admin-tab-panel > * { min-width:0; }
+  .admin-section-intro { padding:4px 0; }
+  .admin-section-intro h2 { font-size:20px; margin:0; line-height:1.4; }
+  .admin-section-intro p { margin:6px 0 0; font-size:13px; line-height:1.6; color:var(--muted); max-width:85ch; }
+  .admin-panel-heading { font-size:16px; font-weight:700; margin:0; }
+  .admin-setting-group { min-width:0; margin:0; padding:14px 0 0; border:0; }
+  .admin-setting-group + .admin-setting-group { margin-top:20px; border-top:1px solid var(--border); }
+  .admin-setting-group legend { float:left; width:100%; padding:0 0 8px; font-size:13px; font-weight:700; color:var(--muted); }
+  .admin-setting-group legend + * { clear:both; }
+  .admin-save-actions { display:flex; flex-wrap:wrap; align-items:center; gap:14px; margin-top:16px; }
+  #admin-panel-dashboard > .overview-dashboard { margin:0; }
+  #admin-panel-themes > .preset-library { margin:0; padding:16px; }
+  .preset-library-head h3 { font-size:16px; margin:0 0 5px; }
+  .admin-theme-status { position:sticky; bottom:12px; z-index:21; }
+  .admin-theme-status:has(#brandStatus:not(:empty)) { padding:12px 16px; background:var(--panel); border:1px solid var(--border); border-radius:8px; }
+  .admin-theme-status:has(#brandStatus:empty) { display:none; }
+  #jitsi-usage-panel .jitsi-usage { margin:0; padding-top:0; border:0; }
+  #jitsi-usage-panel .overview-dashboard { margin:14px 0; }
+  @media(max-width:720px) {
+    .admin-tabs { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .admin-tab { padding:10px 7px; font-size:12px; }
+    .admin-tab-panel { scroll-margin-top:150px; }
+    .admin-section-intro h2 { font-size:18px; }
+  }
   /* Provider/upload forms use the global settings rows and control styles. */
   #jitsi-settings h2,#upload-settings h2{font-size:16px;margin:0 0 14px}
   #jitsi-settings .sub,#upload-settings .sub{margin:14px 0 0;font-size:12px;line-height:1.5}
@@ -638,26 +676,71 @@
   <header>
     <div>
       <h1>Admin</h1>
-      <div id="overviewDashboard" class="overview-dashboard" aria-label="Aufnahmenübersicht">
-        <div class="overview-card"><div class="label">Aufnahmen</div><div class="value" id="overviewRecordings">–</div><div class="detail" id="overviewRecordingsDetail">Wird geladen</div></div>
-        <div class="overview-card"><div class="label">Räume</div><div class="value" id="overviewRooms">–</div><div class="detail" id="overviewRoomsDetail">Wird geladen</div></div>
-        <div class="overview-card"><div class="label">Speicher</div><div class="value" id="overviewStorage">–</div><div class="detail" id="overviewStorageDetail">Wird geladen</div></div>
-      </div>
+      <p class="admin-intro" data-i18n="admin.navigation_intro">Betrieb im Blick behalten, Einstellungen verwalten und Räume organisieren.</p>
     </div>
   </header>
 
-  <section class="panel" id="jitsi-settings" data-i18n-aria-label="ux.jitsi_settings" aria-label="Jitsi"></section>
-  <section class="panel" id="upload-settings" data-i18n-aria-label="ux.upload_settings" aria-label="Uploads"></section>
-  <section class="panel" id="audio-profiles" data-i18n-aria-label="ux.recording_settings" aria-label="Aufnahmeeinstellungen"></section>
-  <section class="panel" id="consent-settings" data-i18n-aria-label="ux.consent_settings" aria-label="Aufnahme und Datenschutz"></section>
+  <div class="admin-tabs" role="tablist" aria-label="Admin-Bereiche" data-i18n-aria-label="admin.navigation_label" aria-orientation="horizontal">
+    <button type="button" class="admin-tab" id="admin-tab-dashboard" role="tab" aria-controls="admin-panel-dashboard" aria-selected="true" tabindex="0" data-admin-tab="dashboard" data-i18n="admin.tab_dashboard">Dashboard/Statusübersicht</button>
+    <button type="button" class="admin-tab" id="admin-tab-settings" role="tab" aria-controls="admin-panel-settings" aria-selected="false" tabindex="-1" data-admin-tab="settings" data-i18n="admin.tab_settings">Allgemeine Einstellungen</button>
+    <button type="button" class="admin-tab" id="admin-tab-themes" role="tab" aria-controls="admin-panel-themes" aria-selected="false" tabindex="-1" data-admin-tab="themes" data-i18n="admin.tab_themes">Themes</button>
+    <button type="button" class="admin-tab" id="admin-tab-rooms" role="tab" aria-controls="admin-panel-rooms" aria-selected="false" tabindex="-1" data-admin-tab="rooms" data-i18n="admin.tab_rooms">Raumübersicht</button>
+  </div>
 
-  <!-- Globale Einstellungen -->
-  <div class="panel">
-    <b style="font-size:16px">Globale Einstellungen</b>
+  <section class="admin-tab-panel" id="admin-panel-dashboard" role="tabpanel" aria-labelledby="admin-tab-dashboard" tabindex="0">
+    <div class="admin-section-intro">
+      <h2 data-i18n="admin.tab_dashboard">Dashboard/Statusübersicht</h2>
+      <p data-i18n="admin.dashboard_help">Kennzahlen, Systemzustand und Diagnose der gesamten Instanz.</p>
+    </div>
+    <div id="overviewDashboard" class="overview-dashboard" aria-label="Aufnahmenübersicht">
+      <div class="overview-card"><div class="label">Aufnahmen</div><div class="value" id="overviewRecordings">–</div><div class="detail" id="overviewRecordingsDetail">Wird geladen</div></div>
+      <div class="overview-card"><div class="label">Räume</div><div class="value" id="overviewRooms">–</div><div class="detail" id="overviewRoomsDetail">Wird geladen</div></div>
+      <div class="overview-card"><div class="label">Speicher</div><div class="value" id="overviewStorage">–</div><div class="detail" id="overviewStorageDetail">Wird geladen</div></div>
+    </div>
+    <div class="panel" id="diagPanel">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
+        <div>
+          <h3 class="admin-panel-heading">Zustand &amp; Diagnose</h3>
+          <p class="sub" style="margin:4px 0 0">Echtzeitbild der Instanz: Verbindungen, Laufzeit, Rückstand und Fehler.</p>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <span class="diag-state" id="diagState">Wird geladen</span>
+          <label class="check" style="font-size:13px">
+            <input type="checkbox" id="diagAuto" checked> <span>Automatisch aktualisieren</span>
+          </label>
+          <button class="btn btn-ghost" id="refreshDiagBtn">↻ Aktualisieren</button>
+        </div>
+      </div>
+      <div id="diagBox" style="margin-top:12px;font-size:14px;color:var(--muted)">Lade Diagnose…</div>
+    </div>
+    <section class="panel" id="jitsi-usage-panel" aria-labelledby="jitsi-usage-heading" hidden>
+      <h3 class="admin-panel-heading" id="jitsi-usage-heading" data-i18n="admin.jaas_usage_heading">JaaS-Nutzung &amp; Webhook-Status</h3>
+      <div id="jitsi-usage-slot"></div>
+    </section>
+  </section>
+
+  <section class="admin-tab-panel" id="admin-panel-settings" role="tabpanel" aria-labelledby="admin-tab-settings" tabindex="0" hidden>
+    <div class="admin-section-intro">
+      <h2 data-i18n="admin.tab_settings">Allgemeine Einstellungen</h2>
+      <p data-i18n="admin.settings_help">Sprache, Gastzugang, Aufnahmen, Verbindungen, Uploads und Sicherheit. Jeder Bereich wird separat gespeichert.</p>
+    </div>
+  <section class="panel" id="basic-settings" aria-labelledby="basic-settings-heading">
+    <h3 class="admin-panel-heading" id="basic-settings-heading" data-i18n="admin.basic_settings">Betrieb &amp; Aufnahme</h3>
     <div style="margin-top:14px">
+      <fieldset class="admin-setting-group">
+        <legend data-i18n="admin.language_access">Sprache &amp; Gastzugang</legend>
+        <div class="cfg-row">
+          <div>
+            <label for="cfgLocale">Sprache der Oberfläche</label>
+            <div class="desc">Gilt für Host-Studio, Recorder und dieses Panel. Fehlende Texte fallen auf Deutsch zurück.</div>
+          </div>
+          <select id="cfgLocale" style="min-width:180px;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font:inherit">
+            <option value="de" data-i18n="ux.language_de">Deutsch</option>
+          </select>
+        </div>
       <div class="cfg-row cfg-row-num">
         <div>
-          <label data-i18n="ux.guest_session_lifetime">Gast-Anmeldungsdauer</label>
+          <label for="cfgTokenDays" data-i18n="ux.guest_session_lifetime">Gast-Anmeldungsdauer</label>
           <div class="desc" data-i18n="ux.guest_session_lifetime_hint">Raumlinks bleiben gleich. Diese Dauer gilt nur für persönliche Gastanmeldungen.</div>
         </div>
         <div class="num-wrap">
@@ -665,9 +748,12 @@
           <span class="unit">Tage</span>
         </div>
       </div>
+      </fieldset>
+      <fieldset class="admin-setting-group">
+        <legend data-i18n="admin.retention_cleanup">Aufbewahrung &amp; Bereinigung</legend>
       <div class="cfg-row cfg-row-num">
         <div>
-          <label>Automatische Löschung alter Aufnahmen</label>
+          <label for="cfgRecDays">Automatische Löschung alter Aufnahmen</label>
           <div class="desc">Aufnahmen älter als N Tage werden automatisch gelöscht. <b>0 = deaktiviert.</b></div>
         </div>
         <div class="num-wrap">
@@ -695,18 +781,12 @@
           <span class="unit">Tage</span>
         </div>
       </div>
+      </fieldset>
+      <fieldset class="admin-setting-group">
+        <legend data-i18n="admin.recording_readiness">Aufnahmestart &amp; Pegelprüfung</legend>
       <div class="cfg-row">
         <div>
-          <label for="cfgLocale">Sprache der Oberfläche</label>
-          <div class="desc">Gilt für Host-Studio, Recorder und dieses Panel. Fehlende Texte fallen auf Deutsch zurück.</div>
-        </div>
-        <select id="cfgLocale" style="min-width:180px;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font:inherit">
-          <option value="de" data-i18n="ux.language_de">Deutsch</option>
-        </select>
-      </div>
-      <div class="cfg-row">
-        <div>
-          <label>Start nur mit bereitem Gast</label>
+          <label for="cfgRequireOnline">Start nur mit bereitem Gast</label>
           <div class="desc">Der Host kann erst starten, wenn mindestens ein Gast online ist,
             das Mikrofon freigegeben hat und Signal liefert.</div>
         </div>
@@ -748,16 +828,52 @@
           <span class="unit">Samples</span>
         </div>
       </div>
-      <div style="display:flex;align-items:center;gap:14px;margin-top:14px">
+      </fieldset>
+      <div class="admin-save-actions">
         <button class="btn btn-primary" id="saveCfgBtn">Einstellungen speichern</button>
-        <span class="cfg-status" id="cfgStatus"></span>
+        <span class="cfg-status" id="cfgStatus" role="status" aria-live="polite"></span>
       </div>
     </div>
-  </div>
+  </section>
 
-  <!-- Custom Branding (Feature 8) -->
-  <div class="panel">
-    <b style="font-size:16px">Custom Branding</b>
+  <section class="panel" id="audio-profiles" data-i18n-aria-label="ux.recording_settings" aria-label="Aufnahmeeinstellungen"></section>
+  <section class="panel" id="upload-settings" data-i18n-aria-label="ux.upload_settings" aria-label="Uploads"></section>
+  <section class="panel" id="jitsi-settings" data-i18n-aria-label="ux.jitsi_settings" aria-label="Jitsi"></section>
+  <section class="panel" id="consent-settings" data-i18n-aria-label="ux.consent_settings" aria-label="Aufnahme und Datenschutz"></section>
+  <section class="panel" id="password-settings" aria-labelledby="password-heading">
+    <h3 class="admin-panel-heading" id="password-heading" data-i18n="admin.passwords">Passwörter</h3>
+    <p class="sub" style="margin:6px 0 0">Admin- und Host-Passwort zurücksetzen — ohne <code>.env</code>-Edit oder Neustart.</p>
+    <div style="margin-top:14px">
+      <div class="cfg-row">
+        <div>
+          <label for="newAdminPw">Neues Admin-Passwort</label>
+          <div class="desc">Vollzugriff: Admin-Panel + Host-Studio.</div>
+        </div>
+        <input type="password" id="newAdminPw" placeholder="mind. 4 Zeichen"
+               style="width:220px;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font:inherit">
+        <button class="btn btn-primary" id="setAdminPwBtn">Setzen</button>
+      </div>
+      <div class="cfg-row">
+        <div>
+          <label for="newHostPw">Neues Host-Passwort</label>
+          <div class="desc">Eingeschränkt: nur Raum-Eingabe + Host-Studio.</div>
+        </div>
+        <input type="password" id="newHostPw" placeholder="mind. 4 Zeichen"
+               style="width:220px;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font:inherit">
+        <button class="btn btn-primary" id="setHostPwBtn">Setzen</button>
+      </div>
+      <p class="cfg-status" id="adminPasswordStatus" role="status"></p><p class="cfg-status" id="hostPasswordStatus" role="status"></p>
+    </div>
+  </section>
+  </section>
+
+  <section class="admin-tab-panel" id="admin-panel-themes" role="tabpanel" aria-labelledby="admin-tab-themes" tabindex="0" hidden>
+    <div class="admin-section-intro">
+      <h2 data-i18n="admin.tab_themes">Themes</h2>
+      <p data-i18n="admin.themes_help">Anwendungsidentität und wiederverwendbare Designs für die Oberfläche und einzelne Räume.</p>
+    </div>
+  <section class="panel" id="brand-identity" aria-labelledby="brand-identity-heading">
+    <h3 class="admin-panel-heading" id="brand-identity-heading" data-i18n="admin.brand_identity">Anwendungsidentität</h3>
     <div style="margin-top:14px">
       <div class="cfg-row">
         <div>
@@ -772,10 +888,16 @@
         <label class="btn file-btn" for="brandFaviconFile"><span data-i18n="admin.choose_file">Datei auswählen</span><input type="file" id="brandFaviconFile" accept="image/png,image/svg+xml,image/x-icon,image/webp" aria-describedby="brandFaviconState"></label>
         <button class="btn btn-ghost" id="brandFaviconClear" type="button" aria-describedby="brandFaviconLabel" data-i18n="common.remove">Entfernen</button>
       </div>
-      <section class="preset-library" aria-labelledby="globalPresetHeading">
+      <div class="admin-save-actions">
+        <button class="btn btn-primary" id="saveBrandIdentityBtn" type="button" data-i18n="common.save">Speichern</button>
+        <span class="cfg-status" id="brandIdentityStatus" role="status" aria-live="polite"></span>
+      </div>
+    </div>
+  </section>
+      <section class="panel preset-library" id="global-theme-library" aria-labelledby="globalPresetHeading">
         <div class="preset-library-head">
           <div class="preset-library-note">
-            <label id="globalPresetHeading" data-i18n="admin.global_presets">Globale Presets</label>
+            <h3 id="globalPresetHeading" data-i18n="admin.global_themes">Globale Themes</h3>
             <div class="desc" data-i18n="admin.global_presets_help">Steuern das Erscheinungsbild der Admin- und Host-Oberfläche. Jedes Preset enthält eigene Farben und ein eigenes Logo.</div>
           </div>
           <button class="btn btn-brand" id="newGlobalPreset" type="button">＋ Neues Preset</button>
@@ -813,10 +935,10 @@
           </div>
         </div>
       </section>
-      <section class="preset-library" aria-labelledby="roomPresetHeading">
+      <section class="panel preset-library" id="room-theme-library" aria-labelledby="roomPresetHeading">
         <div class="preset-library-head">
           <div>
-            <label id="roomPresetHeading" data-i18n="admin.room_branding_presets">Branding-Presets für Räume</label>
+            <h3 id="roomPresetHeading" data-i18n="admin.room_themes">Raum-Themes</h3>
             <div class="desc" data-i18n="admin.room_branding_presets_help">Hier bereitest du wiederverwendbare Markenauftritte vor. Der Host weist sie beim Erstellen eines Raums zu.</div>
           </div>
           <button class="btn btn-brand" id="newRoomPreset" type="button">＋ Neues Preset</button>
@@ -839,57 +961,16 @@
           <div class="preset-editor-actions"><button class="btn btn-primary" id="saveRoomPreset" type="button">Preset speichern</button><button class="btn btn-ghost" id="cancelRoomPreset" type="button">Abbrechen</button><button class="btn btn-danger" id="deleteRoomPreset" type="button">Preset löschen</button></div>
         </div>
       </section>
-      <div style="display:flex;align-items:center;gap:14px;margin-top:14px">
+      <div class="admin-theme-status" role="status" aria-live="polite">
         <span class="cfg-status" id="brandStatus"></span>
       </div>
-    </div>
-  </div>
+  </section>
 
-  <!-- Passwoerter (Feature 2 + 13) -->
-  <div class="panel">
-    <b style="font-size:16px">Passwörter</b>
-    <p class="sub" style="margin:6px 0 0">Admin- und Host-Passwort zurücksetzen — ohne <code>.env</code>-Edit oder Neustart.</p>
-    <div style="margin-top:14px">
-      <div class="cfg-row">
-        <div>
-          <label>Neues Admin-Passwort</label>
-          <div class="desc">Vollzugriff: Admin-Panel + Host-Studio.</div>
-        </div>
-        <input type="password" id="newAdminPw" placeholder="mind. 4 Zeichen"
-               style="width:220px;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font:inherit">
-        <button class="btn btn-primary" id="setAdminPwBtn">Setzen</button>
-      </div>
-      <div class="cfg-row">
-        <div>
-          <label>Neues Host-Passwort</label>
-          <div class="desc">Eingeschränkt: nur Raum-Eingabe + Host-Studio.</div>
-        </div>
-        <input type="password" id="newHostPw" placeholder="mind. 4 Zeichen"
-               style="width:220px;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font:inherit">
-        <button class="btn btn-primary" id="setHostPwBtn">Setzen</button>
-      </div>
-      <p class="cfg-status" id="adminPasswordStatus" role="status"></p><p class="cfg-status" id="hostPasswordStatus" role="status"></p>
+  <section class="admin-tab-panel" id="admin-panel-rooms" role="tabpanel" aria-labelledby="admin-tab-rooms" tabindex="0" hidden>
+    <div class="admin-section-intro">
+      <h2 data-i18n="admin.tab_rooms">Raumübersicht</h2>
+      <p data-i18n="admin.rooms_help">Räume verwalten, Gastlinks prüfen und Aufnahmen herunterladen. Logs und Clipping sind direkt am jeweiligen Raum erreichbar.</p>
     </div>
-  </div>
-
-  <!-- Health & Diagnostics (Roadmap 6) -->
-  <div class="panel" id="diagPanel">
-    <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
-      <div>
-        <b style="font-size:16px">Zustand &amp; Diagnose</b>
-        <p class="sub" style="margin:4px 0 0">Echtzeitbild der Instanz: Verbindungen, Laufzeit, Rückstand und Fehler.</p>
-      </div>
-      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        <span class="diag-state" id="diagState">Wird geladen</span>
-        <label class="check" style="font-size:13px">
-          <input type="checkbox" id="diagAuto" checked> <span>Automatisch aktualisieren</span>
-        </label>
-        <button class="btn btn-ghost" id="refreshDiagBtn">↻ Aktualisieren</button>
-      </div>
-    </div>
-    <div id="diagBox" style="margin-top:12px;font-size:14px;color:var(--muted)">Lade Diagnose…</div>
-  </div>
-
   <!-- Raum-Management (Feature 6) -->
   <div class="panel">
     <div style="display:flex;justify-content:space-between;align-items:center">
@@ -928,7 +1009,7 @@
     </div>
     <div id="sessionsBox" role="region" aria-label="Aufnahmen" aria-live="polite" style="margin-top:12px;font-size:14px;color:var(--muted)">Lade Aufnahmen…</div>
   </div>
-</div>
+  </section>
 
 <!-- Modal: Clipping-Ereignisse eines Raums -->
 <div id="clipModalBg" role="dialog" aria-modal="true" aria-labelledby="clipModalTitle" style="position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;padding:20px;z-index:100">
@@ -958,6 +1039,69 @@
     </div>
   </div>
 </div>
+
+</main>
+
+<script>
+// Tab switches only change visibility; unsaved values and expanded sections survive.
+(() => {
+  'use strict';
+  const tabs = [...document.querySelectorAll('[data-admin-tab]')];
+  const panels = tabs.map(tab => document.getElementById(tab.getAttribute('aria-controls')));
+  const scrollPositions = new Map();
+  let current = null;
+
+  function activate(key, { focus = false, updateHistory = false, restoreScroll = false } = {}) {
+    const index = tabs.findIndex(tab => tab.dataset.adminTab === key);
+    if (index < 0) return;
+    const changed = current !== key;
+    if (current && changed) scrollPositions.set(current, window.scrollY);
+    tabs.forEach((tab, i) => {
+      const selected = i === index;
+      tab.setAttribute('aria-selected', String(selected));
+      tab.tabIndex = selected ? 0 : -1;
+      panels[i].hidden = !selected;
+    });
+    current = key;
+    if (updateHistory && location.hash !== '#' + key) {
+      // Deep links and browser Back/Forward, without reloading any forms.
+      history.pushState(null, '', '#' + key);
+    }
+    if (focus) tabs[index].focus({ preventScroll: true });
+    if (restoreScroll && changed) window.scrollTo({ top: scrollPositions.get(key) || 0, behavior: 'instant' });
+    if (changed) document.dispatchEvent(new CustomEvent('admin:tabchange', { detail: { tab: key } }));
+  }
+
+  function activateFromLocation() {
+    let hash;
+    try { hash = decodeURIComponent(location.hash.slice(1)); } catch { hash = ''; }
+    const tab = tabs.find(tab => tab.dataset.adminTab === hash);
+    // Existing anchor links such as #content still reveal the correct area.
+    const target = hash ? document.getElementById(hash) : null;
+    const panel = target?.closest('[role="tabpanel"]');
+    const owner = panel && tabs.find(tab => tab.getAttribute('aria-controls') === panel.id);
+    activate(tab?.dataset.adminTab || owner?.dataset.adminTab || 'dashboard');
+  }
+
+  tabs.forEach((tab, index) => {
+    tab.addEventListener('click', () => activate(tab.dataset.adminTab, { updateHistory: true, restoreScroll: true }));
+    tab.addEventListener('keydown', event => {
+      if (event.altKey || event.ctrlKey || event.metaKey) return;
+      let next;
+      if (event.key === 'ArrowRight') next = (index + 1) % tabs.length;
+      else if (event.key === 'ArrowLeft') next = (index + tabs.length - 1) % tabs.length;
+      else if (event.key === 'Home') next = 0;
+      else if (event.key === 'End') next = tabs.length - 1;
+      else return;
+      event.preventDefault();
+      activate(tabs[next].dataset.adminTab, { focus: true, updateHistory: true, restoreScroll: true });
+    });
+  });
+  window.addEventListener('popstate', activateFromLocation);
+  window.addEventListener('hashchange', activateFromLocation);
+  activateFromLocation();
+})();
+</script>
 
 <script>
 (() => {
@@ -1075,6 +1219,12 @@
   // ── Globale Einstellungen ────────────────────────────────────────────────
   // Die Sprachliste kommt vom Server: jede Datei in locale/ ist waehlbar.
   let initialLocale = 'de';
+  let brandNameSaved = null;
+  function receiveBrandName(value) {
+    const input = $('brandName');
+    if (brandNameSaved === null || input.value === brandNameSaved) input.value = value;
+    brandNameSaved = value;
+  }
 
   async function loadLocales() {
     try {
@@ -1104,7 +1254,7 @@
       $('cfgRequireReady').checked  = !!cfg.require_guest_ready;
       $('cfgClipDbfs').value    = cfg.clip_threshold_dbfs ?? -1;
       $('cfgClipSamples').value = cfg.clip_min_samples ?? 3;
-      $('brandName').value     = cfg.brand_name || '';
+      receiveBrandName(cfg.brand_name || 'Podcast Studio');
       if (cfg.locale) { initialLocale = cfg.locale; $('cfgLocale').value = cfg.locale; }
       if (cfg.brand_color) $('brandColor').value = cfg.brand_color;
     } catch (err) {
@@ -1137,6 +1287,31 @@
       flash($('cfgStatus'), localeChanged ? '✔ Gespeichert. Seite wird neu geladen…' : '✔ Gespeichert.');
       if (localeChanged) setTimeout(() => location.reload(), 700);
     } catch (err) { flash($('cfgStatus'), 'Fehler: ' + err.message, false); }
+  });
+
+  // Application identity is saved independently of theme presets.
+  $('saveBrandIdentityBtn').addEventListener('click', async () => {
+    const button = $('saveBrandIdentityBtn');
+    const name = $('brandName').value.trim() || 'Podcast Studio';
+    button.disabled = true;
+    flash($('brandIdentityStatus'), PodcastUX.t('saving'));
+    try {
+      const res = await apiFetch(`${SERVER}/admin/config`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ brand_name: name }),
+      });
+      if (!res.ok) throw new Error(await errText(res));
+      const data = await res.json();
+      const stored = data.config?.brand_name || name;
+      // Do not overwrite text typed while the request was in flight.
+      if (($('brandName').value.trim() || 'Podcast Studio') === name) $('brandName').value = stored;
+      brandNameSaved = stored;
+      if (window.__BRANDING__) window.__BRANDING__.name = stored;
+      await refreshBrandingAssets();
+      flash($('brandIdentityStatus'), window.OpenPodcastI18n.t('admin.identity_saved'));
+    } catch (err) {
+      flash($('brandIdentityStatus'), PodcastUX.error(err), false);
+    } finally { button.disabled = false; }
   });
 
   // ── Branding ─────────────────────────────────────────────────────────────
@@ -1366,7 +1541,7 @@
         sel.appendChild(opt);
       }
       const theme = b.theme || {};
-      $('brandName').value = b.name || 'Podcast Studio';
+      receiveBrandName(b.name || 'Podcast Studio');
       sel.value = theme.preset_key || 'default';
       renderGlobalPresets(presets, sel.value);
       overrides.bg = theme.bg_manual ? (theme.bg || '') : '';
@@ -1432,7 +1607,7 @@
     overrides.bg=$('brandBg').value;overrides.text=$('brandText').value;overrides.onBrand=$('brandOnBrand').value;queuePreview();$('globalPresetName').focus();
   }
   function closeGlobalPresetEditor(){$('globalPresetEditor').classList.remove('open');editingGlobalPresetKey='';}
-  async function persistGlobalPresets(list,message){const res=await apiFetch(`${SERVER}/admin/config`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({global_presets:list,brand_name:$('brandName').value.trim()||'Podcast Studio'})});if(!res.ok)throw new Error('HTTP '+res.status);await loadPresets();flash($('brandStatus'),message);}
+  async function persistGlobalPresets(list,message){const res=await apiFetch(`${SERVER}/admin/config`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({global_presets:list})});if(!res.ok)throw new Error('HTTP '+res.status);await loadPresets();flash($('brandStatus'),message);}
   $('newGlobalPreset').addEventListener('click',()=>openGlobalPresetEditor(null));
   $('cancelGlobalPreset').addEventListener('click',closeGlobalPresetEditor);
   $('globalPresetAppearance').addEventListener('change',e=>{if(e.target.value==='light'){$('brandBg').value='#f6f7f9';$('brandText').value='#15171b';}else{$('brandBg').value='#0f1115';$('brandText').value='#e8eaed';}overrides.bg=$('brandBg').value;overrides.text=$('brandText').value;queuePreview();});

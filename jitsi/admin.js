@@ -24,8 +24,17 @@ function statistic(label,id){const card=el('div',undefined,{class:'overview-card
 const mau=statistic('jaas_mau_title','jaas-mau-value'),period=statistic('jaas_mau_period','jaas-mau-period'),health=statistic('jaas_webhook_status','jaas-webhook-status');
 const usageStatus=el('p','',{role:'status','aria-live':'polite'}),usageReload=el('button',t('jaas_mau_refresh'),{type:'button',class:'btn',id:'jaas-mau-refresh'}),consoleLink=el('a',t('jaas_console_activity'),{href:'https://jaas.8x8.vc/',target:'_blank',rel:'noopener noreferrer',class:'btn'}),usageActions=el('div',undefined,{class:'jitsi-actions'});
 usageActions.append(usageReload,consoleLink);usage.append(dashboard,usageStatus,usageActions,el('p',t('jaas_mau_webhook_hint'),{class:'sub'}));
-box.replaceChildren(el('h2',t('jitsi_settings')),form,usage);
-function visible(){publicFields.hidden=mode.value!=='public';jaasFields.hidden=mode.value!=='jaas';usage.hidden=mode.value!=='jaas';hint.textContent=t(mode.value==='off'?'jitsi_off':mode.value==='jaas'?'jaas_hint':mode.value==='self_hosted'?'self_hint':'public_hint');}
+// Provider configuration and operational usage deliberately live in different tabs.
+const usagePanel=document.getElementById('jitsi-usage-panel'),usageSlot=document.getElementById('jitsi-usage-slot');
+box.replaceChildren(el('h2',t('jitsi_settings')),form);
+if(usageSlot)usageSlot.replaceChildren(usage);else box.append(usage);
+function visible(){
+ publicFields.hidden=mode.value!=='public';jaasFields.hidden=mode.value!=='jaas';
+ // Dashboard statistics describe the saved deployment, not an unsaved form draft.
+ const showUsage=(usageSlot?saved?.mode:mode.value)==='jaas';
+ usage.hidden=!showUsage;if(usagePanel)usagePanel.hidden=!showUsage;
+ hint.textContent=t(mode.value==='off'?'jitsi_off':mode.value==='jaas'?'jaas_hint':mode.value==='self_hosted'?'self_hint':'public_hint');
+}
 function lock(value){busy=value;for(const n of [mode,url,appId,empty,absence,saveButton])n.disabled=value||!saved;usageReload.disabled=value||usageBusy;}
 function changed(){appId.setAttribute('aria-invalid','false');status.textContent=t('unsaved_changes');visible();}
 for(const n of [mode,url,appId,empty,absence])n.addEventListener('change',changed);

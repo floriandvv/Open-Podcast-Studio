@@ -30,11 +30,9 @@ class CallBase {
 class HostCall extends CallBase {
   constructor(o){super(o);this.button=el('button',t('call_off'),{type:'button',class:'meta-pill call-toggle','data-lock-control':'','aria-label':t('call_cycle')});this.button.disabled=true;document.getElementById('modeBtn').after(this.button);
     this.panel=el('section',undefined,{class:'call-panel','aria-label':t('live_call')});this.status=el('p',t('loading'),{role:'status','aria-live':'polite'});this.panel.append(this.status);document.querySelector('.wrap').append(this.panel);
-    this.end=el('button',t('call_end'),{type:'button',class:'meta-pill call-toggle','data-lock-control':'',disabled:''});this.button.after(this.end);this.end.onclick=()=>this.endCall();this.button.onclick=()=>this.cycle();this.begin();
+    this.button.onclick=()=>this.cycle();this.begin();
   }
   render(){const s=this.snapshot;if(!s)return;const c=s.call;const m=c?.state==='active'?c.mode:'off';this.button.textContent=t(c?.state==='closing'?'call_closing_short':'call_'+m);this.button.setAttribute('aria-label',t('call_cycle')+': '+t('call_'+m));this.button.classList.toggle('active',m!=='off');this.button.disabled=this.changing||!s.configured||c?.state==='closing'||!this.o.canControl();
-    this.end.textContent=t(c?.state==='closing'?'call_close_retry':'call_end');
-    this.end.disabled=this.changing||!this.o.canControl()||!c||!!s.closure?.in_flight; 
     this.status.textContent=s.deployment==='off'?t('jitsi_off'):!s.configured?t('jitsi_unavailable'):c?.state==='closing'?this.closeStatus(s):c?t('call_'+m)+' · '+s.participants+' '+t('connected_guests'):t('call_off');if(s.auto_close)this.status.textContent+=' '+t('call_auto_countdown').replace('{seconds}',String(Math.max(0,Math.ceil(s.auto_close.deadline-Date.now()/1000))))+' '+t('call_auto_'+s.auto_close.reason);
   }
   closeStatus(s){const d=s.closure;if(!d)return t('call_closing');
@@ -49,10 +47,7 @@ class HostCall extends CallBase {
     this.closeErrorKey=null;
     return seconds>0?t('call_close_draining').replace('{seconds}',String(seconds)):t('call_close_requesting');
   }
-  async poll(){if(this.busy||this.disposed)return;this.busy=true;try{this.snapshot=await this.request('state');if(!this.changing)this.render();}catch(e){this.status.textContent=error(e);this.button.disabled=true;this.end.disabled=true;}finally{this.busy=false;}}
-  async endCall(){if(this.changing||!this.snapshot?.call||!this.o.canControl())return;this.changing=true;this.end.disabled=true;
-    try{const c=this.snapshot.call;this.snapshot=await this.request('mode','PUT',{mode:'off',expected_id:c.id,expected_revision:c.revision});}
-    catch(e){this.status.textContent=error(e);PodcastUX.toast(error(e),'error');}finally{this.changing=false;this.render();}}
+  async poll(){if(this.busy||this.disposed)return;this.busy=true;try{this.snapshot=await this.request('state');if(!this.changing)this.render();}catch(e){this.status.textContent=error(e);this.button.disabled=true;}finally{this.busy=false;}}
   async cycle(){if(this.changing||!this.snapshot||!this.o.canControl())return;this.changing=true;this.button.disabled=true;const call=this.snapshot.call;const mode=call?.mode||'off';const next={off:'audio',audio:'video',video:'off'}[mode];this.status.textContent=t('saving');
     try{this.snapshot=await this.request('mode','PUT',{mode:next,expected_id:call?.id||null,expected_revision:call?.revision||0});this.changing=false;this.render();}
     catch(e){this.changing=false;await this.poll();this.status.textContent=error(e);PodcastUX.toast(error(e),'error');}finally{this.changing=false;}

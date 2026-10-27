@@ -630,6 +630,7 @@
     return id;
   })();
 
+  // Retain call modes and status; there is no separate end-call action.
   window.openPodcastHostCall = PodcastJitsi.mountHost({
     room, clientId: () => CLIENT_ID, canControl: () => lockMode === 'control'
   });
